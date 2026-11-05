@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VisualGit</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <header class="toolbar">
+      <div class="brand">VisualGit</div>
+      <button id="open" class="primary">Open repository…</button>
+      <button id="reload" title="Reload (⌘R)" disabled>Reload</button>
+      <div id="repo-path" class="repo-path"></div>
+      <div class="spacer"></div>
+      <div id="stats" class="stats"></div>
+      <div class="zoom">
+        <button id="zoom-out" title="Zoom out (−)">−</button>
+        <button id="zoom-fit" title="Fit history (0)">Fit</button>
+        <button id="zoom-latest" title="Jump to latest (L)">Latest</button>
+        <button id="zoom-in" title="Zoom in (+)">+</button>
+      </div>
+    </header>
+    <main class="layout">
+      <aside class="sidebar">
+        <input id="filter" type="search" placeholder="Filter branches" spellcheck="false" />
+        <div id="branch-list" class="branch-list"></div>
+      </aside>
+      <section class="canvas-wrap">
+        <canvas id="explorer"></canvas>
+        <div id="tooltip" class="tooltip" hidden></div>
+        <div id="empty-state" class="empty-state">
+          <h1>Branch Explorer</h1>
+          <p>Open a Git repository to see its branches as lanes: changesets along each branch, where branches were created, and how they merge back.</p>
+          <p class="hint">Drag or scroll to pan · ⌘/Ctrl + scroll or pinch to zoom · click a changeset for details</p>
+        </div>
+      </section>
+      <aside id="details" class="details">
+        <div class="placeholder">Select a changeset or branch</div>
+      </aside>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
