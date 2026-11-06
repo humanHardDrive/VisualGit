@@ -13,6 +13,10 @@ const BAND_TOP = 22;
 const BAND_H = 26;
 const NODE_R = 6;
 const EMPTY_W = 40;
+/** The checked-out changeset is drawn larger, with a home symbol inside. */
+const HEAD_R = 9;
+/** Radius of the circle that marks a release (tagged changeset). */
+const RELEASE_R = HEAD_R + 6;
 
 const TRUNK_COLOR = "#2f81f7";
 const PALETTE = ["#a371f7", "#e3a008", "#f0603c", "#1fb5d4", "#e85aad", "#f08c2e", "#6e7bf2", "#b0882f", "#0ea5e9", "#cf5be0"];
@@ -105,9 +109,14 @@ export class Explorer {
     this.selection = sel;
     if (reveal && sel && this.model && this.layout) {
       if (sel.kind === "commit") {
-        const col = this.model.index.get(sel.hash)!;
-        const row = this.layout.spans[this.model.owner.get(sel.hash)!].row;
-        this.centerOn(colX(col), rowMid(row));
+        // Only scroll when the changeset is off screen, so stepping through history doesn't jump around.
+        const { x, y } = this.commitPos(sel.hash);
+        const sx = x * this.scale + this.tx;
+        const sy = y * this.scale + this.ty;
+        const margin = 60;
+        const visible =
+          sx >= margin && sx <= this.canvas.clientWidth - margin && sy >= margin && sy <= this.canvas.clientHeight - margin;
+        if (!visible) this.centerOn(x, y);
       } else {
         const { left, right } = this.bandExtent(this.layout.spans[sel.id]);
         const w = this.canvas.clientWidth / this.scale;
@@ -195,7 +204,8 @@ export class Explorer {
     if (col >= 0 && col < model.order.length) {
       const h = model.order[col];
       const p = this.commitPos(h);
-      if (Math.hypot(p.x - wx, p.y - wy) <= NODE_R + 4 / this.scale) return { kind: "commit", hash: h };
+      const radius = model.tags.has(h) ? RELEASE_R : (h === model.headHash ? HEAD_R : NODE_R) + 4 / this.scale;
+      if (Math.hypot(p.x - wx, p.y - wy) <= radius) return { kind: "commit", hash: h };
     }
     for (const s of layout.spans) {
       if (s.row !== row) continue;
@@ -304,6 +314,13 @@ export class Explorer {
     meta.className = "meta";
     meta.textContent = `${hash.slice(0, 8)} · ${b.name} · ${c.author} · ${new Date(c.time * 1000).toLocaleString()}`;
     tip.append(title, meta);
+    const tags = this.model.tags.get(hash);
+    if (tags) {
+      const release = document.createElement("div");
+      release.className = "meta";
+      release.textContent = `Release ${tags.join(", ")}`;
+      tip.append(release);
+    }
     tip.hidden = false;
     const maxX = this.canvas.clientWidth - tip.offsetWidth - 8;
     tip.style.left = `${Math.max(8, Math.min(sx + 14, maxX))}px`;
@@ -458,30 +475,43 @@ export class Explorer {
       const y = rowMid(row);
       const commit = model.commits.get(hash)!;
       const ghost = model.branches[id].kind === "deleted" || model.branches[id].kind === "anonymous";
+      const tags = model.tags.get(hash);
+      const isHead = hash === model.headHash;
+      const r = isHead ? HEAD_R : NODE_R;
+      if (hash === selectedHash) {
+        // Selection is a halo, so rings stay reserved for releases.
+        ctx.beginPath();
+        ctx.arc(x, y, r + 6, 0, Math.PI * 2);
+        ctx.fillStyle = withAlpha(t.accent, 0.3);
+        ctx.fill();
+      }
       ctx.beginPath();
-      ctx.arc(x, y, NODE_R, 0, Math.PI * 2);
-      ctx.fillStyle = ghost ? withAlpha(branchColor(model, id), 0.55) : branchColor(model, id);
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = isHead ? t.accent : ghost ? withAlpha(branchColor(model, id), 0.55) : branchColor(model, id);
       ctx.fill();
       ctx.lineWidth = 2;
       ctx.strokeStyle = t.nodeStroke;
       ctx.stroke();
-      if (commit.parents.length > 1) {
+      if (isHead) {
+        houseIcon(ctx, x, y, "#ffffff");
+      } else if (commit.parents.length > 1) {
         ctx.beginPath();
         ctx.arc(x, y, 2.2, 0, Math.PI * 2);
         ctx.fillStyle = t.nodeStroke;
         ctx.fill();
       }
-      if (hash === model.headHash) ring(ctx, x, y, NODE_R + 3.5, t.accent, 2);
-      if (hash === selectedHash) ring(ctx, x, y, NODE_R + 4.5, t.text, 2);
-      else if (hash === this.hovered) ring(ctx, x, y, NODE_R + 3, withAlpha(t.text, 0.5), 1.5);
+      if (hash === this.hovered && hash !== selectedHash) ring(ctx, x, y, r + 3, withAlpha(t.text, 0.5), 1.5);
 
-      const tags = model.tags.get(hash);
-      if (tags && s > 0.55) {
-        ctx.font = "600 10px -apple-system, system-ui, sans-serif";
-        ctx.fillStyle = t.muted;
-        ctx.textAlign = "center";
-        ctx.fillText(`◆ ${tags.join(", ")}`, x, y + NODE_R + 14);
-        ctx.textAlign = "left";
+      // Releases (tags): a circle drawn around the changeset, with the release name under it.
+      if (tags) {
+        ring(ctx, x, y, RELEASE_R, t.text, 2);
+        if (s > 0.55) {
+          ctx.font = "700 10px -apple-system, system-ui, sans-serif";
+          ctx.fillStyle = t.text;
+          ctx.textAlign = "center";
+          ctx.fillText(tags.join(", "), x, y + RELEASE_R + 11);
+          ctx.textAlign = "left";
+        }
       }
     }
 
@@ -526,6 +556,25 @@ function withAlpha(color: string, alpha: number) {
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
   ctx.beginPath();
   ctx.roundRect(x, y, w, h, r);
+}
+
+/** A small filled house (roof + walls with a door cut out), centred on (x, y). */
+function houseIcon(ctx: CanvasRenderingContext2D, x: number, y: number, color: string) {
+  ctx.beginPath();
+  ctx.moveTo(x, y - 5);
+  ctx.lineTo(x + 5, y - 0.6);
+  ctx.lineTo(x + 3.4, y - 0.6);
+  ctx.lineTo(x + 3.4, y + 4.4);
+  ctx.lineTo(x + 1.1, y + 4.4);
+  ctx.lineTo(x + 1.1, y + 1.4);
+  ctx.lineTo(x - 1.1, y + 1.4);
+  ctx.lineTo(x - 1.1, y + 4.4);
+  ctx.lineTo(x - 3.4, y + 4.4);
+  ctx.lineTo(x - 3.4, y - 0.6);
+  ctx.lineTo(x - 5, y - 0.6);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
 }
 
 function ring(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, color: string, width: number) {

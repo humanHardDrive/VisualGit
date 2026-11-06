@@ -12,6 +12,17 @@
       <button id="open-workspace" class="primary" title="Open a folder of repositories (⇧⌘O)">Open workspace…</button>
       <button id="open" title="Open a single repository (⌘O)">Open repository…</button>
       <button id="reload" title="Reload (⌘R)" disabled>Reload</button>
+      <div class="nav" role="group" aria-label="Changeset navigation">
+        <button id="nav-prev" class="nav-btn" title="Previous changeset (←)" aria-label="Previous changeset" disabled>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3 5 8l5 5" /></svg>
+        </button>
+        <button id="nav-home" class="nav-btn" title="Go to the checked-out changeset, HEAD (Home)" aria-label="Go to HEAD" disabled>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 7.5 8 3l5.5 4.5M4 6.5V13h3V9.5h2V13h3V6.5" /></svg>
+        </button>
+        <button id="nav-next" class="nav-btn" title="Next changeset (→)" aria-label="Next changeset" disabled>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5" /></svg>
+        </button>
+      </div>
       <div id="repo-path" class="repo-path"></div>
       <div class="spacer"></div>
       <div id="stats" class="stats"></div>

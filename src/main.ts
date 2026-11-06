@@ -79,6 +79,60 @@ function applySelection(sel: Selection | null, reveal: boolean) {
   else if (sel.kind === "commit") void showCommit(details, model, sel.hash, git, (s) => applySelection(s, true));
   else showBranch(details, model, sel.id, (s) => applySelection(s, true));
   renderBranches();
+  updateNav();
+}
+
+// ---- changeset navigation --------------------------------------------------------
+
+const navPrev = $<HTMLButtonElement>("nav-prev");
+const navNext = $<HTMLButtonElement>("nav-next");
+const navHome = $<HTMLButtonElement>("nav-home");
+
+/**
+ * Where navigation starts when no changeset is selected: a selected branch's
+ * latest changeset (or the one it was created from, if empty), else HEAD.
+ */
+function navAnchor(m: Model): string | null {
+  if (selection?.kind === "branch") {
+    const b = m.branches[selection.id];
+    return b.commits[b.commits.length - 1] ?? b.base;
+  }
+  return m.headHash && m.commits.has(m.headHash) ? m.headHash : null;
+}
+
+/** The changeset before `hash`: its first parent, which leaves a branch at the changeset it was created from. */
+function previousOf(m: Model, hash: string): string | null {
+  const p = m.commits.get(hash)?.parents[0];
+  return p && m.commits.has(p) ? p : null;
+}
+
+/** The next changeset on the same branch lane. */
+function nextOf(m: Model, hash: string): string | null {
+  const b = m.branches[m.owner.get(hash)!];
+  return b.commits[b.commits.indexOf(hash) + 1] ?? null;
+}
+
+function navTarget(dir: -1 | 1): string | null {
+  if (!model) return null;
+  // With no changeset selected, the first press lands on the starting changeset.
+  if (selection?.kind !== "commit") return navAnchor(model);
+  return dir < 0 ? previousOf(model, selection.hash) : nextOf(model, selection.hash);
+}
+
+function step(dir: -1 | 1) {
+  const target = navTarget(dir);
+  if (target) applySelection({ kind: "commit", hash: target }, true);
+}
+
+function goHome() {
+  const head = model?.headHash;
+  if (head && model!.commits.has(head)) applySelection({ kind: "commit", hash: head }, true);
+}
+
+function updateNav() {
+  navPrev.disabled = navTarget(-1) === null;
+  navNext.disabled = navTarget(1) === null;
+  navHome.disabled = !model?.headHash || !model.commits.has(model.headHash);
 }
 
 function saveSelection(): SavedSelection | null {
@@ -363,6 +417,9 @@ $("open-workspace").addEventListener("click", () => void chooseWorkspace());
 $("open").addEventListener("click", () => void chooseRepo());
 $("rescan").addEventListener("click", () => void rescanWorkspace());
 reloadBtn.addEventListener("click", reload);
+navPrev.addEventListener("click", () => step(-1));
+navNext.addEventListener("click", () => step(1));
+navHome.addEventListener("click", goHome);
 $("zoom-in").addEventListener("click", () => explorer.zoomBy(1.25));
 $("zoom-out").addEventListener("click", () => explorer.zoomBy(0.8));
 $("zoom-fit").addEventListener("click", () => explorer.fit());
@@ -396,7 +453,16 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "-") explorer.zoomBy(0.8);
   else if (e.key === "0") explorer.fit();
   else if (e.key === "l" || e.key === "L") explorer.latest();
-  else if (e.key === "Escape") applySelection(null, false);
+  else if (e.key === "ArrowLeft") {
+    e.preventDefault();
+    step(-1);
+  } else if (e.key === "ArrowRight") {
+    e.preventDefault();
+    step(1);
+  } else if (e.key === "Home") {
+    e.preventDefault();
+    goHome();
+  } else if (e.key === "Escape") applySelection(null, false);
 });
 
 // Pick up commits, branch switches and new clones made while the window was in the background.

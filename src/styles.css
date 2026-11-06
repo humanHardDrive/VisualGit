@@ -70,6 +70,9 @@ button.link:hover { text-decoration: underline; background: none; }
 .spacer { flex: 1; }
 .stats { color: var(--muted); white-space: nowrap; }
 .zoom { display: flex; gap: 4px; }
+.nav { display: flex; gap: 2px; }
+.nav-btn { display: flex; align-items: center; justify-content: center; padding: 0; width: 28px; height: 26px; }
+.nav-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 
 .layout { flex: 1; display: grid; grid-template-columns: 240px 1fr 320px; min-height: 0; }
 
@@ -162,10 +165,3 @@ button.icon:hover { color: var(--text); }
 .details .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .details pre { white-space: pre-wrap; word-break: break-word; font-family: inherit; margin: 0 0 14px; color: var(--text); }
 .details h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin: 14px 0 6px; }
-.files { list-style: none; padding: 0; margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
-.files li { display: flex; gap: 8px; padding: 1px 0; }
-.files .st { width: 14px; flex: none; font-weight: 700; }
-.files .st.A { color: var(--merge); }
-.files .st.D { color: #d1242f; }
-.files .st.M { color: #bf8700; }
-.files .path { word-break: break-all; }

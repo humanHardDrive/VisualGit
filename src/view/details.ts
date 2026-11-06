@@ -55,41 +55,26 @@ export async function showCommit(panel: HTMLElement, model: Model, hash: string,
     row(dl, c.parents.length > 1 ? "Merges" : "Parent", parents);
   }
   const tags = model.tags.get(hash);
-  if (tags) row(dl, "Tags", tags.join(", "));
+  if (tags) row(dl, tags.length > 1 ? "Releases" : "Release", tags.join(", "));
   const refs = model.refsAt.get(hash);
   if (refs) row(dl, "Refs", refs.join(", "));
 
   const message = el("pre", {}, c.subject);
-  const files = el("ul", { className: "files" }, el("li", {}, "Loading…"));
   panel.replaceChildren(
     el("h2", {}, c.subject || "(no message)"),
     el("div", { className: "kind" }, c.parents.length > 1 ? "Merge changeset" : "Changeset"),
     dl,
     el("h3", {}, "Message"),
     message,
-    el("h3", {}, c.parents.length > 1 ? "Changes (vs first parent)" : "Changes"),
-    files,
   );
 
+  // The log only has the subject line; fetch the full message.
   const id = ++requestId;
   try {
-    const [body, status] = await Promise.all([
-      git.run(["show", "-s", "--format=%B", hash]),
-      git.run(["show", "--diff-merges=first-parent", "--name-status", "--format=", hash]),
-    ]);
-    if (id !== requestId) return;
-    message.textContent = body.trim();
-    const lines = status.split("\n").filter(Boolean);
-    files.replaceChildren(
-      ...(lines.length
-        ? lines.map((line) => {
-            const [st, ...paths] = line.split("\t");
-            return el("li", {}, el("span", { className: `st ${st[0]}` }, st[0]), el("span", { className: "path" }, paths.join(" → ")));
-          })
-        : [el("li", {}, "No file changes")]),
-    );
-  } catch (err) {
-    if (id === requestId) files.replaceChildren(el("li", {}, String(err)));
+    const body = await git.run(["show", "-s", "--format=%B", hash]);
+    if (id === requestId) message.textContent = body.trim();
+  } catch {
+    // Keep showing the subject.
   }
 }
 

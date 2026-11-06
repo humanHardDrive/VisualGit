@@ -39,6 +39,8 @@ Using it: drag or scroll to pan, ⌘/Ctrl + scroll (or pinch) to zoom, click a c
 | `⇧⌘O` / `⌘O` | Open workspace / open repository |
 | `⌘[` / `⌘]` | Previous / next repository in the workspace |
 | `⌘R` | Reload (also happens when the window regains focus, so terminal commits show up) |
+| `←` / `→` | Previous / next changeset along the selected branch (also the toolbar arrows) |
+| `Home` | Go to the checked-out changeset (HEAD) |
 | `⌘F` | Filter branches |
 | `+` / `-` / `0` / `L` | Zoom in / out / fit / jump to latest |
 
