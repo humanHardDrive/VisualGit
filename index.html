@@ -9,7 +9,8 @@
   <body>
     <header class="toolbar">
       <div class="brand">VisualGit</div>
-      <button id="open" class="primary">Open repository…</button>
+      <button id="open-workspace" class="primary" title="Open a folder of repositories (⇧⌘O)">Open workspace…</button>
+      <button id="open" title="Open a single repository (⌘O)">Open repository…</button>
       <button id="reload" title="Reload (⌘R)" disabled>Reload</button>
       <div id="repo-path" class="repo-path"></div>
       <div class="spacer"></div>
@@ -23,6 +24,18 @@
     </header>
     <main class="layout">
       <aside class="sidebar">
+        <section id="workspace" class="workspace" hidden>
+          <div class="section-head">
+            <span class="section-title">Repositories</span>
+            <span id="workspace-name" class="section-sub"></span>
+            <button id="rescan" class="icon" title="Rescan workspace for repositories">↻</button>
+          </div>
+          <input id="repo-filter" type="search" placeholder="Filter repositories" spellcheck="false" hidden />
+          <div id="repo-list" class="repo-list"></div>
+        </section>
+        <div class="section-head">
+          <span class="section-title">Branches</span>
+        </div>
         <input id="filter" type="search" placeholder="Filter branches" spellcheck="false" />
         <div id="branch-list" class="branch-list"></div>
       </aside>
@@ -31,7 +44,8 @@
         <div id="tooltip" class="tooltip" hidden></div>
         <div id="empty-state" class="empty-state">
           <h1>Branch Explorer</h1>
-          <p>Open a Git repository to see its branches as lanes: changesets along each branch, where branches were created, and how they merge back.</p>
+          <p>Open a workspace (the folder you keep your repositories in) to switch between all of them, or open a single repository.</p>
+          <p>Each branch is a lane: changesets along it, where it was created, and how it merges back.</p>
           <p class="hint">Drag or scroll to pan · ⌘/Ctrl + scroll or pinch to zoom · click a changeset for details</p>
         </div>
       </section>

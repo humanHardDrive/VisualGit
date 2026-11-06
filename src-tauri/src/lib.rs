@@ -1,5 +1,8 @@
+mod workspace;
+
 use std::path::Path;
 use std::process::Command;
+use workspace::RepoInfo;
 
 /// Subcommands the UI may run. Everything here is read-only once the
 /// argument checks in `validate` pass.
@@ -68,6 +71,17 @@ async fn git(repo: String, args: Vec<String>) -> Result<String, String> {
         .map_err(|e| e.to_string())?
 }
 
+/// Lists the repositories inside a workspace folder.
+#[tauri::command]
+async fn find_repos(root: String) -> Result<Vec<RepoInfo>, String> {
+    if !Path::new(&root).is_dir() {
+        return Err(format!("not a directory: {root}"));
+    }
+    tauri::async_runtime::spawn_blocking(move || workspace::find_repos(Path::new(&root), workspace::MAX_DEPTH))
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Repository to open at startup: `visualgit <path>` or `VISUALGIT_REPO=<path>`.
 #[tauri::command]
 fn initial_repo() -> Option<String> {
@@ -81,7 +95,7 @@ fn initial_repo() -> Option<String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![git, initial_repo])
+        .invoke_handler(tauri::generate_handler![git, find_repos, initial_repo])
         .run(tauri::generate_context!())
         .expect("error while running VisualGit");
 }

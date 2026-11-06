@@ -5,29 +5,72 @@ import { inTauri, tauriRunner } from "./git/tauriRunner.ts";
 import { inferModel, type Model } from "./model/infer.ts";
 import { layoutModel } from "./model/layout.ts";
 import { clearDetails, showBranch, showCommit } from "./view/details.ts";
-import { branchColor, Explorer, type Selection } from "./view/explorer.ts";
+import { branchColor, Explorer, type Selection, type View } from "./view/explorer.ts";
+
+/** Mirrors `RepoInfo` in src-tauri/src/workspace.rs. */
+interface RepoInfo {
+  path: string;
+  name: string;
+  head: string | null;
+  detached: boolean;
+}
+
+/** Selection saved across reloads; branches by name, since ids are reassigned. */
+type SavedSelection = { kind: "commit"; hash: string } | { kind: "branch"; name: string };
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 const canvas = $<HTMLCanvasElement>("explorer");
 const details = $("details");
-const list = $("branch-list");
-const filter = $<HTMLInputElement>("filter");
+const branchList = $("branch-list");
+const branchFilter = $<HTMLInputElement>("filter");
+const workspaceSection = $("workspace");
+const workspaceName = $("workspace-name");
+const repoList = $("repo-list");
+const repoFilter = $<HTMLInputElement>("repo-filter");
 const emptyState = $("empty-state");
 const stats = $("stats");
 const repoPathEl = $("repo-path");
 const reloadBtn = $<HTMLButtonElement>("reload");
 
 const LAST_REPO_KEY = "visualgit.lastRepo";
+const WORKSPACE_KEY = "visualgit.workspace";
 const welcome = [...emptyState.childNodes].map((n) => n.cloneNode(true));
 
+let workspace: string | null = null;
+let repos: RepoInfo[] = [];
 let repoPath: string | null = null;
 let git: GitRunner | null = null;
 let model: Model | null = null;
 let selection: Selection | null = null;
-let loading = false;
+/** Incremented per load; a load whose number is stale when it finishes is dropped. */
+let loadSeq = 0;
+let loadingPath: string | null = null;
+/** Per-repository pan/zoom and selection, restored when switching back. */
+const saved = new Map<string, { view: View; selection: SavedSelection | null }>();
 
 const explorer = new Explorer(canvas, $("tooltip"), { onSelect: (sel) => applySelection(sel, false) });
+
+// ---- storage ---------------------------------------------------------------
+
+function store(key: string, value: string | null) {
+  try {
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch {
+    // Storage unavailable: nothing is remembered between sessions.
+  }
+}
+
+function recall(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+// ---- selection ---------------------------------------------------------------
 
 function applySelection(sel: Selection | null, reveal: boolean) {
   selection = sel;
@@ -35,59 +78,140 @@ function applySelection(sel: Selection | null, reveal: boolean) {
   if (!model || !git || !sel) clearDetails(details);
   else if (sel.kind === "commit") void showCommit(details, model, sel.hash, git, (s) => applySelection(s, true));
   else showBranch(details, model, sel.id, (s) => applySelection(s, true));
-  renderList();
+  renderBranches();
 }
 
-/** `remembered`: the path came from a previous session; if it is gone, forget it quietly. */
-async function loadPath(path: string, keepView = false, remembered = false) {
-  if (loading) return;
-  loading = true;
+function saveSelection(): SavedSelection | null {
+  if (!selection || !model) return null;
+  return selection.kind === "commit"
+    ? selection
+    : { kind: "branch", name: model.branches[selection.id].name };
+}
+
+function restoreSelection(m: Model, s: SavedSelection | null | undefined): Selection | null {
+  if (!s) return null;
+  if (s.kind === "commit") return m.commits.has(s.hash) ? s : null;
+  const b = m.branches.find((x) => x.name === s.name);
+  return b ? { kind: "branch", id: b.id } : null;
+}
+
+function rememberCurrent() {
+  if (repoPath && model) saved.set(repoPath, { view: explorer.getView(), selection: saveSelection() });
+}
+
+// ---- loading -------------------------------------------------------------------
+
+/**
+ * Opens (or reloads) a repository.
+ * `remembered`: the path came from a previous session; if it is gone, forget it quietly.
+ */
+async function loadRepoAt(path: string, opts: { reload?: boolean; remembered?: boolean } = {}) {
+  const seq = ++loadSeq;
+  if (!opts.reload) {
+    loadingPath = path;
+    renderRepos();
+    stats.textContent = "Loading…";
+  }
   reloadBtn.disabled = true;
   try {
-    const runner = tauriRunner(path);
-    const root = (await runner.run(["rev-parse", "--show-toplevel"])).trim();
-    const raw = await loadRepo(tauriRunner(root));
-    const next = inferModel(raw);
+    const root = (await tauriRunner(path).run(["rev-parse", "--show-toplevel"])).trim();
+    const runner = tauriRunner(root);
+    const next = inferModel(await loadRepo(runner));
     const layout = layoutModel(next);
-    const changed = root !== repoPath;
+    if (seq !== loadSeq) return; // the user switched to another repository meanwhile
+
+    const switching = root !== repoPath;
+    if (switching) rememberCurrent();
+    const keptSelection = switching ? saved.get(root)?.selection : saveSelection();
     repoPath = root;
-    git = tauriRunner(root);
+    git = runner;
     model = next;
-    try {
-      localStorage.setItem(LAST_REPO_KEY, root);
-    } catch {
-      // Storage unavailable; we just won't reopen it next time.
-    }
+    store(LAST_REPO_KEY, root);
+
     repoPathEl.textContent = root;
+    repoPathEl.title = root;
     document.title = `${root.split("/").pop()} · VisualGit`;
     stats.textContent =
       `${next.order.length.toLocaleString()} changesets · ${next.branches.length} branches` +
       (next.truncated ? " · history truncated" : "");
-    emptyState.hidden = next.branches.length > 0;
     if (next.branches.length === 0) showMessage("Empty repository", "This repository has no commits yet.");
-    explorer.setData(next, layout, keepView && !changed);
-    // Keep the selection if it still exists after a reload.
-    const keep =
-      !changed && selection &&
-      ((selection.kind === "commit" && next.commits.has(selection.hash)) ||
-        (selection.kind === "branch" && next.branches[selection.id]));
-    applySelection(keep ? selection : null, false);
+    else emptyState.hidden = true;
+
+    explorer.setData(next, layout, switching ? (saved.get(root)?.view ?? "latest") : "keep");
+    applySelection(restoreSelection(next, keptSelection), false);
   } catch (err) {
-    if (remembered) {
-      try {
-        localStorage.removeItem(LAST_REPO_KEY);
-      } catch {
-        // ignore
-      }
-      showWelcome();
-    } else {
+    if (seq !== loadSeq) return;
+    if (opts.remembered) {
+      store(LAST_REPO_KEY, null);
+      if (!repoPath) showWelcome();
+    } else if (!opts.reload || repoPath === path) {
+      // A failed switch leaves nothing stale on screen.
+      rememberCurrent();
+      repoPath = null;
+      git = null;
+      model = null;
+      explorer.clear();
+      applySelection(null, false);
+      repoPathEl.textContent = "";
+      stats.textContent = "";
       showMessage("Could not open repository", String(err));
     }
   } finally {
-    loading = false;
-    reloadBtn.disabled = repoPath === null;
+    if (seq === loadSeq) {
+      loadingPath = null;
+      reloadBtn.disabled = repoPath === null;
+      renderRepos();
+    }
   }
 }
+
+async function openWorkspace(path: string, opts: { remembered?: boolean } = {}) {
+  try {
+    const found = await invoke<RepoInfo[]>("find_repos", { root: path });
+    workspace = path;
+    repos = found;
+    store(WORKSPACE_KEY, path);
+    workspaceSection.hidden = false;
+    workspaceName.textContent = path.split("/").pop() || path;
+    workspaceName.title = path;
+    repoFilter.hidden = repos.length <= 8;
+    renderRepos();
+    return true;
+  } catch (err) {
+    if (opts.remembered) store(WORKSPACE_KEY, null);
+    else showMessage("Could not open workspace", String(err));
+    return false;
+  }
+}
+
+async function rescanWorkspace() {
+  if (!workspace) return;
+  try {
+    repos = await invoke<RepoInfo[]>("find_repos", { root: workspace });
+    renderRepos();
+  } catch {
+    // Workspace folder vanished; keep the last list until the user picks another.
+  }
+}
+
+const isInside = (path: string, root: string) => path === root || path.startsWith(root.endsWith("/") ? root : `${root}/`);
+
+/** After opening a workspace: the last repository if it lives there, else ask the user to pick. */
+function openDefaultRepo() {
+  const last = recall(LAST_REPO_KEY);
+  const target = last && workspace && isInside(last, workspace) ? repos.find((r) => r.path === last) : undefined;
+  if (target) void loadRepoAt(target.path, { remembered: true });
+  else if (!repoPath) {
+    showMessage(
+      repos.length ? "Pick a repository" : "No repositories found",
+      repos.length
+        ? `${repos.length} repositories in this workspace. Choose one on the left.`
+        : "No Git repositories were found in this folder or the four levels below it.",
+    );
+  }
+}
+
+// ---- messages ------------------------------------------------------------------
 
 function showWelcome() {
   emptyState.hidden = false;
@@ -105,13 +229,66 @@ function showMessage(title: string, text: string) {
   emptyState.replaceChildren(h, p);
 }
 
-function renderList() {
+// ---- sidebar ---------------------------------------------------------------------
+
+/** Workspace repositories, plus the open repository if it lives elsewhere. */
+function listedRepos(): RepoInfo[] {
+  const list = [...repos];
+  if (repoPath && !list.some((r) => r.path === repoPath)) {
+    list.unshift({ path: repoPath, name: repoPath.split("/").pop() || repoPath, head: model?.headBranch ?? null, detached: false });
+  }
+  return list;
+}
+
+function renderRepos() {
+  const q = repoFilter.value.trim().toLowerCase();
+  const items = listedRepos()
+    .filter((r) => !q || r.name.toLowerCase().includes(q))
+    .map((r) => {
+      const item = document.createElement("div");
+      item.className = "repo-item";
+      if (r.path === repoPath) item.classList.add("selected");
+      if (r.path === loadingPath) item.classList.add("loading");
+      item.title = r.path;
+      const name = document.createElement("span");
+      name.className = "name";
+      name.textContent = r.name;
+      const head = document.createElement("span");
+      head.className = "head";
+      head.textContent = r.head ?? "";
+      if (r.detached) head.title = "Detached HEAD";
+      item.append(name, head);
+      item.onclick = () => {
+        if (r.path !== repoPath) void loadRepoAt(r.path);
+      };
+      return item;
+    });
+  if (items.length === 0) {
+    const none = document.createElement("div");
+    none.className = "repo-empty";
+    none.textContent = q ? "No matches" : "No repositories found";
+    items.push(none);
+  }
+  repoList.replaceChildren(...items);
+  if (workspace || repoPath) workspaceSection.hidden = false;
+  $("rescan").hidden = !workspace;
+}
+
+function switchRepo(delta: number) {
+  const list = listedRepos();
+  if (list.length === 0) return;
+  const i = list.findIndex((r) => r.path === (loadingPath ?? repoPath));
+  const next = list[(i + delta + list.length) % list.length];
+  if (next.path !== repoPath) void loadRepoAt(next.path);
+}
+
+function renderBranches() {
   if (!model) {
-    list.replaceChildren();
+    branchList.replaceChildren();
     return;
   }
   const m = model;
-  const q = filter.value.trim().toLowerCase();
+  const q = branchFilter.value.trim().toLowerCase();
   const selectedBranch =
     selection?.kind === "branch" ? selection.id : selection?.kind === "commit" ? m.owner.get(selection.hash) : undefined;
   const items: HTMLElement[] = [];
@@ -147,35 +324,74 @@ function renderList() {
     for (const c of b.children) add(c, depth + 1);
   };
   for (const b of m.branches) if (b.parent === null) add(b.id, 0);
-  list.replaceChildren(...items);
+  branchList.replaceChildren(...items);
+}
+
+// ---- commands ----------------------------------------------------------------------
+
+async function chooseWorkspace() {
+  const dir = await open({ directory: true, title: "Open workspace folder", defaultPath: workspace ?? undefined });
+  if (typeof dir !== "string") return;
+  if (await openWorkspace(dir)) {
+    // Stay on the current repository if it belongs to the new workspace.
+    if (!repoPath || !isInside(repoPath, dir)) {
+      rememberCurrent();
+      repoPath = null;
+      model = null;
+      git = null;
+      explorer.clear();
+      applySelection(null, false);
+      repoPathEl.textContent = "";
+      stats.textContent = "";
+      openDefaultRepo();
+    }
+    renderRepos();
+  }
 }
 
 async function chooseRepo() {
   const dir = await open({ directory: true, title: "Open Git repository" });
-  if (typeof dir === "string") await loadPath(dir);
+  if (typeof dir === "string") await loadRepoAt(dir);
 }
 
+function reload() {
+  if (repoPath && loadingPath === null) void loadRepoAt(repoPath, { reload: true });
+  void rescanWorkspace();
+}
+
+$("open-workspace").addEventListener("click", () => void chooseWorkspace());
 $("open").addEventListener("click", () => void chooseRepo());
-reloadBtn.addEventListener("click", () => repoPath && void loadPath(repoPath, true));
+$("rescan").addEventListener("click", () => void rescanWorkspace());
+reloadBtn.addEventListener("click", reload);
 $("zoom-in").addEventListener("click", () => explorer.zoomBy(1.25));
 $("zoom-out").addEventListener("click", () => explorer.zoomBy(0.8));
 $("zoom-fit").addEventListener("click", () => explorer.fit());
 $("zoom-latest").addEventListener("click", () => explorer.latest());
-filter.addEventListener("input", renderList);
+branchFilter.addEventListener("input", renderBranches);
+repoFilter.addEventListener("input", renderRepos);
 
 window.addEventListener("keydown", (e) => {
   const mod = e.metaKey || e.ctrlKey;
-  if (mod && e.key === "o") {
+  if (mod && e.shiftKey && e.key.toLowerCase() === "o") {
+    e.preventDefault();
+    void chooseWorkspace();
+  } else if (mod && e.key === "o") {
     e.preventDefault();
     void chooseRepo();
   } else if (mod && e.key === "r") {
     e.preventDefault();
-    if (repoPath) void loadPath(repoPath, true);
+    reload();
   } else if (mod && e.key === "f") {
     e.preventDefault();
-    filter.focus();
+    branchFilter.focus();
+  } else if (mod && e.key === "[") {
+    e.preventDefault();
+    switchRepo(-1);
+  } else if (mod && e.key === "]") {
+    e.preventDefault();
+    switchRepo(1);
   } else if (e.target instanceof HTMLInputElement) {
-    if (e.key === "Escape") filter.blur();
+    if (e.key === "Escape") e.target.blur();
   } else if (e.key === "+" || e.key === "=") explorer.zoomBy(1.25);
   else if (e.key === "-") explorer.zoomBy(0.8);
   else if (e.key === "0") explorer.fit();
@@ -183,23 +399,26 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "Escape") applySelection(null, false);
 });
 
-// Pick up commits/branches made in a terminal while the window was in the background.
-window.addEventListener("focus", () => {
-  if (repoPath) void loadPath(repoPath, true);
-});
+// Pick up commits, branch switches and new clones made while the window was in the background.
+window.addEventListener("focus", reload);
+
+// ---- startup -------------------------------------------------------------------------
+
+async function start() {
+  const fromArgs = await invoke<string | null>("initial_repo");
+  const ws = recall(WORKSPACE_KEY);
+  const hasWorkspace = ws ? await openWorkspace(ws, { remembered: true }) : false;
+  if (fromArgs) void loadRepoAt(fromArgs);
+  else if (hasWorkspace) openDefaultRepo();
+  else {
+    const last = recall(LAST_REPO_KEY);
+    if (last) void loadRepoAt(last, { remembered: true });
+  }
+}
 
 if (!inTauri()) {
   showMessage("Run inside the desktop app", "VisualGit reads repositories through its Tauri backend. Start it with `npm run app`.");
-  $<HTMLButtonElement>("open").disabled = true;
+  for (const id of ["open", "open-workspace"]) $<HTMLButtonElement>(id).disabled = true;
 } else {
-  let last: string | null = null;
-  try {
-    last = localStorage.getItem(LAST_REPO_KEY);
-  } catch {
-    // ignore
-  }
-  void invoke<string | null>("initial_repo").then((fromArgs) => {
-    if (fromArgs) void loadPath(fromArgs);
-    else if (last) void loadPath(last, false, true);
-  });
+  void start();
 }

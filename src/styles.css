@@ -84,6 +84,24 @@ button.link:hover { text-decoration: underline; background: none; }
   border-radius: 6px;
 }
 .branch-list { overflow: auto; flex: 1; padding-bottom: 8px; }
+
+.section-head { display: flex; align-items: center; gap: 6px; padding: 10px 8px 0; min-width: 0; }
+.section-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); flex: none; }
+.section-sub { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+button.icon { padding: 0 6px; line-height: 18px; font-size: 13px; border-color: transparent; background: none; color: var(--muted); }
+button.icon:hover { color: var(--text); }
+
+.workspace { display: flex; flex-direction: column; max-height: 45%; min-height: 0; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+.workspace input { margin-bottom: 4px; }
+.workspace .section-head + .repo-list { margin-top: 6px; }
+.repo-list { overflow: auto; min-height: 0; }
+.repo-item { display: flex; align-items: baseline; gap: 8px; padding: 4px 8px 4px 10px; cursor: pointer; white-space: nowrap; border-left: 2px solid transparent; }
+.repo-item:hover { background: var(--hover); }
+.repo-item.selected { background: color-mix(in srgb, var(--accent) 18%, transparent); border-left-color: var(--accent); }
+.repo-item .name { overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+.repo-item .head { color: var(--muted); font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; max-width: 45%; }
+.repo-item.loading .name::after { content: " …"; color: var(--muted); }
+.repo-empty { padding: 4px 10px; color: var(--muted); font-size: 12px; }
 .branch-item {
   display: flex;
   align-items: center;

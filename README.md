@@ -28,9 +28,19 @@ npm run app                             # desktop app, hot reload
 VISUALGIT_REPO=/path/to/repo npm run app  # open a repository straight away
 ```
 
+**Workspaces.** Choose *Open workspace…* and pick the folder you keep your repositories in (e.g. `~/Documents/GitHub`). VisualGit finds every repository up to four levels down, skipping hidden folders and `node_modules`/`target`-style build folders. They're listed in the sidebar with their checked-out branch, and one click switches between them. Each repository keeps its own zoom, scroll position and selection while you switch. The workspace and the last repository are reopened at the next launch. *Open repository…* still opens a single repository from anywhere.
+
 The app opens whatever repository you pass as `visualgit /path/to/repo` or in `VISUALGIT_REPO`, otherwise the last one you opened.
 
-Using it: drag or scroll to pan, ⌘/Ctrl + scroll (or pinch) to zoom, click a changeset or branch for details. Keys: `+`/`-` zoom, `0` fit, `L` latest, `⌘O` open, `⌘R` reload, `⌘F` filter branches. The view reloads when the window regains focus, so commits made in a terminal show up.
+Using it: drag or scroll to pan, ⌘/Ctrl + scroll (or pinch) to zoom, click a changeset or branch for details.
+
+| Key | Action |
+| --- | --- |
+| `⇧⌘O` / `⌘O` | Open workspace / open repository |
+| `⌘[` / `⌘]` | Previous / next repository in the workspace |
+| `⌘R` | Reload (also happens when the window regains focus, so terminal commits show up) |
+| `⌘F` | Filter branches |
+| `+` / `-` / `0` / `L` | Zoom in / out / fit / jump to latest |
 
 ### Development
 
@@ -39,7 +49,7 @@ npm test                                # inference + layout tests against scrip
 npm run typecheck
 npm run inspect -- /path/to/repo        # print the inferred branch tree in the terminal
 scripts/make-demo-repo.sh /tmp/demo     # a repo exercising every explorer case
-cd src-tauri && cargo test              # backend command validation tests
+cd src-tauri && cargo test              # backend tests: command validation, workspace scan
 ```
 
 ### Layout of the code
@@ -52,6 +62,7 @@ cd src-tauri && cargo test              # backend command validation tests
 | [src/view/explorer.ts](src/view/explorer.ts) | Canvas renderer, pan/zoom and hit testing |
 | [src/view/details.ts](src/view/details.ts) | Changeset and branch details panel |
 | [src-tauri/src/lib.rs](src-tauri/src/lib.rs) | Rust backend: one `git` command that only allows read-only subcommands |
+| [src-tauri/src/workspace.rs](src-tauri/src/workspace.rs) | Finds the repositories inside a workspace folder |
 
 The model code is plain TypeScript with no Tauri dependency, so it runs under Node in tests and in `npm run inspect`.
 

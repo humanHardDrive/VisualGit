@@ -19,6 +19,12 @@ const PALETTE = ["#a371f7", "#e3a008", "#f0603c", "#1fb5d4", "#e85aad", "#f08c2e
 
 export type Selection = { kind: "commit"; hash: string } | { kind: "branch"; id: number };
 
+export interface View {
+  scale: number;
+  tx: number;
+  ty: number;
+}
+
 export function branchColor(model: Model, id: number): string {
   return id === model.trunk ? TRUNK_COLOR : PALETTE[id % PALETTE.length];
 }
@@ -70,13 +76,29 @@ export class Explorer {
     this.bindInput();
   }
 
-  setData(model: Model, layout: Layout, keepView: boolean) {
+  /**
+   * `view`: "keep" leaves pan/zoom alone (reload), a saved `View` restores a
+   * repository's previous position, "latest" jumps to the newest changesets.
+   */
+  setData(model: Model, layout: Layout, view: "keep" | "latest" | View) {
     this.model = model;
     this.layout = layout;
     if (this.selection?.kind === "commit" && !model.commits.has(this.selection.hash)) this.selection = null;
     if (this.selection?.kind === "branch" && !model.branches[this.selection.id]) this.selection = null;
-    if (!keepView) this.latest();
+    if (view === "latest") this.latest();
+    else if (view !== "keep") ({ scale: this.scale, tx: this.tx, ty: this.ty } = view);
     this.redraw();
+  }
+
+  clear() {
+    this.model = undefined;
+    this.layout = undefined;
+    this.selection = null;
+    this.redraw();
+  }
+
+  getView(): View {
+    return { scale: this.scale, tx: this.tx, ty: this.ty };
   }
 
   select(sel: Selection | null, reveal = false) {
