@@ -7,6 +7,7 @@ import { loadRepo } from "../src/git/load.ts";
 import { nodeRunner } from "../src/git/nodeRunner.ts";
 import { branchNameFromMerge, inferModel, type Model } from "../src/model/infer.ts";
 import { layoutModel } from "../src/model/layout.ts";
+import { compileQuery, searchModel } from "../src/model/search.ts";
 
 const dirs: string[] = [];
 afterAll(() => dirs.forEach((d) => rmSync(d, { recursive: true, force: true })));
@@ -232,5 +233,42 @@ describe("branchNameFromMerge", () => {
     ["Fix the thing", undefined],
   ])("%s", (subject, expected) => {
     expect(branchNameFromMerge(subject, false)).toBe(expected);
+  });
+});
+
+describe("search", () => {
+  it("loads full multi-line messages", async () => {
+    const { git, model } = fixture();
+    git("commit", "-q", "--allow-empty", "-m", "Subject line", "-m", "Body paragraph\nwith two lines");
+    const m = await model();
+    const c = m.commits.get(m.order[0])!;
+    expect(c.subject).toBe("Subject line");
+    expect(c.body).toBe("Body paragraph\nwith two lines");
+  });
+
+  it("finds branch names, messages and changeset ids, with wildcards", async () => {
+    const { git, commit, model } = fixture();
+    commit("Initial import");
+    const login = commit("Add login form");
+    git("checkout", "-q", "-b", "feature/login-page");
+    commit("Style the login page");
+    git("branch", "release/1.2");
+    git("commit", "-q", "--allow-empty", "-m", "Tidy up", "-m", "Fixes the crash on logout");
+    const m = await model();
+    const names = (q: string) => searchModel(m, q)!.branches.map((id) => m.branches[id].name);
+    const messages = (q: string) => searchModel(m, q)!.commits.map((h) => m.commits.get(h)!.subject);
+
+    expect(searchModel(m, "   ")).toBeNull();
+    expect(names("LOGIN")).toEqual(["feature/login-page"]);
+    expect(names("feat*page")).toEqual(["feature/login-page"]);
+    expect(names("release/1.?")).toEqual(["release/1.2"]);
+    expect(names("release/1.?3")).toEqual([]);
+    // Newest first; the body is searched too.
+    expect(messages("log*")).toEqual(["Tidy up", "Style the login page", "Add login form"]);
+    expect(messages("crash on")).toEqual(["Tidy up"]);
+    expect(searchModel(m, login.slice(0, 7))!.commits).toEqual([login]);
+    // Regex characters are literal.
+    expect(messages("(")).toEqual([]);
+    expect(compileQuery("a.b")!.test("axb")).toBe(false);
   });
 });

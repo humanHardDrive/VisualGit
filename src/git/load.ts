@@ -17,6 +17,8 @@ export interface RawCommit {
   /** Author time, unix seconds. */
   time: number;
   subject: string;
+  /** Message after the subject line, trimmed; empty when there is none. */
+  body: string;
 }
 
 export interface RawRef {
@@ -49,6 +51,8 @@ export interface RawRepo {
 }
 
 const NUL = "\x00";
+/** Ends each log record, since message bodies span several lines. */
+const RS = "\x1e";
 
 async function tryRun(git: GitRunner, args: string[]): Promise<string | undefined> {
   try {
@@ -101,7 +105,7 @@ export async function loadRepo(git: GitRunner, opts: { maxCommits?: number } = {
       "--tags",
       "--date-order",
       `--max-count=${maxCommits + 1}`,
-      "--format=%H%x00%P%x00%an%x00%ae%x00%at%x00%s",
+      "--format=%H%x00%P%x00%an%x00%ae%x00%at%x00%s%x00%b%x1e",
     ];
     // Include a detached HEAD; on a branch it adds nothing.
     if (headHash && !headBranch) args.push("HEAD");
@@ -126,16 +130,18 @@ export async function loadRepo(git: GitRunner, opts: { maxCommits?: number } = {
 
 export function parseLog(out: string): RawCommit[] {
   const commits: RawCommit[] = [];
-  for (const line of out.split("\n")) {
+  for (const record of out.split(RS)) {
+    const line = record.replace(/^\n+/, "");
     if (!line) continue;
-    const [hash, parents, author, email, time, ...subject] = line.split(NUL);
+    const [hash, parents, author, email, time, subject, ...body] = line.split(NUL);
     commits.push({
       hash,
       parents: parents ? parents.split(" ") : [],
       author,
       email,
       time: Number(time),
-      subject: subject.join(NUL),
+      subject,
+      body: body.join(NUL).trim(),
     });
   }
   return commits;

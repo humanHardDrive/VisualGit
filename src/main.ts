@@ -1,9 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { loadRepo, type GitRunner } from "./git/load.ts";
 import { inTauri, tauriRunner } from "./git/tauriRunner.ts";
 import { inferModel, type Model } from "./model/infer.ts";
 import { layoutModel } from "./model/layout.ts";
+import { searchModel, type SearchResults } from "./model/search.ts";
 import { clearDetails, showBranch, showCommit } from "./view/details.ts";
 import { branchColor, Explorer, type Selection, type View } from "./view/explorer.ts";
 
@@ -23,7 +25,8 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 const canvas = $<HTMLCanvasElement>("explorer");
 const details = $("details");
 const branchList = $("branch-list");
-const branchFilter = $<HTMLInputElement>("filter");
+const searchInput = $<HTMLInputElement>("search");
+const searchPanel = $("search-results");
 const workspaceSection = $("workspace");
 const workspaceName = $("workspace-name");
 const repoList = $("repo-list");
@@ -76,11 +79,153 @@ function applySelection(sel: Selection | null, reveal: boolean) {
   selection = sel;
   explorer.select(sel, reveal);
   if (!model || !git || !sel) clearDetails(details);
-  else if (sel.kind === "commit") void showCommit(details, model, sel.hash, git, (s) => applySelection(s, true));
+  else if (sel.kind === "commit") showCommit(details, model, sel.hash, (s) => applySelection(s, true));
   else showBranch(details, model, sel.id, (s) => applySelection(s, true));
   renderBranches();
   updateNav();
 }
+
+// ---- search ---------------------------------------------------------------------
+
+const MAX_BRANCH_RESULTS = 50;
+const MAX_COMMIT_RESULTS = 200;
+
+let results: SearchResults | null = null;
+/** Result rows in display order, for keyboard navigation. */
+let resultRows: { sel: Selection; el: HTMLElement }[] = [];
+let activeResult = -1;
+
+/** Re-runs the query against the current model; `open` shows the results list. */
+function runSearch(open: boolean) {
+  results = model ? searchModel(model, searchInput.value) : null;
+  explorer.setMatches(results && { commits: new Set(results.commits), branches: new Set(results.branches) });
+  activeResult = -1;
+  renderResults();
+  searchPanel.hidden = !open || !results;
+}
+
+/** After a reload or repository switch: same query, new history. */
+function refreshSearch() {
+  runSearch(!searchPanel.hidden);
+}
+
+function clearSearch() {
+  searchInput.value = "";
+  runSearch(false);
+}
+
+function renderResults() {
+  if (!results || !model) {
+    resultRows = [];
+    searchPanel.replaceChildren();
+    return;
+  }
+  const m = model;
+  const rows: { sel: Selection; el: HTMLElement }[] = [];
+  const nodes: HTMLElement[] = [];
+  const div = (cls: string, text = "") => {
+    const d = document.createElement("div");
+    d.className = cls;
+    d.textContent = text;
+    return d;
+  };
+  const addRow = (sel: Selection, ...kids: HTMLElement[]) => {
+    const el = div("result");
+    el.setAttribute("role", "option");
+    el.append(...kids);
+    const i = rows.length;
+    // Keep focus in the search box, so the list doesn't close before the click lands.
+    el.onmousedown = (e) => e.preventDefault();
+    el.onclick = () => chooseResult(i, true);
+    rows.push({ sel, el });
+    nodes.push(el);
+  };
+  const more = (n: number, what: string) => {
+    if (n > 0) nodes.push(div("result-more", `and ${n.toLocaleString()} more ${what}; refine the search to see them`));
+  };
+
+  const { branches, commits } = results;
+  const plural = (n: number, one: string, many: string) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
+  nodes.push(
+    div(
+      "result-summary",
+      branches.length || commits.length
+        ? `${plural(branches.length, "branch", "branches")} · ${plural(commits.length, "changeset", "changesets")}`
+        : "No matches",
+    ),
+  );
+
+  if (branches.length) {
+    nodes.push(div("result-head", "Branches"));
+    for (const id of branches.slice(0, MAX_BRANCH_RESULTS)) {
+      const b = m.branches[id];
+      const swatch = div("swatch");
+      swatch.style.background = branchColor(m, id);
+      addRow({ kind: "branch", id }, swatch, div("result-text", b.name));
+    }
+    more(branches.length - MAX_BRANCH_RESULTS, "branches");
+  }
+  if (commits.length) {
+    nodes.push(div("result-head", "Changesets"));
+    for (const hash of commits.slice(0, MAX_COMMIT_RESULTS)) {
+      const c = m.commits.get(hash)!;
+      const owner = m.owner.get(hash)!;
+      const branch = div("result-meta", m.branches[owner].name);
+      branch.style.color = branchColor(m, owner);
+      addRow({ kind: "commit", hash }, div("result-id", hash.slice(0, 8)), div("result-text", c.subject || "(no message)"), branch);
+    }
+    more(commits.length - MAX_COMMIT_RESULTS, "changesets");
+  }
+  nodes.push(div("result-hint", "* matches anything · ? matches one character · ↑↓ to browse · Enter to go"));
+  resultRows = rows;
+  searchPanel.replaceChildren(...nodes);
+}
+
+function setActiveResult(i: number) {
+  resultRows[activeResult]?.el.classList.remove("active");
+  activeResult = i;
+  const row = resultRows[i];
+  if (!row) return;
+  row.el.classList.add("active");
+  row.el.scrollIntoView({ block: "nearest" });
+}
+
+/** Shows a result in the explorer; `close` also hands the keyboard back to the explorer. */
+function chooseResult(i: number, close: boolean) {
+  const row = resultRows[i];
+  if (!row) return;
+  setActiveResult(i);
+  applySelection(row.sel, true);
+  if (close) {
+    searchPanel.hidden = true;
+    searchInput.blur();
+  }
+}
+
+searchInput.addEventListener("input", () => runSearch(true));
+searchInput.addEventListener("focus", () => {
+  if (results) searchPanel.hidden = false;
+});
+searchInput.addEventListener("blur", () => {
+  searchPanel.hidden = true;
+});
+searchInput.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    if (!results) return;
+    searchPanel.hidden = false;
+    const n = resultRows.length;
+    if (n) chooseResult(e.key === "ArrowDown" ? (activeResult + 1) % n : (activeResult - 1 + n) % n, false);
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    chooseResult(Math.max(activeResult, 0), true);
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    e.stopPropagation();
+    clearSearch();
+    searchInput.blur();
+  }
+});
 
 // ---- changeset navigation --------------------------------------------------------
 
@@ -192,6 +337,8 @@ async function loadRepoAt(path: string, opts: { reload?: boolean; remembered?: b
     else emptyState.hidden = true;
 
     explorer.setData(next, layout, switching ? (saved.get(root)?.view ?? "latest") : "keep");
+    searchInput.disabled = false;
+    refreshSearch();
     applySelection(restoreSelection(next, keptSelection), false);
   } catch (err) {
     if (seq !== loadSeq) return;
@@ -205,6 +352,8 @@ async function loadRepoAt(path: string, opts: { reload?: boolean; remembered?: b
       git = null;
       model = null;
       explorer.clear();
+      searchInput.disabled = true;
+      refreshSearch();
       applySelection(null, false);
       repoPathEl.textContent = "";
       stats.textContent = "";
@@ -342,39 +491,36 @@ function renderBranches() {
     return;
   }
   const m = model;
-  const q = branchFilter.value.trim().toLowerCase();
   const selectedBranch =
     selection?.kind === "branch" ? selection.id : selection?.kind === "commit" ? m.owner.get(selection.hash) : undefined;
   const items: HTMLElement[] = [];
   const add = (id: number, depth: number) => {
     const b = m.branches[id];
-    if (!q || b.name.toLowerCase().includes(q)) {
-      const item = document.createElement("div");
-      item.className = "branch-item";
-      if (id === selectedBranch) item.classList.add("selected");
-      if (b.kind === "deleted" || b.kind === "anonymous") item.classList.add("dim");
-      item.style.paddingLeft = `${8 + (q ? 0 : depth) * 14}px`;
-      const swatch = document.createElement("span");
-      swatch.className = "swatch";
-      swatch.style.background = branchColor(m, id);
-      const name = document.createElement("span");
-      name.className = "name";
-      name.textContent = b.name;
-      name.title = b.name;
-      item.append(swatch, name);
-      const badge = (text: string, cls = "") => {
-        const s = document.createElement("span");
-        s.className = `badge ${cls}`;
-        s.textContent = text;
-        item.append(s);
-      };
-      if (b.isHead) badge("HEAD", "head");
-      if (b.commits.length === 0 && b.kind !== "trunk") badge("empty");
-      if (b.kind === "remote") badge("remote");
-      if (b.kind === "deleted") badge("deleted");
-      item.onclick = () => applySelection({ kind: "branch", id }, true);
-      items.push(item);
-    }
+    const item = document.createElement("div");
+    item.className = "branch-item";
+    if (id === selectedBranch) item.classList.add("selected");
+    if (b.kind === "deleted" || b.kind === "anonymous") item.classList.add("dim");
+    item.style.paddingLeft = `${8 + depth * 14}px`;
+    const swatch = document.createElement("span");
+    swatch.className = "swatch";
+    swatch.style.background = branchColor(m, id);
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = b.name;
+    name.title = b.name;
+    item.append(swatch, name);
+    const badge = (text: string, cls = "") => {
+      const s = document.createElement("span");
+      s.className = `badge ${cls}`;
+      s.textContent = text;
+      item.append(s);
+    };
+    if (b.isHead) badge("HEAD", "head");
+    if (b.commits.length === 0 && b.kind !== "trunk") badge("empty");
+    if (b.kind === "remote") badge("remote");
+    if (b.kind === "deleted") badge("deleted");
+    item.onclick = () => applySelection({ kind: "branch", id }, true);
+    items.push(item);
     for (const c of b.children) add(c, depth + 1);
   };
   for (const b of m.branches) if (b.parent === null) add(b.id, 0);
@@ -394,6 +540,8 @@ async function chooseWorkspace() {
       model = null;
       git = null;
       explorer.clear();
+      searchInput.disabled = true;
+      refreshSearch();
       applySelection(null, false);
       repoPathEl.textContent = "";
       stats.textContent = "";
@@ -413,8 +561,6 @@ function reload() {
   void rescanWorkspace();
 }
 
-$("open-workspace").addEventListener("click", () => void chooseWorkspace());
-$("open").addEventListener("click", () => void chooseRepo());
 $("rescan").addEventListener("click", () => void rescanWorkspace());
 reloadBtn.addEventListener("click", reload);
 navPrev.addEventListener("click", () => step(-1));
@@ -423,24 +569,18 @@ navHome.addEventListener("click", goHome);
 $("zoom-in").addEventListener("click", () => explorer.zoomBy(1.25));
 $("zoom-out").addEventListener("click", () => explorer.zoomBy(0.8));
 $("zoom-fit").addEventListener("click", () => explorer.fit());
-$("zoom-latest").addEventListener("click", () => explorer.latest());
-branchFilter.addEventListener("input", renderBranches);
 repoFilter.addEventListener("input", renderRepos);
 
 window.addEventListener("keydown", (e) => {
   const mod = e.metaKey || e.ctrlKey;
-  if (mod && e.shiftKey && e.key.toLowerCase() === "o") {
-    e.preventDefault();
-    void chooseWorkspace();
-  } else if (mod && e.key === "o") {
-    e.preventDefault();
-    void chooseRepo();
-  } else if (mod && e.key === "r") {
+  // ⌘O and ⇧⌘O are File menu accelerators (src-tauri/src/menu.rs).
+  if (mod && e.key === "r") {
     e.preventDefault();
     reload();
   } else if (mod && e.key === "f") {
     e.preventDefault();
-    branchFilter.focus();
+    searchInput.focus();
+    searchInput.select();
   } else if (mod && e.key === "[") {
     e.preventDefault();
     switchRepo(-1);
@@ -462,8 +602,20 @@ window.addEventListener("keydown", (e) => {
   } else if (e.key === "Home") {
     e.preventDefault();
     goHome();
-  } else if (e.key === "Escape") applySelection(null, false);
+  } else if (e.key === "Escape") {
+    // First Escape ends a search, the next clears the selection.
+    if (searchInput.value) clearSearch();
+    else applySelection(null, false);
+  }
 });
+
+// File menu commands.
+if (inTauri()) {
+  void listen<string>("menu", (e) => {
+    if (e.payload === "open-workspace") void chooseWorkspace();
+    else if (e.payload === "open-repository") void chooseRepo();
+  });
+}
 
 // Pick up commits, branch switches and new clones made while the window was in the background.
 window.addEventListener("focus", reload);
@@ -484,7 +636,6 @@ async function start() {
 
 if (!inTauri()) {
   showMessage("Run inside the desktop app", "VisualGit reads repositories through its Tauri backend. Start it with `npm run app`.");
-  for (const id of ["open", "open-workspace"]) $<HTMLButtonElement>(id).disabled = true;
 } else {
   void start();
 }

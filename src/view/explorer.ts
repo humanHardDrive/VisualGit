@@ -23,6 +23,12 @@ const PALETTE = ["#a371f7", "#e3a008", "#f0603c", "#1fb5d4", "#e85aad", "#f08c2e
 
 export type Selection = { kind: "commit"; hash: string } | { kind: "branch"; id: number };
 
+/** Search hits drawn highlighted; everything else is dimmed. */
+export interface Matches {
+  commits: Set<string>;
+  branches: Set<number>;
+}
+
 export interface View {
   scale: number;
   tx: number;
@@ -45,6 +51,7 @@ interface Theme {
   fork: string;
   nodeStroke: string;
   canvas: string;
+  match: string;
 }
 
 export interface ExplorerEvents {
@@ -63,6 +70,7 @@ export class Explorer {
   private ty = 0;
   private selection: Selection | null = null;
   private hovered: string | null = null;
+  private matches: Matches | null = null;
   private frame = 0;
   private theme!: Theme;
 
@@ -98,6 +106,13 @@ export class Explorer {
     this.model = undefined;
     this.layout = undefined;
     this.selection = null;
+    this.matches = null;
+    this.redraw();
+  }
+
+  /** Highlights search hits; null ends the search. */
+  setMatches(matches: Matches | null) {
+    this.matches = matches;
     this.redraw();
   }
 
@@ -340,6 +355,7 @@ export class Explorer {
       fork: v("--fork"),
       nodeStroke: v("--node-stroke"),
       canvas: v("--canvas"),
+      match: v("--match"),
     };
   }
 
@@ -392,6 +408,12 @@ export class Explorer {
       ctx.setLineDash(ghost || empty ? [5, 4] : []);
       ctx.stroke();
       ctx.setLineDash([]);
+      if (this.matches?.branches.has(b.id)) {
+        roundRect(ctx, left - 3, top - 3, right - left + 6, BAND_H + 6, 9);
+        ctx.lineWidth = 2.5 / Math.min(1, s);
+        ctx.strokeStyle = t.match;
+        ctx.stroke();
+      }
 
       if (s > 0.3) {
         const label = this.labelText(b);
@@ -478,6 +500,15 @@ export class Explorer {
       const tags = model.tags.get(hash);
       const isHead = hash === model.headHash;
       const r = isHead ? HEAD_R : NODE_R;
+      const hit = this.matches?.commits.has(hash);
+      // While searching, changesets that don't match (and aren't on a matching branch) fade back.
+      ctx.globalAlpha = this.matches && !hit && !this.matches.branches.has(id) ? 0.3 : 1;
+      if (hit) {
+        ctx.beginPath();
+        ctx.arc(x, y, r + 6, 0, Math.PI * 2);
+        ctx.fillStyle = withAlpha(t.match, 0.55);
+        ctx.fill();
+      }
       if (hash === selectedHash) {
         // Selection is a halo, so rings stay reserved for releases.
         ctx.beginPath();
@@ -514,6 +545,7 @@ export class Explorer {
         }
       }
     }
+    ctx.globalAlpha = 1;
 
     // Empty-branch stub marker: a hollow changeset-sized slot inside the pill.
     for (const span of layout.spans) {

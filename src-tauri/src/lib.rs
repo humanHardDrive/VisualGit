@@ -1,3 +1,4 @@
+mod menu;
 mod workspace;
 
 use std::path::Path;
@@ -95,6 +96,8 @@ fn initial_repo() -> Option<String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .menu(menu::build)
+        .on_menu_event(menu::handle)
         .invoke_handler(tauri::generate_handler![git, find_repos, initial_repo])
         .run(tauri::generate_context!())
         .expect("error while running VisualGit");

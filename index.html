@@ -9,8 +9,6 @@
   <body>
     <header class="toolbar">
       <div class="brand">VisualGit</div>
-      <button id="open-workspace" class="primary" title="Open a folder of repositories (⇧⌘O)">Open workspace…</button>
-      <button id="open" title="Open a single repository (⌘O)">Open repository…</button>
       <button id="reload" title="Reload (⌘R)" disabled>Reload</button>
       <div class="nav" role="group" aria-label="Changeset navigation">
         <button id="nav-prev" class="nav-btn" title="Previous changeset (←)" aria-label="Previous changeset" disabled>
@@ -23,15 +21,14 @@
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5" /></svg>
         </button>
       </div>
+      <div class="search" title="Search branch names, changesets and commit messages (⌘F). * matches anything, ? matches one character.">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="m10.5 10.5 3 3" /></svg>
+        <input id="search" type="search" placeholder="Search branches, changesets, comments" spellcheck="false" autocomplete="off" aria-label="Search" disabled />
+        <div id="search-results" class="search-results" role="listbox" hidden></div>
+      </div>
       <div id="repo-path" class="repo-path"></div>
       <div class="spacer"></div>
       <div id="stats" class="stats"></div>
-      <div class="zoom">
-        <button id="zoom-out" title="Zoom out (−)">−</button>
-        <button id="zoom-fit" title="Fit history (0)">Fit</button>
-        <button id="zoom-latest" title="Jump to latest (L)">Latest</button>
-        <button id="zoom-in" title="Zoom in (+)">+</button>
-      </div>
     </header>
     <main class="layout">
       <aside class="sidebar">
@@ -47,15 +44,19 @@
         <div class="section-head">
           <span class="section-title">Branches</span>
         </div>
-        <input id="filter" type="search" placeholder="Filter branches" spellcheck="false" />
         <div id="branch-list" class="branch-list"></div>
       </aside>
       <section class="canvas-wrap">
         <canvas id="explorer"></canvas>
         <div id="tooltip" class="tooltip" hidden></div>
+        <div class="zoom" role="group" aria-label="Zoom">
+          <button id="zoom-out" title="Zoom out (−)" aria-label="Zoom out">−</button>
+          <button id="zoom-fit" title="Fit history (0)">Fit</button>
+          <button id="zoom-in" title="Zoom in (+)" aria-label="Zoom in">+</button>
+        </div>
         <div id="empty-state" class="empty-state">
           <h1>Branch Explorer</h1>
-          <p>Open a workspace (the folder you keep your repositories in) to switch between all of them, or open a single repository.</p>
+          <p>Choose <b>File › Open Workspace…</b> (⇧⌘O) and pick the folder you keep your repositories in to switch between all of them, or <b>File › Open Repository…</b> (⌘O) for a single one.</p>
           <p>Each branch is a lane: changesets along it, where it was created, and how it merges back.</p>
           <p class="hint">Drag or scroll to pan · ⌘/Ctrl + scroll or pinch to zoom · click a changeset for details</p>
         </div>
