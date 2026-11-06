@@ -70,6 +70,8 @@ cd src-tauri && cargo test              # backend tests: command validation, wor
 | [src-tauri/src/workspace.rs](src-tauri/src/workspace.rs) | Finds the repositories inside a workspace folder |
 | [src-tauri/src/menu.rs](src-tauri/src/menu.rs) | Native menu bar (File › Open Workspace…, Open Repository…) |
 
+The About panel shows the version, author, copyright and the changeset the app was built from. The build stamps in the current `HEAD` ([src-tauri/build.rs](src-tauri/build.rs)). When building without a `.git` folder, set `VISUALGIT_CHANGESET` to provide it.
+
 The model code is plain TypeScript with no Tauri dependency, so it runs under Node in tests and in `npm run inspect`.
 
 ## Roadmap

@@ -1,6 +1,8 @@
 [package]
 name = "visualgit"
-version = "0.1.0"
+version = "1.0.0"
+authors = ["Sam Stratter"]
+repository = "https://github.com/humanHardDrive/VisualGit"
 description = "A free, open-source Git branch explorer inspired by Plastic SCM"
 license = "MIT"
 edition = "2021"
