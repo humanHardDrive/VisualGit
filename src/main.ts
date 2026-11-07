@@ -110,10 +110,10 @@ async function showContextMenu(sel: Selection) {
         enabled: !target.current,
         action: () => void switchTo(hash, target.branch),
       },
-      { id: "create-branch", text: "Create Branch from This Changeset…", enabled: true, action: () => openBranchDialog(hash) },
+      { id: "create-branch", text: "Create Branch from This Changeset", enabled: true, action: () => openBranchDialog(hash) },
       { item: "Separator" },
       // Merging the checked-out changeset into itself would do nothing.
-      { id: "merge-from", text: "Merge from This Changeset…", enabled: hash !== model.headHash, action: () => openMergeWindow(hash) },
+      { id: "merge-from", text: "Merge from This Changeset", enabled: hash !== model.headHash, action: () => openMergeWindow(hash) },
       { id: "cherry-pick", text: "Cherry Pick This Changeset", enabled: hash !== model.headHash, action: () => void cherryPick(hash) },
     );
   }
