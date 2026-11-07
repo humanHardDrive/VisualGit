@@ -74,6 +74,8 @@ export interface ExplorerEvents {
   onOpenPending(): void;
   /** Double-click on a committed changeset. */
   onOpenChangeset(hash: string): void;
+  /** Double-click on a branch's lane (not on one of its changesets). */
+  onOpenBranch(id: number): void;
 }
 
 export class Explorer {
@@ -343,6 +345,7 @@ export class Explorer {
       if (this.onHollowHead(sx, sy)) return this.events.onOpenPending();
       const hit = this.hitTest(sx, sy);
       if (hit?.kind === "commit") this.events.onOpenChangeset(hit.hash);
+      else if (hit?.kind === "branch") this.events.onOpenBranch(hit.id);
     });
     c.addEventListener("contextmenu", (e) => {
       // Replace the webview's own menu (Reload, Inspect) on the explorer.

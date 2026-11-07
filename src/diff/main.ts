@@ -1,8 +1,8 @@
 /**
- * Changeset diff window: what one committed changeset changed. Lists its
- * files and shows each one before (in the parent) and after (in the
- * changeset). A merge changeset can be compared with either parent.
- * Read-only.
+ * Diff window: what one committed changeset changed, or everything a branch
+ * changed (from the changeset it was created from to its latest). Lists the
+ * files and shows each one before and after. A merge changeset can be
+ * compared with either parent. Read-only.
  */
 
 import { goToNextChunk, goToPreviousChunk, MergeView } from "@codemirror/merge";
@@ -28,6 +28,8 @@ const nextBtn = $<HTMLButtonElement>("next-change");
 
 let repo = "";
 let changeset = "";
+/** Set when showing a whole branch rather than one changeset. */
+let branchName: string | null = null;
 let model: Model | null = null;
 let parents: string[] = [];
 /** Which parent the changeset is compared with (merges have several). */
@@ -67,7 +69,28 @@ async function textAt(rev: string | null, path: string): Promise<string | null> 
 
 // ---- header -----------------------------------------------------------------------------
 
+function renderBranchHeader(name: string) {
+  const b = model?.branches.find((x) => x.name === name);
+  const base = parents[0];
+  $("subject").textContent = `Changes on ${name}`;
+  const id = $("cs-id");
+  id.textContent = base ? `${base.slice(0, 8)} → ${changeset.slice(0, 8)}` : `up to ${changeset.slice(0, 8)}`;
+  id.title = base ? `From ${base} to ${changeset}` : changeset;
+  const branch = $("cs-branch");
+  branch.textContent = name;
+  branch.style.color = b && model ? branchColor(model, b.id) : "";
+  const n = b?.commits.length ?? 0;
+  $("cs-author").textContent = b ? `${n} changeset${n === 1 ? "" : "s"}` : "";
+  const first = b && model?.commits.get(b.commits[0]);
+  const last = model?.commits.get(changeset);
+  $("cs-date").textContent = first && last ? `${new Date(first.time * 1000).toLocaleDateString()} – ${new Date(last.time * 1000).toLocaleDateString()}` : "";
+  $("cs-tags").textContent = "";
+  $<HTMLDetailsElement>("cs-message").hidden = true;
+  document.title = `Changes on ${name}`;
+}
+
 function renderHeader() {
+  if (branchName) return renderBranchHeader(branchName);
   const c = model?.commits.get(changeset);
   const lane = laneOf(changeset);
   $("subject").textContent = c?.subject || "(no message)";
@@ -106,9 +129,15 @@ function renderParents() {
 
 function renderParentInfo() {
   const p = parent();
-  $("parent-info").textContent = p
-    ? `Compared with ${parents.length > 1 ? `parent ${parentIndex + 1}, ` : "its parent "}${p.slice(0, 8)}`
-    : "The first changeset: everything in it is new";
+  if (branchName) {
+    $("parent-info").textContent = p
+      ? `Since it was created from ${laneOf(p)?.name ?? ""} ${p.slice(0, 8)}`
+      : "From the start of history: everything is new";
+  } else {
+    $("parent-info").textContent = p
+      ? `Compared with ${parents.length > 1 ? `parent ${parentIndex + 1}, ` : "its parent "}${p.slice(0, 8)}`
+      : "The first changeset: everything in it is new";
+  }
   $("file-count").textContent = `${files.length} file${files.length === 1 ? "" : "s"} changed`;
 }
 
@@ -133,7 +162,7 @@ function renderFiles() {
   if (rows.length === 0) {
     const none = document.createElement("div");
     none.className = "file-empty";
-    none.textContent = "This changeset changes no files compared with this parent.";
+    none.textContent = branchName ? "This branch's changesets add up to no file changes." : "This changeset changes no files compared with this parent.";
     rows.push(none);
   }
   fileList.replaceChildren(...rows);
@@ -193,7 +222,7 @@ function updateDiffBar() {
   if (current?.origPath) diffTitle.prepend(`${current.origPath} → `);
   const p = parent();
   $("side-a").textContent = p ? `Before · ${laneOf(p)?.name ?? ""} ${p.slice(0, 8)}` : "Before · (nothing)";
-  $("side-b").textContent = `After · ${changeset.slice(0, 8)}`;
+  $("side-b").textContent = `After · ${branchName ? `${branchName} ` : ""}${changeset.slice(0, 8)}`;
   const chunks = view?.chunks ?? [];
   prevBtn.disabled = nextBtn.disabled = chunks.length === 0;
   if (!view) {
@@ -253,22 +282,28 @@ window.addEventListener("keydown", (e) => {
 });
 
 async function start() {
-  const info = await invoke<{ repo: string; changeset: string } | null>("diff_window_info");
+  const info = await invoke<{ repo: string; changeset: string; branch: string | null; base: string | null } | null>("diff_window_info");
   if (!info) {
     showMessage("This window has no changeset. Open it by double-clicking a changeset in the branch explorer.");
     return;
   }
   ({ repo, changeset } = info);
+  branchName = info.branch;
   try {
     model = inferModel(await loadRepo(git()));
   } catch {
     model = null; // the header gets less detail; the diff still works
   }
-  // Parents from git directly, so this works even for changesets the explorer didn't load.
-  const line = await git()
-    .run(["log", "-1", "--format=%P", changeset])
-    .catch(() => "");
-  parents = line.trim() ? line.trim().split(" ") : [];
+  if (branchName) {
+    // A branch is compared with where it started.
+    parents = info.base ? [info.base] : [];
+  } else {
+    // Parents from git directly, so this works even for changesets the explorer didn't load.
+    const line = await git()
+      .run(["log", "-1", "--format=%P", changeset])
+      .catch(() => "");
+    parents = line.trim() ? line.trim().split(" ") : [];
+  }
   renderHeader();
   renderParents();
   await loadFiles();

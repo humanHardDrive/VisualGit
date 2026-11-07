@@ -68,6 +68,8 @@ A repository with no remote-tracking branches shows none of this. To push a bran
 - **Diff:** each file before (in the parent) and after (in the changeset), with ↑/↓ or F7 / ⇧F7 to step through the changes.
 - **Merge changesets:** these can be compared with either parent.
 
+**Branch changes.** Double-click a branch, on its lane or in the sidebar, or right-click it and choose *View Changes*, to see everything it changed in one diff. That's from the changeset it was created from to its latest changeset. A root branch such as `main` is compared with nothing, so every file shows as added.
+
 Using it: drag or scroll to pan, ⌘/Ctrl + scroll (or pinch) to zoom, click a changeset or branch for details.
 
 **Pending Changes.** Double-click the hollow home symbol (uncommitted work), or right-click the checked-out changeset or its branch and choose *Pending Changes*. This opens a window for that repository:
