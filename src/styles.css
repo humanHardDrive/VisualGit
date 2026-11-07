@@ -197,6 +197,12 @@ button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 .dialog-actions button { padding: 5px 14px; }
 
+/* Change status letters, shared by every window. */
+.st-M, .st-T { color: #d97706; }
+.st-A, .st-C, .st-untracked { color: var(--merge); }
+.st-D, .st-U { color: #d1242f; }
+.st-R { color: var(--accent); }
+
 /* The View pane in the sidebar. */
 .view-list { display: flex; flex-direction: column; padding: 6px 0; }
 .view-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 10px; text-align: left; border: none; border-left: 2px solid transparent; border-radius: 0; background: none; }
@@ -233,7 +239,29 @@ button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(
 .workspace-table .branch-row { cursor: pointer; }
 .workspace-table .loading .name::after { content: " …"; color: var(--muted); }
 /* The welcome / "pick a repository" message would sit on top of the table. */
-.canvas-wrap[data-view="workspace"] .empty-state { display: none !important; }
+.canvas-wrap[data-view="workspace"] .empty-state, .canvas-wrap[data-view="files"] .empty-state { display: none !important; }
+/* Files view */
+.file-tree { padding: 0 0 4px; }
+/* Name (with the tree indent), last modified, modified by. */
+.tree-row { display: grid; grid-template-columns: minmax(0, 1fr) 180px 160px; align-items: center; column-gap: 12px; padding: 2px 10px; white-space: nowrap; cursor: default; }
+.tree-row:hover { background: var(--hover); }
+.tree-row.selected { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.tree-head { position: sticky; top: 0; z-index: 1; padding-top: 6px; padding-bottom: 6px; background: var(--panel); border-bottom: 1px solid var(--border); font-weight: 600; font-size: 12px; color: var(--muted); }
+.tree-head:hover { background: var(--panel); }
+.tree-main { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.tree-col { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.tree-date { color: var(--muted); font-size: 12px; }
+.tree-author { font-size: 12px; }
+.tree-col.muted { color: var(--muted); font-style: italic; }
+.twisty { width: 10px; flex: none; color: var(--muted); font-size: 10px; text-align: center; }
+.tree-icon { display: flex; flex: none; color: var(--muted); }
+.tree-icon svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linejoin: round; }
+.tree-icon.folder { color: var(--accent); }
+.tree-name { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.tree-row.changed .tree-name { font-weight: 600; }
+.tree-status { flex: none; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; font-weight: 700; }
+.tree-changed { flex: none; font-size: 10px; padding: 0 5px; border-radius: 8px; border: 1px solid #d97706; color: #d97706; }
+.tree-empty { padding: 16px 10px; color: var(--muted); text-align: center; }
 .branch-table-empty { padding: 16px 10px !important; color: var(--muted); text-align: center; }
 
 .tooltip {

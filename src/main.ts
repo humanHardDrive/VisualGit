@@ -8,7 +8,9 @@ import { inferModel, pendingChangesOn, uncommittedHead, type Model } from "./mod
 import { layoutModel } from "./model/layout.ts";
 import { searchModel, type SearchResults } from "./model/search.ts";
 import { branchRows, renderBranchList, type BranchSort } from "./view/branchList.ts";
-import { clearDetails, showBranch, showCommit } from "./view/details.ts";
+import { clearDetails, showBranch, showCommit, showFile } from "./view/details.ts";
+import { buildTree, loadFiles, loadLastChanges, type FileList, type Folder, type LastChange } from "./git/files.ts";
+import { fileRows, renderFiles, rowKey, type FileRow } from "./view/files.ts";
 import { branchColor, Explorer, type Selection, type View } from "./view/explorer.ts";
 import { filterRepos, renderWorkspaceList, type RepoInfo } from "./view/workspaceList.ts";
 
@@ -611,6 +613,7 @@ async function loadRepoAt(path: string, opts: { reload?: boolean; remembered?: b
     searchInput.disabled = false;
     refreshSearch();
     applySelection(restoreSelection(next, keptSelection), false);
+    void showFiles(); // refreshes the Files view's list (and statuses) if it's showing
   } catch (err) {
     if (seq !== loadSeq) return;
     if (opts.remembered) {
@@ -752,12 +755,12 @@ function switchRepo(delta: number) {
 
 // ---- views ---------------------------------------------------------------------
 
-type ViewName = "workspace" | "explorer" | "list";
+type ViewName = "workspace" | "explorer" | "list" | "files";
 const VIEW_KEY = "visualgit.view";
 const listView = $("branch-list-view");
 const zoomControls = document.querySelector<HTMLElement>(".zoom")!;
 const remembered = recall(VIEW_KEY);
-let currentView: ViewName = remembered === "list" || remembered === "workspace" ? remembered : "explorer";
+let currentView: ViewName = remembered === "list" || remembered === "workspace" || remembered === "files" ? remembered : "explorer";
 let branchSort: BranchSort = "tree";
 
 function showView(view: ViewName) {
@@ -774,8 +777,10 @@ function showView(view: ViewName) {
   $("explorer-bar").hidden = !explorerShown;
   $("list-bar").hidden = view !== "list";
   $("workspace-bar").hidden = view !== "workspace";
+  $("files-bar").hidden = view !== "files";
   listView.hidden = view !== "list";
   workspaceView.hidden = view !== "workspace";
+  filesView.hidden = view !== "files";
   if (!explorerShown) {
     $("tooltip").hidden = true;
     if (searchInput.value) clearSearch();
@@ -784,6 +789,8 @@ function showView(view: ViewName) {
   }
   renderBranchView();
   renderRepos();
+  if (view === "files") void showFiles();
+  else if (selectedFile) applySelection(selection, false); // the details panel goes back to the selection
 }
 
 for (const item of document.querySelectorAll<HTMLButtonElement>(".view-item")) {
@@ -838,6 +845,168 @@ branchSearch.addEventListener("keydown", (e) => {
     branchSearch.value = "";
     renderBranchView();
   }
+});
+
+// ---- files ---------------------------------------------------------------------------
+
+const filesView = $("files-view");
+const fileSearch = $<HTMLInputElement>("file-search");
+let files: { repo: string; list: FileList; tree: Folder } | null = null;
+/** Expanded folders, per repository. */
+const expandedFolders = new Map<string, Set<string>>();
+/** The selected row in the Files view: a file path, or a folder path ending in "/". */
+let selectedFile: string | null = null;
+let filesSeq = 0;
+/** Last changes per file, for one repository at one HEAD: history only changes when HEAD moves. */
+let lastChanges: { key: string; map: Map<string, LastChange> } | null = null;
+
+const expanded = () => {
+  let set = expandedFolders.get(repoPath ?? "");
+  if (!set) expandedFolders.set(repoPath ?? "", (set = new Set()));
+  return set;
+};
+
+/** Loads (or reloads) the file list when the Files view is showing. */
+async function showFiles() {
+  if (currentView !== "files") return;
+  if (!repoPath || !git) {
+    files = null;
+    filesView.replaceChildren();
+    $("file-count").textContent = "";
+    return;
+  }
+  const seq = ++filesSeq;
+  const path = repoPath;
+  try {
+    const list = await loadFiles(git);
+    if (seq !== filesSeq || repoPath !== path) return;
+    if (files?.repo !== path) selectedFile = null;
+    const key = `${path}\0${model?.headHash ?? ""}`;
+    if (lastChanges?.key === key) list.last = lastChanges.map;
+    files = { repo: path, list, tree: buildTree(list) };
+  } catch (err) {
+    if (seq === filesSeq) filesView.replaceChildren(Object.assign(document.createElement("div"), { className: "tree-empty", textContent: `Could not list files: ${err}` }));
+    return;
+  }
+  renderFileView();
+  showSelectedFile();
+  if (!files.list.last) void fillLastChanges(seq, path);
+}
+
+/** Fills in the date and author columns: one pass over history, after the tree is already showing. */
+async function fillLastChanges(seq: number, path: string) {
+  const runner = git;
+  if (!runner) return;
+  const key = `${path}\0${model?.headHash ?? ""}`;
+  let map: Map<string, LastChange>;
+  try {
+    map = await loadLastChanges(runner);
+  } catch {
+    map = new Map(); // e.g. no changesets yet: every file is "Not committed"
+  }
+  lastChanges = { key, map };
+  if (seq !== filesSeq || files?.repo !== path) return;
+  files.list.last = map;
+  files.tree = buildTree(files.list);
+  renderFileView();
+}
+
+function renderFileView() {
+  if (currentView !== "files" || !files) return;
+  const { list, tree } = files;
+  const changed = list.status.size;
+  $("file-count").textContent =
+    `${list.paths.length.toLocaleString()} file${list.paths.length === 1 ? "" : "s"}` + (changed ? ` · ${changed} with pending changes` : "");
+  renderFiles(filesView, tree, list, {
+    expanded: expanded(),
+    query: fileSearch.value,
+    selected: selectedFile,
+    onSelect: (r) => selectFileRow(r),
+    onOpen: (r) => openFileRow(r),
+  });
+}
+
+function selectFileRow(r: FileRow) {
+  selectedFile = rowKey(r);
+  if (r.kind === "folder") toggleFolder(r.folder.path);
+  else renderFileView();
+  showSelectedFile();
+}
+
+/** Folders open and close; a file with pending changes opens Pending Changes. */
+function openFileRow(r: FileRow) {
+  if (r.kind === "file" && files?.list.status.has(r.path)) openPendingChanges();
+}
+
+function toggleFolder(path: string, open?: boolean) {
+  const set = expanded();
+  if (open ?? !set.has(path)) set.add(path);
+  else set.delete(path);
+  renderFileView();
+}
+
+function showSelectedFile() {
+  if (currentView !== "files" || !files || !model || !git) return;
+  if (!selectedFile || selectedFile.endsWith("/")) return;
+  void showFile(details, model, selectedFile, files.list.status.get(selectedFile), git, (s) => {
+    showView("explorer");
+    applySelection(s, true);
+  });
+}
+
+/** Keyboard in the Files view: ↑/↓ move, ←/→ close/open folders, Enter opens. */
+function fileKey(key: string) {
+  if (!files) return;
+  const rows = fileRows(files.tree, files.list, expanded(), fileSearch.value);
+  if (rows.length === 0) return;
+  const at = rows.findIndex((r) => rowKey(r) === selectedFile);
+  const cur = rows[at];
+  if (key === "ArrowUp" || key === "ArrowDown") {
+    const next = rows[at < 0 ? 0 : Math.max(0, Math.min(rows.length - 1, at + (key === "ArrowUp" ? -1 : 1)))];
+    selectedFile = rowKey(next);
+    renderFileView();
+    showSelectedFile();
+  } else if (key === "ArrowRight" && cur?.kind === "folder") {
+    toggleFolder(cur.folder.path, true);
+  } else if (key === "ArrowLeft" && cur) {
+    if (cur.kind === "folder" && expanded().has(cur.folder.path)) toggleFolder(cur.folder.path, false);
+    else {
+      // Up to the containing folder.
+      const path = cur.kind === "folder" ? cur.folder.path : cur.path;
+      const i = path.lastIndexOf("/");
+      if (i > 0) {
+        selectedFile = `${path.slice(0, i)}/`;
+        renderFileView();
+      }
+    }
+  } else if (key === "Enter" && cur) {
+    if (cur.kind === "folder") toggleFolder(cur.folder.path);
+    else openFileRow(cur);
+  }
+}
+
+fileSearch.addEventListener("input", renderFileView);
+fileSearch.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "Enter") {
+    e.preventDefault();
+    fileKey(e.key);
+  } else if (e.key === "Escape" && fileSearch.value) {
+    e.preventDefault();
+    e.stopPropagation();
+    fileSearch.value = "";
+    renderFileView();
+  }
+});
+$("expand-all").addEventListener("click", () => {
+  if (!files) return;
+  const set = expanded();
+  const all = (f: Folder) => f.folders.forEach((s) => (set.add(s.path), all(s)));
+  all(files.tree);
+  renderFileView();
+});
+$("collapse-all").addEventListener("click", () => {
+  expanded().clear();
+  renderFileView();
 });
 
 /** ↑/↓ in the Branch List: select the row above or below. */
@@ -918,7 +1087,7 @@ window.addEventListener("keydown", (e) => {
   } else if (mod && e.key === "f") {
     e.preventDefault();
     // Each view has its own search.
-    const box = currentView === "list" ? branchSearch : currentView === "workspace" ? repoSearch : searchInput;
+    const box = currentView === "list" ? branchSearch : currentView === "workspace" ? repoSearch : currentView === "files" ? fileSearch : searchInput;
     box.focus();
     box.select();
   } else if (mod && e.key === "[") {
@@ -929,6 +1098,9 @@ window.addEventListener("keydown", (e) => {
     switchRepo(1);
   } else if (e.target instanceof HTMLInputElement) {
     if (e.key === "Escape") e.target.blur();
+  } else if (currentView === "files" && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter"].includes(e.key)) {
+    e.preventDefault();
+    fileKey(e.key);
   } else if (currentView === "list" && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
     e.preventDefault();
     stepRow(e.key === "ArrowUp" ? -1 : 1);
@@ -955,6 +1127,9 @@ window.addEventListener("keydown", (e) => {
     } else if (currentView === "workspace" && repoSearch.value) {
       repoSearch.value = "";
       renderRepos();
+    } else if (currentView === "files" && fileSearch.value) {
+      fileSearch.value = "";
+      renderFileView();
     } else if (searchInput.value) clearSearch();
     else applySelection(null, false);
   }

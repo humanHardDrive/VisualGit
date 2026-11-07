@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { loadChangesetFiles } from "../src/git/changeset.ts";
+import { buildTree, loadFiles, loadLastChanges } from "../src/git/files.ts";
 import { loadRepo } from "../src/git/load.ts";
 import { loadPendingChanges } from "../src/git/status.ts";
 import { nodeRunner } from "../src/git/nodeRunner.ts";
@@ -11,6 +12,7 @@ import { branchNameFromMerge, inferModel, pendingChangesOn, uncommittedHead, typ
 import { layoutModel } from "../src/model/layout.ts";
 import { compileQuery, searchModel } from "../src/model/search.ts";
 import { branchRows } from "../src/view/branchList.ts";
+import { fileRows, rowKey, type FileRow } from "../src/view/files.ts";
 
 const dirs: string[] = [];
 afterAll(() => dirs.forEach((d) => rmSync(d, { recursive: true, force: true })));
@@ -461,5 +463,73 @@ describe("branchRows", () => {
     expect(names(branchRows(m, "tree", "feat*tests"))).toEqual(["feature/login-tests"]);
     expect(names(branchRows(m, "name", "?ugfix"))).toEqual(["bugfix/crash"]);
     expect(branchRows(m, "tree", "nothing-like-this")).toEqual([]);
+  });
+});
+
+describe("files", () => {
+  it("lists tracked and new files as a tree, with pending changes counted per folder", async () => {
+    const { dir, git, commit } = fixture();
+    const write = (p: string, t: string) => {
+      mkdirSync(join(dir, p, ".."), { recursive: true });
+      writeFileSync(join(dir, p), t);
+    };
+    write("README.md", "r\n");
+    write("src/a.ts", "a\n");
+    write("src/view/b.ts", "b\n");
+    write(".gitignore", "build/\n");
+    git("add", ".");
+    commit("base");
+    write("src/view/b.ts", "b2\n"); // modified
+    write("src/new.ts", "n\n"); // untracked
+    write("build/out.js", "ignored\n"); // ignored: not listed
+    git("rm", "-q", "README.md"); // deleted, no longer in the index
+
+    const list = await loadFiles(nodeRunner(dir));
+    expect(list.paths).toEqual([".gitignore", "README.md", "src/a.ts", "src/new.ts", "src/view/b.ts"]);
+    expect(list.status.get("src/view/b.ts")?.letter).toBe("M");
+    expect(list.status.get("src/new.ts")?.letter).toBe("?");
+    expect(list.status.get("README.md")?.letter).toBe("D");
+    expect(list.status.has("src/a.ts")).toBe(false);
+
+    const tree = buildTree(list);
+    expect(tree.files).toEqual([".gitignore", "README.md"]);
+    expect(tree.folders.map((f) => f.name)).toEqual(["src"]);
+    const src = tree.folders[0];
+    expect(src.files).toEqual(["src/a.ts", "src/new.ts"]);
+    expect(src.folders[0].path).toBe("src/view");
+    expect([tree.changed, src.changed, src.folders[0].changed]).toEqual([3, 2, 1]);
+
+    // Rows: folders first; only expanded folders show their contents; a search flattens.
+    const keys = (rows: FileRow[]) => rows.map((r) => `${"  ".repeat(r.depth)}${rowKey(r)}`);
+    expect(keys(fileRows(tree, list, new Set(), ""))).toEqual(["src/", ".gitignore", "README.md"]);
+    expect(keys(fileRows(tree, list, new Set(["src"]), ""))).toEqual(["src/", "  src/view/", "  src/a.ts", "  src/new.ts", ".gitignore", "README.md"]);
+    expect(keys(fileRows(tree, list, new Set(), "*.ts"))).toEqual(["src/a.ts", "src/new.ts", "src/view/b.ts"]);
+  });
+
+  it("finds who last changed each file, and when, with folders taking their newest file", async () => {
+    const { dir, git, commit } = fixture();
+    const write = (p: string, t: string) => {
+      mkdirSync(join(dir, p, ".."), { recursive: true });
+      writeFileSync(join(dir, p), t);
+    };
+    write("old.txt", "o\n");
+    write("src/a.ts", "a\n");
+    git("add", ".");
+    const first = commit("first");
+    write("src/a.ts", "a2\n");
+    git("add", ".");
+    const second = commit("second");
+    write("src/new.ts", "n\n"); // never committed
+
+    const runner = nodeRunner(dir);
+    const list = await loadFiles(runner);
+    list.last = await loadLastChanges(runner);
+    expect(list.last.get("old.txt")?.hash).toBe(first);
+    expect(list.last.get("src/a.ts")?.hash).toBe(second);
+    expect(list.last.get("src/a.ts")?.author).toBe("Test");
+    expect(list.last.has("src/new.ts")).toBe(false);
+    const tree = buildTree(list);
+    expect(tree.folders[0].latest?.hash).toBe(second);
+    expect(tree.latest?.hash).toBe(second);
   });
 });

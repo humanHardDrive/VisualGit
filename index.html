@@ -31,6 +31,10 @@
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 4h9M5 8h9M5 12h9M2 4h.01M2 8h.01M2 12h.01" /></svg>
             Branch List
           </button>
+          <button class="view-item" data-view="files" aria-pressed="false">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2h5l3 3v9H4z M9 2v3h3" /></svg>
+            Files
+          </button>
         </nav>
       </aside>
       <section class="main-pane">
@@ -63,6 +67,15 @@
           </div>
           <span id="repo-count" class="stats"></span>
         </div>
+        <div id="files-bar" class="explorer-bar" hidden>
+          <div class="search" title="Search file paths (⌘F). * matches anything, ? matches one character.">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="m10.5 10.5 3 3" /></svg>
+            <input id="file-search" type="search" placeholder="Search files" spellcheck="false" autocomplete="off" aria-label="Search files" />
+          </div>
+          <button id="expand-all" title="Expand every folder">Expand All</button>
+          <button id="collapse-all" title="Collapse every folder">Collapse All</button>
+          <span id="file-count" class="stats"></span>
+        </div>
         <div id="list-bar" class="explorer-bar" hidden>
           <div class="search" title="Search branch names (⌘F). * matches anything, ? matches one character.">
             <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="m10.5 10.5 3 3" /></svg>
@@ -74,6 +87,7 @@
           <canvas id="explorer"></canvas>
           <div id="branch-list-view" class="branch-list-view" hidden></div>
           <div id="workspace-view" class="branch-list-view" hidden></div>
+          <div id="files-view" class="branch-list-view" tabindex="-1" hidden></div>
           <div id="tooltip" class="tooltip" hidden></div>
           <div id="toast" class="toast" role="status" hidden></div>
           <div class="zoom" role="group" aria-label="Zoom">

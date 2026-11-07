@@ -13,7 +13,7 @@ use workspace::RepoInfo;
 /// argument checks in `validate` pass.
 /// `status` would refresh the index's stat cache, but GIT_OPTIONAL_LOCKS=0
 /// (set in `run_git`) makes it skip that write.
-const ALLOWED: &[&str] = &["log", "show", "for-each-ref", "rev-parse", "reflog", "symbolic-ref", "status", "diff-tree"];
+const ALLOWED: &[&str] = &["log", "show", "for-each-ref", "rev-parse", "reflog", "symbolic-ref", "status", "diff-tree", "ls-files"];
 
 /// Rejects anything that could modify the repository or write files.
 fn validate(args: &[String]) -> Result<(), String> {
@@ -151,6 +151,7 @@ mod tests {
         assert!(v(&["for-each-ref", "refs/heads"]).is_ok());
         assert!(v(&["status", "--porcelain=v2", "-z", "--branch"]).is_ok());
         assert!(v(&["diff-tree", "-r", "-z", "--name-status", "HEAD~1", "HEAD"]).is_ok());
+        assert!(v(&["ls-files", "-z", "--others", "--exclude-standard"]).is_ok());
     }
 
     #[test]

@@ -40,7 +40,7 @@ VISUALGIT_REPO=/path/to/repo npm run app  # open a repository straight away
 
 The app opens whatever repository you pass as `visualgit /path/to/repo` or in `VISUALGIT_REPO`, otherwise the last one you opened.
 
-**Views.** The *View* pane in the sidebar switches between three views:
+**Views.** The *View* pane in the sidebar switches between four views:
 
 - **Workspace:** the repositories in the open workspace (see above).
 - **Branch Explorer:** the lanes.
@@ -48,6 +48,14 @@ The app opens whatever repository you pass as `visualgit /path/to/repo` or in `V
   - **What it shows:** each branch's lane colour, its badges (HEAD, empty, remote, deleted, not pushed), how many changesets it has, its latest changeset, and that changeset's author and date.
   - **Sorting:** branches are nested under their parent. Click *Branch* to sort them A–Z instead, or sort by *Changesets*, *Latest changeset* or *Date*.
   - **Using it:** click a row for details, double-click it (or press Enter) for its changes, and right-click it for the branch menu. ↑/↓ move between rows. The list has its own search box for branch names (⌘F), with the same `*` / `?` wildcards; ↑/↓ and Enter work from inside the box too.
+
+- **Files:** the repository's working copy as a folder tree. That's every tracked file, plus new files git isn't ignoring.
+  - **Pending changes:** files with pending changes show their status letter (M, A, D, ?, U), and each folder shows how many changed files it holds.
+  - **Last modified / Modified by:** when and by whom each file was last changed in a changeset. A folder shows its most recently changed file, and new files show *Not committed*. This takes one pass over the history, made after the tree appears and redone only when HEAD moves.
+  - **Selecting a file:** select one to see its status and the changeset that last changed it. Click that changeset to go to it in the Branch Explorer.
+  - **Opening:** double-click a changed file, or press Enter on it, to open Pending Changes.
+  - **Keys:** ↑/↓ move, ←/→ close and open folders, and ⌘F searches file paths (with `*` / `?`) as a flat list.
+  - *Expand All* and *Collapse All* do what they say. The list refreshes along with everything else.
 
 The Branch Explorer has its own bar along the top, with *Reload*, the changeset arrows and search. In the Branch List, that bar is replaced by the list's own search. VisualGit remembers which view you were using.
 
