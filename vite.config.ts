@@ -12,7 +12,7 @@ export default defineConfig({
   build: {
     target: "safari15",
     outDir: "dist",
-    // Pages: the branch explorer, the Pending Changes window and the merge window.
-    rollupOptions: { input: { main: "index.html", pending: "pending.html", merge: "merge.html" } },
+    // Pages: the branch explorer, and the Pending Changes, merge and changeset diff windows.
+    rollupOptions: { input: { main: "index.html", pending: "pending.html", merge: "merge.html", diff: "diff.html" } },
   },
 });

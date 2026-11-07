@@ -9,57 +9,98 @@
   <body>
     <header class="toolbar">
       <div class="brand">VisualGit</div>
-      <button id="reload" title="Reload (⌘R)" disabled>Reload</button>
-      <div class="nav" role="group" aria-label="Changeset navigation">
-        <button id="nav-prev" class="nav-btn" title="Previous changeset (←)" aria-label="Previous changeset" disabled>
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3 5 8l5 5" /></svg>
-        </button>
-        <button id="nav-home" class="nav-btn" title="Go to the checked-out changeset, HEAD (Home)" aria-label="Go to HEAD" disabled>
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 7.5 8 3l5.5 4.5M4 6.5V13h3V9.5h2V13h3V6.5" /></svg>
-        </button>
-        <button id="nav-next" class="nav-btn" title="Next changeset (→)" aria-label="Next changeset" disabled>
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5" /></svg>
-        </button>
-      </div>
-      <div class="search" title="Search branch names, changesets and commit messages (⌘F). * matches anything, ? matches one character.">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="m10.5 10.5 3 3" /></svg>
-        <input id="search" type="search" placeholder="Search branches, changesets, comments" spellcheck="false" autocomplete="off" aria-label="Search" disabled />
-        <div id="search-results" class="search-results" role="listbox" hidden></div>
-      </div>
       <div id="repo-path" class="repo-path"></div>
       <div class="spacer"></div>
       <div id="stats" class="stats"></div>
     </header>
     <main class="layout">
       <aside class="sidebar">
-        <section id="workspace" class="workspace" hidden>
-          <div class="section-head">
-            <span class="section-title">Repositories</span>
-            <span id="workspace-name" class="section-sub"></span>
-            <button id="rescan" class="icon" title="Rescan workspace for repositories">↻</button>
-          </div>
-          <input id="repo-filter" type="search" placeholder="Filter repositories" spellcheck="false" hidden />
-          <div id="repo-list" class="repo-list"></div>
-        </section>
         <div class="section-head">
-          <span class="section-title">Branches</span>
+          <span class="section-title">View</span>
         </div>
-        <div id="branch-list" class="branch-list"></div>
+        <nav class="view-list" aria-label="View">
+          <button class="view-item" data-view="workspace" aria-pressed="false">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5V12a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1H8L6.5 3.5H3A1 1 0 0 0 2 4.5Z" /></svg>
+            Workspace
+          </button>
+          <button class="view-item" data-view="explorer" aria-pressed="true">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h5M2 12h9M7 4h7M5 4v8M10 12h4" /><circle cx="5" cy="4" r="1.6" /><circle cx="11" cy="4" r="1.6" /><circle cx="11" cy="12" r="1.6" /></svg>
+            Branch Explorer
+          </button>
+          <button class="view-item" data-view="list" aria-pressed="false">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 4h9M5 8h9M5 12h9M2 4h.01M2 8h.01M2 12h.01" /></svg>
+            Branch List
+          </button>
+          <button class="view-item" data-view="files" aria-pressed="false">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2h5l3 3v9H4z M9 2v3h3" /></svg>
+            Files
+          </button>
+        </nav>
       </aside>
-      <section class="canvas-wrap">
-        <canvas id="explorer"></canvas>
-        <div id="tooltip" class="tooltip" hidden></div>
-        <div id="toast" class="toast" role="status" hidden></div>
-        <div class="zoom" role="group" aria-label="Zoom">
-          <button id="zoom-out" title="Zoom out (−)" aria-label="Zoom out">−</button>
-          <button id="zoom-fit" title="Fit history (0)">Fit</button>
-          <button id="zoom-in" title="Zoom in (+)" aria-label="Zoom in">+</button>
+      <section class="main-pane">
+        <div id="explorer-bar" class="explorer-bar">
+          <button id="reload" title="Reload (⌘R)" disabled>Reload</button>
+          <div class="nav" role="group" aria-label="Changeset navigation">
+            <button id="nav-prev" class="nav-btn" title="Previous changeset (←)" aria-label="Previous changeset" disabled>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3 5 8l5 5" /></svg>
+            </button>
+            <button id="nav-home" class="nav-btn" title="Go to the checked-out changeset, HEAD (Home)" aria-label="Go to HEAD" disabled>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 7.5 8 3l5.5 4.5M4 6.5V13h3V9.5h2V13h3V6.5" /></svg>
+            </button>
+            <button id="nav-next" class="nav-btn" title="Next changeset (→)" aria-label="Next changeset" disabled>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5" /></svg>
+            </button>
+          </div>
+          <div class="search" title="Search branch names, changesets and commit messages (⌘F). * matches anything, ? matches one character.">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="m10.5 10.5 3 3" /></svg>
+            <input id="search" type="search" placeholder="Search branches, changesets, comments" spellcheck="false" autocomplete="off" aria-label="Search" disabled />
+            <div id="search-results" class="search-results" role="listbox" hidden></div>
+          </div>
         </div>
-        <div id="empty-state" class="empty-state">
-          <h1>Branch Explorer</h1>
-          <p>Choose <b>File › Open Workspace…</b> (⇧⌘O) and pick the folder you keep your repositories in to switch between all of them, or <b>File › Open Repository…</b> (⌘O) for a single one.</p>
-          <p>Each branch is a lane: changesets along it, where it was created, and how it merges back.</p>
-          <p class="hint">Drag or scroll to pan · ⌘/Ctrl + scroll or pinch to zoom · click a changeset for details</p>
+        <div id="workspace-bar" class="explorer-bar" hidden>
+          <button id="open-workspace" title="Open a folder of repositories (⇧⌘O)">Open Workspace…</button>
+          <button id="rescan" title="Look for repositories again">Rescan</button>
+          <span id="workspace-name" class="workspace-name"></span>
+          <div class="search" title="Search repository names (⌘F). * matches anything, ? matches one character.">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="m10.5 10.5 3 3" /></svg>
+            <input id="repo-search" type="search" placeholder="Search repositories" spellcheck="false" autocomplete="off" aria-label="Search repositories" />
+          </div>
+          <span id="repo-count" class="stats"></span>
+        </div>
+        <div id="files-bar" class="explorer-bar" hidden>
+          <div class="search" title="Search file paths (⌘F). * matches anything, ? matches one character.">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="m10.5 10.5 3 3" /></svg>
+            <input id="file-search" type="search" placeholder="Search files" spellcheck="false" autocomplete="off" aria-label="Search files" />
+          </div>
+          <button id="expand-all" title="Expand every folder">Expand All</button>
+          <button id="collapse-all" title="Collapse every folder">Collapse All</button>
+          <span id="file-count" class="stats"></span>
+        </div>
+        <div id="list-bar" class="explorer-bar" hidden>
+          <div class="search" title="Search branch names (⌘F). * matches anything, ? matches one character.">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="m10.5 10.5 3 3" /></svg>
+            <input id="branch-search" type="search" placeholder="Search branch names" spellcheck="false" autocomplete="off" aria-label="Search branch names" />
+          </div>
+          <span id="branch-count" class="stats"></span>
+        </div>
+        <div id="canvas-wrap" class="canvas-wrap">
+          <canvas id="explorer"></canvas>
+          <div id="branch-list-view" class="branch-list-view" hidden></div>
+          <div id="workspace-view" class="branch-list-view" hidden></div>
+          <div id="files-view" class="branch-list-view" tabindex="-1" hidden></div>
+          <div id="tooltip" class="tooltip" hidden></div>
+          <div id="toast" class="toast" role="status" hidden></div>
+          <div class="zoom" role="group" aria-label="Zoom">
+            <button id="zoom-out" title="Zoom out (−)" aria-label="Zoom out">−</button>
+            <button id="zoom-fit" title="Fit history (0)">Fit</button>
+            <button id="zoom-in" title="Zoom in (+)" aria-label="Zoom in">+</button>
+          </div>
+          <div id="empty-state" class="empty-state">
+            <h1>Branch Explorer</h1>
+            <p>Choose <b>File › Open Workspace…</b> (⇧⌘O) and pick the folder you keep your repositories in to switch between all of them, or <b>File › Open Repository…</b> (⌘O) for a single one.</p>
+            <p>Each branch is a lane: changesets along it, where it was created, and how it merges back.</p>
+            <p class="hint">Drag or scroll to pan · ⌘/Ctrl + scroll or pinch to zoom · click a changeset for details</p>
+          </div>
         </div>
       </section>
       <aside id="details" class="details">

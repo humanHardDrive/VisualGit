@@ -28,9 +28,41 @@ npm run app                             # desktop app, hot reload
 VISUALGIT_REPO=/path/to/repo npm run app  # open a repository straight away
 ```
 
-**Workspaces.** Choose *File › Open Workspace…* and pick the folder you keep your repositories in (e.g. `~/Documents/GitHub`). VisualGit finds every repository up to four levels down, skipping hidden folders and `node_modules`/`target`-style build folders. They're listed in the sidebar with their checked-out branch, and one click switches between them. Each repository keeps its own zoom, scroll position and selection while you switch. The workspace and the last repository are reopened at the next launch. *File › Open Repository…* opens a single repository from anywhere.
+**Workspaces.** Choose *File › Open Workspace…* (or *Open Workspace…* in the Workspace view) and pick the folder you keep your repositories in, e.g. `~/Documents/GitHub`.
+
+- **Finding repositories:** VisualGit looks up to four levels down, skipping hidden folders and build folders such as `node_modules` and `target`.
+- **The Workspace view:** one of the entries under *View*. It lists every repository with what it has checked out and its path, and you can search their names with ⌘F.
+  - Click a repository to open it. Double-click it, or press Enter in the search box, to open it and go straight to the Branch Explorer.
+  - *Rescan* looks for new repositories.
+- **Remembered settings:** each repository keeps its own zoom, scroll position and selection while you switch. The workspace and the last repository reopen at the next launch.
+
+*File › Open Repository…* opens a single repository from anywhere.
 
 The app opens whatever repository you pass as `visualgit /path/to/repo` or in `VISUALGIT_REPO`, otherwise the last one you opened.
+
+**Views.** The *View* pane in the sidebar switches between four views:
+
+- **Workspace:** the repositories in the open workspace (see above).
+- **Branch Explorer:** the lanes.
+- **Branch List:** a table of every branch.
+  - **What it shows:** each branch's lane colour, its badges (HEAD, empty, remote, deleted, not pushed), how many changesets it has, its latest changeset, and that changeset's author and date.
+  - **Sorting:** branches are nested under their parent. Click *Branch* to sort them A–Z instead, or sort by *Changesets*, *Latest changeset* or *Date*.
+  - **Using it:** click a row for details, double-click it (or press Enter) for its changes, and right-click it for the branch menu. ↑/↓ move between rows. The list has its own search box for branch names (⌘F), with the same `*` / `?` wildcards; ↑/↓ and Enter work from inside the box too.
+
+- **Files:** the repository's working copy as a folder tree. That's every tracked file, plus new files git isn't ignoring.
+  - **Pending changes:** files with pending changes show their status letter (M, A, D, ?, U), and each folder shows how many changed files it holds.
+  - **Last modified / Modified by:** when and by whom each file was last changed in a changeset. A folder shows its most recently changed file, and new files show *Not committed*. This takes one pass over the history, made after the tree appears and redone only when HEAD moves.
+  - **Selecting a file:** select one to see its status and the changeset that last changed it. Click that changeset to go to it in the Branch Explorer.
+  - **Opening:** double-click a changed file, or press Enter on it, to open Pending Changes.
+  - **Keys:** ↑/↓ move, ←/→ close and open folders, and ⌘F searches file paths (with `*` / `?`) as a flat list.
+  - *Expand All* and *Collapse All* do what they say. The list refreshes along with everything else.
+  - **Right-click a file:**
+    - *Open* uses the default app. *Open With…* lets you pick an application on macOS; Windows shows its own chooser.
+    - *View History* opens every changeset that changed the file, newest first and following renames, with the file's diff at each one. ↑/↓ step through them, and double-clicking one shows everything else that changeset changed.
+    - *Ignore* adds the file's name (any folder), its extension (`*.ext`) or its exact path (`/path/to/file`) to the repository's `.gitignore`. Git keeps tracking a file that's already in source control until it's removed.
+    - *Delete…* asks whether to *Remove from Source Control*, which keeps the file on disk as a new, untracked file, or *Remove from Source Control and Disk*, which also moves it to the Trash. Either way it's a pending change for you to commit. A file that isn't in source control is just moved to the Trash, after asking.
+
+The Branch Explorer has its own bar along the top, with *Reload*, the changeset arrows and search. In the Branch List, that bar is replaced by the list's own search. VisualGit remembers which view you were using.
 
 The home symbol marks what's checked out. When you have uncommitted changes, an empty changeset is drawn at the end of the checked-out branch, after its latest changeset, with a hollow, dashed home symbol. A branch you've just created and switched to shows the same hollow home symbol in its empty slot. Right-click either one for *Pending Changes*.
 
@@ -56,14 +88,23 @@ The preview comes from `git merge-tree`, which computes the merge without touchi
 **What hasn't been pushed** is shown in orange, as of your last fetch:
 
 - A changeset that no remote-tracking branch contains gets a small up-arrow.
-- A branch shows ↑3 when three of its changesets aren't pushed, or *not pushed* if the branch itself has never been pushed. This appears on its lane, in the sidebar and in the details panel.
+- A branch shows ↑3 when three of its changesets aren't pushed, or *not pushed* if the branch itself has never been pushed. This appears on its lane, in the Branch List and in the details panel.
 - The toolbar shows how many changesets are waiting to be pushed in total.
 
-A repository with no remote-tracking branches shows none of this. To push a branch, right-click it (on its lane or in the sidebar) and choose *Push*. This is offered while the branch has changesets to push or has never been pushed. A branch with an upstream goes to it; a new branch is published to `origin` and tracks it from then on.
+A repository with no remote-tracking branches shows none of this. To push a branch, right-click it (on its lane in the Branch Explorer, or its row in the Branch List) and choose *Push*. This is offered while the branch has changesets to push or has never been pushed. A branch with an upstream goes to it; a new branch is published to `origin` and tracks it from then on.
+
+**Changeset diffs.** Double-click any committed changeset (or right-click it and choose *View Changes*) to open a window showing what it changed.
+
+- **Header:** its message, id, branch, author, date and release.
+- **Files:** the files it added, modified, deleted or renamed.
+- **Diff:** each file before (in the parent) and after (in the changeset). F7 / ⇧F7, or the arrows in the diff bar, step through the changes. The arrows above the file list, or ↑/↓ when you're not in the editor, move to the previous or next file.
+- **Merge changesets:** these can be compared with either parent.
+
+**Branch changes.** Double-click a branch, on its lane or its row in the Branch List, or right-click it and choose *View Changes*, to see everything it changed in one diff. That's from the changeset it was created from to its latest changeset. A root branch such as `main` is compared with nothing, so every file shows as added.
 
 Using it: drag or scroll to pan, ⌘/Ctrl + scroll (or pinch) to zoom, click a changeset or branch for details.
 
-**Pending Changes.** Double-click the checked-out changeset (the one with the home symbol), or right-click it or its branch and choose *Pending Changes*. This opens a window for that repository:
+**Pending Changes.** Double-click the hollow home symbol (uncommitted work), or right-click the checked-out changeset or its branch and choose *Pending Changes*. This opens a window for that repository:
 
 - **Files** on the left: every changed, new, deleted, renamed or conflicted file, each with a checkbox. Ticked files go into the next commit.
 - **Diff** on the right: the checked-out changeset next to your working copy. ↑/↓ in the diff bar (or F7 / ⇧F7) move from change to change, and the arrows between the sides put the committed text back over a change.
@@ -72,16 +113,16 @@ Using it: drag or scroll to pan, ⌘/Ctrl + scroll (or pinch) to zoom, click a c
 
 The window refreshes when it regains focus, and the branch explorer reloads after each commit.
 
-**Search.** The search box in the toolbar (⌘F) looks through branch names, changeset ids and commit messages (the full message, not just the first line), plus release names. Matching ignores case and finds the text anywhere, and two wildcards are supported: `*` matches any run of characters and `?` matches exactly one, so `feat*login` finds `feature/login-page` and `v1.?` finds `v1.2`. A changeset id matches from its start once you've typed four or more hex digits. Matches are highlighted in the explorer and everything else fades back. ↑/↓ steps through the results list, Enter jumps to one, Esc ends the search.
+**Search.** The search box in the Branch Explorer's bar (⌘F) looks through branch names, changeset ids and commit messages (the full message, not just the first line), plus release names. Matching ignores case and finds the text anywhere, and two wildcards are supported: `*` matches any run of characters and `?` matches exactly one, so `feat*login` finds `feature/login-page` and `v1.?` finds `v1.2`. A changeset id matches from its start once you've typed four or more hex digits. Matches are highlighted in the explorer and everything else fades back. ↑/↓ steps through the results list, Enter jumps to one, Esc ends the search.
 
 | Key | Action |
 | --- | --- |
 | `⇧⌘O` / `⌘O` | File › Open Workspace… / Open Repository… |
 | `⌘[` / `⌘]` | Previous / next repository in the workspace |
-| `⌘R` | Reload (also happens when the window regains focus, so terminal commits show up) |
-| `←` / `→` | Previous / next changeset along the selected branch (also the toolbar arrows) |
-| `Home` | Go to the checked-out changeset (HEAD) |
-| `⌘F` | Search branches, changesets and commit messages |
+| `⌘R` | Reload, in either view (it also happens when the window regains focus, so terminal commits show up) |
+| `←` / `→` | Previous / next changeset along the selected branch (Branch Explorer; also its bar's arrows) |
+| `Home` | Go to the checked-out changeset, HEAD (Branch Explorer) |
+| `⌘F` | Search: branches, changesets and messages in the Branch Explorer; branch names in the Branch List |
 | `+` / `-` / `0` / `L` | Zoom in / out / fit / jump to latest |
 
 ### Development
