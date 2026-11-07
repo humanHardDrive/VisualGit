@@ -66,6 +66,21 @@
         <div class="placeholder">Select a changeset or branch</div>
       </aside>
     </main>
+    <dialog id="branch-dialog" class="dialog" aria-labelledby="branch-dialog-title">
+      <form id="branch-form" method="dialog">
+        <h2 id="branch-dialog-title">Create branch</h2>
+        <p class="dialog-sub">From changeset <span id="branch-from" class="mono"></span> on <span id="branch-from-branch"></span></p>
+        <label class="field">Name
+          <input id="branch-name" type="text" spellcheck="false" autocomplete="off" placeholder="feature/my-change" required />
+        </label>
+        <div id="branch-error" class="dialog-error" role="alert"></div>
+        <label class="check"><input id="branch-switch" type="checkbox" /> Switch to the new branch</label>
+        <div class="dialog-actions">
+          <button type="button" id="branch-cancel">Cancel</button>
+          <button type="submit" id="branch-create" class="primary">Create</button>
+        </div>
+      </form>
+    </dialog>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

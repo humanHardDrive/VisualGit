@@ -101,9 +101,15 @@ mod tests {
         }
     }
 
+    /// A fresh folder per call. Tests run in parallel and the clock only ticks
+    /// in microseconds on macOS, so a timestamp alone let two tests share (and
+    /// delete) one folder; the counter keeps every name distinct.
     fn temp_root() -> TempDir {
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let p = std::env::temp_dir().join(format!("visualgit-scan-{}-{nanos}", std::process::id()));
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let p = std::env::temp_dir().join(format!("visualgit-scan-{}-{n}", std::process::id()));
+        let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
         TempDir(p)
     }

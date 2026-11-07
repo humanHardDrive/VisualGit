@@ -5,16 +5,18 @@
  */
 
 import { goToNextChunk, goToPreviousChunk, MergeView } from "@codemirror/merge";
-import { Compartment, EditorState, Prec, type Extension } from "@codemirror/state";
+import { Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { invoke } from "@tauri-apps/api/core";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
 import { emit } from "@tauri-apps/api/event";
 import { Menu } from "@tauri-apps/api/menu";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { basicSetup } from "codemirror";
 import { loadPendingChanges, type PendingChanges, type PendingFile } from "../git/status.ts";
 import { tauriRunner } from "../git/tauriRunner.ts";
+import { dark, lineEndings, readOnly, theme, themeSlot } from "../view/codemirror.ts";
 
 /** Mirrors `FileText` in src-tauri/src/pending.rs. */
 interface FileText {
@@ -145,35 +147,13 @@ checkAll.addEventListener("change", () => {
 let busy = false;
 
 function updateCommitButton() {
-  commitBtn.disabled = commitMore.disabled = busy || !messageBox.value.trim() || selectedFiles().length === 0;
+  const files = selectedFiles().length;
+  commitBtn.disabled = busy || !messageBox.value.trim() || files === 0;
+  // The drop-down also offers Undo Changes, which needs files but no message.
+  commitMore.disabled = busy || files === 0;
 }
 
 // ---- diff -------------------------------------------------------------------------------
-
-const dark = matchMedia("(prefers-color-scheme: dark)");
-const themeSlot = new Compartment();
-const theme = (): Extension =>
-  EditorView.theme(
-    {
-      "&": { backgroundColor: "var(--canvas)", color: "var(--text)", fontSize: "12px" },
-      ".cm-content": { fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", caretColor: "var(--text)" },
-      ".cm-gutters": { backgroundColor: "var(--panel)", color: "var(--muted)", borderRight: "1px solid var(--border)" },
-      ".cm-activeLine": { backgroundColor: "color-mix(in srgb, var(--hover) 60%, transparent)" },
-      ".cm-activeLineGutter": { backgroundColor: "var(--hover)" },
-      "&.cm-focused .cm-cursor": { borderLeftColor: "var(--text)" },
-      "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground": {
-        backgroundColor: "color-mix(in srgb, var(--accent) 30%, transparent)",
-      },
-      "&.cm-merge-a .cm-changedLine, .cm-deletedChunk": { backgroundColor: "rgba(238, 68, 51, 0.12)" },
-      "&.cm-merge-b .cm-changedLine": { backgroundColor: "rgba(34, 187, 34, 0.12)" },
-    },
-    { dark: dark.matches },
-  );
-
-/** Keep CRLF files CRLF: CodeMirror otherwise rejoins lines with "\n" on save. */
-const lineEndings = (text: string): Extension => (text.includes("\r\n") ? EditorState.lineSeparator.of("\r\n") : []);
-
-const readOnly: Extension = [EditorState.readOnly.of(true), EditorView.editable.of(false)];
 
 function showMessage(text: string) {
   open?.view.destroy();
@@ -307,9 +287,61 @@ async function selectFile(f: PendingFile) {
   await loadDiff(f);
 }
 
+// ---- merge or cherry pick in progress -------------------------------------------------
+
+/** Mirrors `Operation` in src-tauri/src/merge.rs. */
+interface Operation {
+  kind: "merge" | "cherry pick";
+  from: string | null;
+  message: string | null;
+}
+
+let operation: Operation | null = null;
+/** The prepared message we put in the box, so it is only filled in once and can be cleared on abort. */
+let prefilled: string | null = null;
+
+async function refreshOperation() {
+  operation = await invoke<Operation | null>("operation_in_progress", { repo }).catch(() => null);
+  const bar = $("operation");
+  bar.hidden = !operation;
+  if (!operation) return;
+  const what = operation.kind === "merge" ? "Merging" : "Cherry picking";
+  $("operation-text").textContent =
+    `${what} ${operation.from?.slice(0, 8) ?? ""}. Resolve any conflicts, then commit; the commit includes every changed file. Or abort to put everything back as it was.`;
+  if (operation.message && !messageBox.value.trim() && prefilled !== operation.message) {
+    messageBox.value = prefilled = operation.message;
+    updateCommitButton();
+  }
+}
+
+$("abort").addEventListener("click", async () => {
+  if (!operation) return;
+  const ok = await ask(`Abort the ${operation.kind}? Its changes, including any conflict resolutions, are discarded.`, {
+    title: `Abort ${operation.kind}`,
+    kind: "warning",
+    okLabel: "Abort",
+    cancelLabel: "Keep Going",
+  });
+  if (!ok) return;
+  open?.view.destroy();
+  open = null;
+  try {
+    await invoke("abort_operation", { repo });
+    setStatus(`Aborted the ${operation.kind}`, "ok");
+    if (messageBox.value === prefilled) messageBox.value = "";
+    prefilled = null;
+    announce();
+  } catch (err) {
+    setStatus(String(err), "error");
+  }
+  current = null;
+  await refresh();
+});
+
 // ---- refresh and commit --------------------------------------------------------------
 
 async function refresh() {
+  void refreshOperation();
   try {
     pending = await loadPendingChanges(tauriRunner(repo));
   } catch (err) {
@@ -372,14 +404,56 @@ async function commit(andPush = false) {
   await refresh();
 }
 
+/** True for files the checked-out changeset doesn't have: undoing them means removing them. */
+const isNew = (f: PendingFile) => !!f.untracked || f.staged === "A" || f.staged === "C" || (f.staged === "R" && !!f.origPath) || !pending.head;
+
+/** Puts the selected files back as they are in the checked-out changeset, after asking. */
+async function undoChanges() {
+  const files = selectedFiles();
+  if (busy || files.length === 0) return;
+  const created = files.filter(isNew).map((f) => f.path);
+  // Tracked files go back to their committed content; a rename also restores its old path.
+  const tracked = files.flatMap((f) => (isNew(f) ? (f.staged === "R" && f.origPath ? [f.origPath] : []) : [f.path]));
+  const what = files.length === 1 ? files[0].path : `${files.length} files`;
+  const ok = await ask(
+    `Undo the changes to ${what}? Their content goes back to the checked-out changeset and your edits are lost.` +
+      (created.length ? `
+
+New files (${created.length}) are moved to the Trash.` : ""),
+    { title: "Undo Changes", kind: "warning", okLabel: "Undo Changes", cancelLabel: "Cancel" },
+  );
+  if (!ok) return;
+  // Unsaved edits to an undone file are dropped, not saved first.
+  if (open && files.some((f) => f.path === open!.path)) {
+    open.view.destroy();
+    open = null;
+  }
+  busy = true;
+  updateCommitButton();
+  try {
+    await invoke("undo_changes", { repo, tracked, created });
+    setStatus(`Undid changes to ${what}`, "ok");
+    announce();
+  } catch (err) {
+    setStatus(String(err), "error");
+  }
+  busy = false;
+  if (current && files.some((f) => f.path === current!.path)) current = null;
+  await refresh();
+}
+
 commitBtn.addEventListener("click", () => void commit());
 commitMore.addEventListener("click", async () => {
   const left = commitBtn.getBoundingClientRect().left;
   const bottom = commitMore.getBoundingClientRect().bottom;
+  const canCommit = !!messageBox.value.trim();
+  const n = selectedFiles().length;
   const menu = await Menu.new({
     items: [
-      { id: "commit", text: "Commit", accelerator: "CmdOrCtrl+Enter", action: () => void commit() },
-      { id: "commit-push", text: "Commit & Push", accelerator: "CmdOrCtrl+Shift+Enter", action: () => void commit(true) },
+      { id: "commit", text: "Commit", accelerator: "CmdOrCtrl+Enter", enabled: canCommit, action: () => void commit() },
+      { id: "commit-push", text: "Commit & Push", accelerator: "CmdOrCtrl+Shift+Enter", enabled: canCommit, action: () => void commit(true) },
+      { item: "Separator" },
+      { id: "undo", text: `Undo Changes${n === 1 ? "" : ` (${n} files)`}…`, action: () => void undoChanges() },
     ],
   });
   // Drop down under the split button, lined up with its left edge.
