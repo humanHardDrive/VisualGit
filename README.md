@@ -34,6 +34,10 @@ The app opens whatever repository you pass as `visualgit /path/to/repo` or in `V
 
 The home symbol marks what's checked out. When you have uncommitted changes, an empty changeset is drawn at the end of the checked-out branch, after its latest changeset, with a hollow, dashed home symbol. A branch you've just created and switched to shows the same hollow home symbol in its empty slot. Right-click either one for *Pending Changes*.
 
+**Creating branches.** Right-click any changeset and choose *Create Branch from This Changeset…*. Type a name and choose whether to switch to the new branch. Switching is ticked by default when you start from the checked-out changeset, so any work in progress comes along. The new branch shows up straight away as its own empty lane, starting at that changeset.
+
+**Switching.** Right-click a branch and choose *Switch to This Branch* to move HEAD to its latest changeset. For a remote-only branch, this first creates a local branch that tracks it. For a deleted or unnamed lane, it checks out the lane's last changeset as a detached HEAD. You can also right-click a changeset and choose *Switch to This Changeset*. If it's the tip of a local branch, you switch to that branch (the menu names it). Otherwise the changeset is checked out on its own, as a detached HEAD: create a branch there before committing. If you have pending changes to tracked files, the switch waits: the Pending Changes window opens so you can commit them first. New, untracked files don't block a switch and stay where they are.
+
 **What hasn't been pushed** is shown in orange, as of your last fetch:
 
 - A changeset that no remote-tracking branch contains gets a small up-arrow.
@@ -99,7 +103,7 @@ The model code is plain TypeScript with no Tauri dependency, so it runs under No
 ## Roadmap
 
 - **Branch metadata ref**: when you create a branch from VisualGit, record `{name, parent, base, created}` under `refs/visualgit/`. It can be pushed and fetched, so everyone sees the same branch tree, not just the machine where the reflog lives.
-- Create, switch and delete branches from the explorer (right-click a changeset → "Create branch here").
+- Delete branches from the explorer.
 - Merge from the explorer, with the merge arrow previewed before you commit.
 - Diff viewer for changesets and for "what does this branch change".
 - Filters: hide merged/deleted branches, date range, author.
