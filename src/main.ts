@@ -103,6 +103,8 @@ async function showContextMenu(sel: Selection) {
   if (sel.kind === "commit") {
     const hash = sel.hash;
     const target = switchTarget(model, hash);
+    // The double-click action, so it comes first.
+    items.unshift({ id: "view-changes", text: "View Changes", enabled: true, action: () => openDiffWindow(hash) });
     items.push(
       { item: "Separator" },
       {

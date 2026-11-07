@@ -61,7 +61,7 @@ The preview comes from `git merge-tree`, which computes the merge without touchi
 
 A repository with no remote-tracking branches shows none of this. To push a branch, right-click it (on its lane or in the sidebar) and choose *Push*. This is offered while the branch has changesets to push or has never been pushed. A branch with an upstream goes to it; a new branch is published to `origin` and tracks it from then on.
 
-**Changeset diffs.** Double-click any committed changeset to open a window showing what it changed.
+**Changeset diffs.** Double-click any committed changeset (or right-click it and choose *View Changes*) to open a window showing what it changed.
 
 - **Header:** its message, id, branch, author, date and release.
 - **Files:** the files it added, modified, deleted or renamed.
