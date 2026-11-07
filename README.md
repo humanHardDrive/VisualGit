@@ -38,6 +38,21 @@ The home symbol marks what's checked out. When you have uncommitted changes, an 
 
 **Switching.** Right-click a branch and choose *Switch to This Branch* to move HEAD to its latest changeset. For a remote-only branch, this first creates a local branch that tracks it. For a deleted or unnamed lane, it checks out the lane's last changeset as a detached HEAD. You can also right-click a changeset and choose *Switch to This Changeset*. If it's the tip of a local branch, you switch to that branch (the menu names it). Otherwise the changeset is checked out on its own, as a detached HEAD: create a branch there before committing. If you have pending changes to tracked files, the switch waits: the Pending Changes window opens so you can commit them first. New, untracked files don't block a switch and stay where they are.
 
+**Merging (preview).** Right-click a changeset and choose *Merge from This Changeset…* to see what merging it into the checked-out changeset would do, without changing anything.
+
+- **The window:** shows *From* → *Into*, how many files change, and whether it merges cleanly or has conflicts. Git's own messages are there too, if you want them.
+- **The file list:** every file the merge changes, with conflicts listed first.
+- **The diff:** each file's merge result next to either *Into* (what you have now) or *From* (what's coming in). The result of a conflicted file shows git's conflict markers. ↑/↓ or F7 / ⇧F7 step through the changes.
+
+The preview comes from `git merge-tree`, which computes the merge without touching your files, the index or any branch.
+
+**Cherry picking.** Right-click a changeset and choose *Cherry Pick This Changeset* to copy its changes onto the checked-out changeset, as a new changeset with the same message.
+
+- **Merge changesets:** these are picked as the change they made to their first parent.
+- **Already included:** a changeset that's already part of what's checked out is refused.
+- **Pending changes:** if you have any, Pending Changes opens first so you can commit them.
+- **Conflicts:** the cherry pick stops and Pending Changes opens. A banner explains what's happening, and git's message is already filled in. Resolve the conflicts and commit, or *Abort* to put everything back. A merge that stops with conflicts works the same way.
+
 **What hasn't been pushed** is shown in orange, as of your last fetch:
 
 - A changeset that no remote-tracking branch contains gets a small up-arrow.
@@ -93,6 +108,7 @@ cd src-tauri && cargo test              # backend tests: command validation, wor
 | [src-tauri/src/lib.rs](src-tauri/src/lib.rs) | Rust backend: one `git` command that only allows read-only subcommands |
 | [src-tauri/src/pending.rs](src-tauri/src/pending.rs) | The commands that change things: open the Pending Changes window, read and save working-tree files (paths checked to stay inside the repository), commit selected files |
 | [src/pending/main.ts](src/pending/main.ts) | Pending Changes window: file list, diff editor ([CodeMirror](https://codemirror.net) merge view), commit box |
+| [src/merge/main.ts](src/merge/main.ts), [src-tauri/src/merge.rs](src-tauri/src/merge.rs) | Merge window: previews merging a changeset into the checked-out one (`git merge-tree`) |
 | [src-tauri/src/workspace.rs](src-tauri/src/workspace.rs) | Finds the repositories inside a workspace folder |
 | [src-tauri/src/menu.rs](src-tauri/src/menu.rs) | Native menu bar (File › Open Workspace…, Open Repository…) |
 
@@ -104,7 +120,7 @@ The model code is plain TypeScript with no Tauri dependency, so it runs under No
 
 - **Branch metadata ref**: when you create a branch from VisualGit, record `{name, parent, base, created}` under `refs/visualgit/`. It can be pushed and fetched, so everyone sees the same branch tree, not just the machine where the reflog lives.
 - Delete branches from the explorer.
-- Merge from the explorer, with the merge arrow previewed before you commit.
+- Carry out a previewed merge, resolving conflicts in the merge window.
 - Diff viewer for changesets and for "what does this branch change".
 - Filters: hide merged/deleted branches, date range, author.
 - Performance for very large histories (incremental loading, a WebGL renderer).

@@ -1,5 +1,6 @@
 mod branch;
 mod menu;
+mod merge;
 mod pending;
 mod workspace;
 
@@ -103,6 +104,7 @@ pub fn run() {
         .menu(menu::build)
         .on_menu_event(menu::handle)
         .manage(pending::PendingWindows::default())
+        .manage(merge::MergeWindows::default())
         .invoke_handler(tauri::generate_handler![
             git,
             find_repos,
@@ -118,6 +120,12 @@ pub fn run() {
             branch::create_branch,
             branch::switch_to_changeset,
             branch::switch_to_remote_branch,
+            merge::open_merge_window,
+            merge::merge_window_info,
+            merge::merge_preview,
+            merge::cherry_pick,
+            merge::operation_in_progress,
+            merge::abort_operation,
         ])
         .run(tauri::generate_context!())
         .expect("error while running VisualGit");

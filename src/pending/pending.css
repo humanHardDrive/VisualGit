@@ -26,6 +26,11 @@
 .commit-status.error { color: #d1242f; }
 .commit-status.ok { color: var(--merge); }
 
+/* A merge or cherry pick waiting for its conflicts to be resolved. */
+.operation-bar { display: flex; align-items: center; gap: 10px; padding: 6px 12px; background: color-mix(in srgb, #d97706 14%, var(--panel)); border-bottom: 1px solid var(--border); }
+.operation-bar span { flex: 1; min-width: 0; }
+.operation-bar button { flex: none; }
+
 .pending-layout { flex: 1; display: grid; grid-template-columns: 300px 1fr; min-height: 0; }
 
 .file-pane { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); background: var(--panel); }

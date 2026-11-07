@@ -110,7 +110,11 @@ async function showContextMenu(sel: Selection) {
         enabled: !target.current,
         action: () => void switchTo(hash, target.branch),
       },
-      { id: "create-branch", text: "Create Branch from This Changeset…", enabled: true, action: () => openBranchDialog(hash) },
+      { id: "create-branch", text: "Create Branch from This Changeset", enabled: true, action: () => openBranchDialog(hash) },
+      { item: "Separator" },
+      // Merging the checked-out changeset into itself would do nothing.
+      { id: "merge-from", text: "Merge from This Changeset", enabled: hash !== model.headHash, action: () => openMergeWindow(hash) },
+      { id: "cherry-pick", text: "Cherry Pick This Changeset", enabled: hash !== model.headHash, action: () => void cherryPick(hash) },
     );
   }
   if (sel.kind === "branch") {
@@ -170,18 +174,49 @@ function switchToBranchCall(b: Model["branches"][number]): ((repo: string) => Pr
   return last ? (repo) => invoke<string>("switch_to_changeset", { repo, at: last, branch: null }) : null;
 }
 
+/** Applies a changeset on top of HEAD; on conflicts, Pending Changes takes over. */
+async function cherryPick(hash: string) {
+  if (!repoPath || !git || !model) return;
+  const path = repoPath;
+  const short = hash.slice(0, 8);
+  if (await hasPendingChanges("cherry picking")) return;
+  notify(`Cherry picking ${short}…`);
+  try {
+    const result = await invoke<{ committed: string | null; conflicts: string[] }>("cherry_pick", { repo: path, at: hash });
+    if (result.committed) {
+      notify(`Cherry picked ${short} as ${result.committed.slice(0, 8)}.`, "ok");
+    } else {
+      const n = result.conflicts.length;
+      notify(`Cherry picking ${short} stopped with conflicts in ${n} file${n === 1 ? "" : "s"}. Resolve them in Pending Changes and commit, or abort there.`, "error");
+      openPendingChanges();
+    }
+  } catch (err) {
+    notify(`Could not cherry pick ${short}: ${err}`, "error");
+    return;
+  }
+  if (repoPath !== path) return;
+  await loadRepoAt(path, { reload: true });
+  goHome();
+}
+
+/**
+ * True (after opening Pending Changes) when tracked files have uncommitted
+ * changes, which should be committed before `doing` something to HEAD.
+ * Untracked files don't get in the way and simply stay put.
+ */
+async function hasPendingChanges(doing: string): Promise<boolean> {
+  const status = await git!.run(["status", "--porcelain", "-z", "--untracked-files=no"]).catch(() => "");
+  if (!status) return false;
+  openPendingChanges();
+  notify(`You have pending changes. Commit them in Pending Changes before ${doing}.`);
+  return true;
+}
+
 /** Runs a switch unless there are pending changes, then reloads and shows the new HEAD. */
 async function runSwitch(label: string, call: (repo: string) => Promise<string>) {
   if (!repoPath || !git) return;
   const path = repoPath;
-  // Pending changes to tracked files: review or commit them before moving away.
-  // (Untracked files don't get in the way and simply stay put.)
-  const status = await git.run(["status", "--porcelain", "-z", "--untracked-files=no"]).catch(() => "");
-  if (status) {
-    openPendingChanges();
-    notify("You have pending changes. Commit them in Pending Changes, then switch again.");
-    return;
-  }
+  if (await hasPendingChanges("switching")) return;
   notify(`Switching to ${label}…`);
   try {
     notify(`${await call(path)}.`, "ok");
@@ -276,6 +311,11 @@ async function pushBranch(branch: string) {
     notify(`Could not push ${branch}: ${err}`, "error");
   }
   if (repoPath === path) reload();
+}
+
+/** Opens the merge window previewing `hash` merged into the checked-out changeset. */
+function openMergeWindow(hash: string) {
+  if (repoPath) void invoke("open_merge_window", { repo: repoPath, from: hash }).catch((err) => notify(`Could not open the merge window: ${err}`, "error"));
 }
 
 /** Opens (or brings forward) the Pending Changes window for the open repository. */
