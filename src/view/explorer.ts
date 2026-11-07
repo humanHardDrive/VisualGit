@@ -70,8 +70,10 @@ export interface ExplorerEvents {
   onSelect(sel: Selection | null): void;
   /** Right-click on a changeset or branch, after it has been selected. */
   onContextMenu(sel: Selection): void;
-  /** Double-click on the checked-out changeset or the hollow HEAD marker over uncommitted work. */
+  /** Double-click on the hollow HEAD marker over uncommitted work. */
   onOpenPending(): void;
+  /** Double-click on a committed changeset. */
+  onOpenChangeset(hash: string): void;
 }
 
 export class Explorer {
@@ -338,8 +340,9 @@ export class Explorer {
       const r = c.getBoundingClientRect();
       const sx = e.clientX - r.left;
       const sy = e.clientY - r.top;
+      if (this.onHollowHead(sx, sy)) return this.events.onOpenPending();
       const hit = this.hitTest(sx, sy);
-      if ((hit?.kind === "commit" && hit.hash === this.model?.headHash) || this.onHollowHead(sx, sy)) this.events.onOpenPending();
+      if (hit?.kind === "commit") this.events.onOpenChangeset(hit.hash);
     });
     c.addEventListener("contextmenu", (e) => {
       // Replace the webview's own menu (Reload, Inspect) on the explorer.

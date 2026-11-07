@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Changeset</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <link rel="stylesheet" href="/src/pending/pending.css" />
+    <link rel="stylesheet" href="/src/merge/merge.css" />
+    <link rel="stylesheet" href="/src/diff/diff.css" />
+  </head>
+  <body class="diff-window">
+    <header class="merge-head">
+      <h1 id="subject" class="cs-subject"></h1>
+      <div class="cs-meta">
+        <span id="cs-id" class="mono"></span>
+        <span id="cs-branch" class="merge-branch"></span>
+        <span id="cs-author"></span>
+        <span id="cs-date"></span>
+        <span id="cs-tags" class="cs-tags"></span>
+      </div>
+      <details id="cs-message" class="merge-messages" hidden>
+        <summary>Full message</summary>
+        <pre id="cs-message-text"></pre>
+      </details>
+    </header>
+    <main class="pending-layout">
+      <aside class="file-pane">
+        <div class="file-head"><span id="file-count" class="check-all">Files</span></div>
+        <div id="parent-info" class="branch-info"></div>
+        <div id="file-list" class="file-list" role="listbox" aria-label="Files this changeset changed"></div>
+      </aside>
+      <section class="diff-pane">
+        <div class="diff-bar">
+          <div id="diff-title" class="diff-title"></div>
+          <div class="spacer"></div>
+          <div id="parents" class="segmented" role="radiogroup" aria-label="Compare with parent" hidden>
+            <span class="segmented-label">Compared with</span>
+          </div>
+          <span id="change-count" class="change-count"></span>
+          <div class="nav" role="group" aria-label="Change navigation">
+            <button id="prev-change" class="nav-btn" title="Previous change (⇧F7)" aria-label="Previous change" disabled>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 10 5-5 5 5" /></svg>
+            </button>
+            <button id="next-change" class="nav-btn" title="Next change (F7)" aria-label="Next change" disabled>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 6 5 5 5-5" /></svg>
+            </button>
+          </div>
+        </div>
+        <div class="diff-sides"><span id="side-a">Before</span><span id="side-b">After</span></div>
+        <div id="diff" class="diff"></div>
+        <div id="diff-message" class="diff-message" hidden></div>
+      </section>
+    </main>
+    <script type="module" src="/src/diff/main.ts"></script>
+  </body>
+</html>

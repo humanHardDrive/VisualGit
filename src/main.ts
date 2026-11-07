@@ -57,6 +57,7 @@ const explorer = new Explorer(canvas, $("tooltip"), {
   onSelect: (sel) => applySelection(sel, false),
   onContextMenu: (sel) => void showContextMenu(sel),
   onOpenPending: openPendingChanges,
+  onOpenChangeset: (hash) => openDiffWindow(hash),
 });
 
 // ---- storage ---------------------------------------------------------------
@@ -311,6 +312,11 @@ async function pushBranch(branch: string) {
     notify(`Could not push ${branch}: ${err}`, "error");
   }
   if (repoPath === path) reload();
+}
+
+/** Opens the diff window showing what changeset `hash` changed. */
+function openDiffWindow(hash: string) {
+  if (repoPath) void invoke("open_diff_window", { repo: repoPath, at: hash }).catch((err) => notify(`Could not open the changeset: ${err}`, "error"));
 }
 
 /** Opens the merge window previewing `hash` merged into the checked-out changeset. */

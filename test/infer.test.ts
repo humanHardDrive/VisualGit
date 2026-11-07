@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { loadChangesetFiles } from "../src/git/changeset.ts";
 import { loadRepo } from "../src/git/load.ts";
 import { loadPendingChanges } from "../src/git/status.ts";
 import { nodeRunner } from "../src/git/nodeRunner.ts";
@@ -403,5 +404,37 @@ describe("unpushed", () => {
     expect(m.unpushed.size).toBe(0);
     expect(branch(m, "local-only").published).toBe(true);
     expect(branch(m, "local-only").unpushed).toBe(0);
+  });
+});
+
+describe("changeset files", () => {
+  it("lists what a changeset added, changed, deleted and renamed", async () => {
+    const { dir, git, commit } = fixture();
+    const write = (p: string, t: string) => writeFileSync(join(dir, p), t);
+    write("a.txt", "a\n");
+    write("old name.txt", "same content for rename detection\n");
+    write("gone.txt", "g\n");
+    git("add", ".");
+    const first = commit("first");
+    write("a.txt", "a2\n");
+    write("new.txt", "n\n");
+    git("rm", "-q", "gone.txt");
+    git("mv", "old name.txt", "new name.txt");
+    git("add", ".");
+    const second = commit("second");
+    const runner = nodeRunner(dir);
+
+    expect(await loadChangesetFiles(runner, second, first)).toEqual([
+      { status: "M", path: "a.txt" },
+      { status: "D", path: "gone.txt" },
+      { status: "R", origPath: "old name.txt", path: "new name.txt" },
+      { status: "A", path: "new.txt" },
+    ]);
+    // The first changeset: everything is added.
+    expect((await loadChangesetFiles(runner, first, null)).map((f) => `${f.status} ${f.path}`)).toEqual([
+      "A a.txt",
+      "A gone.txt",
+      "A old name.txt",
+    ]);
   });
 });
