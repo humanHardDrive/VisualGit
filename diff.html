@@ -26,7 +26,17 @@
     </header>
     <main class="pending-layout">
       <aside class="file-pane">
-        <div class="file-head"><span id="file-count" class="check-all">Files</span></div>
+        <div class="file-head">
+          <span id="file-count" class="check-all">Files</span>
+          <div class="nav" role="group" aria-label="File navigation">
+            <button id="prev-file" class="nav-btn" title="Previous file (↑)" aria-label="Previous file" disabled>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13V3M4 7l4-4 4 4" /></svg>
+            </button>
+            <button id="next-file" class="nav-btn" title="Next file (↓)" aria-label="Next file" disabled>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M4 9l4 4 4-4" /></svg>
+            </button>
+          </div>
+        </div>
         <div id="parent-info" class="branch-info"></div>
         <div id="file-list" class="file-list" role="listbox" aria-label="Files this changeset changed"></div>
       </aside>

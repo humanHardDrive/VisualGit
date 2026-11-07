@@ -65,7 +65,7 @@ A repository with no remote-tracking branches shows none of this. To push a bran
 
 - **Header:** its message, id, branch, author, date and release.
 - **Files:** the files it added, modified, deleted or renamed.
-- **Diff:** each file before (in the parent) and after (in the changeset), with ↑/↓ or F7 / ⇧F7 to step through the changes.
+- **Diff:** each file before (in the parent) and after (in the changeset). F7 / ⇧F7, or the arrows in the diff bar, step through the changes. The arrows above the file list, or ↑/↓ when you're not in the editor, move to the previous or next file.
 - **Merge changesets:** these can be compared with either parent.
 
 **Branch changes.** Double-click a branch, on its lane or in the sidebar, or right-click it and choose *View Changes*, to see everything it changed in one diff. That's from the changeset it was created from to its latest changeset. A root branch such as `main` is compared with nothing, so every file shows as added.

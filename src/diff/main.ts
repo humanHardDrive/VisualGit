@@ -25,6 +25,8 @@ const diffTitle = $("diff-title");
 const changeCount = $("change-count");
 const prevBtn = $<HTMLButtonElement>("prev-change");
 const nextBtn = $<HTMLButtonElement>("next-change");
+const prevFileBtn = $<HTMLButtonElement>("prev-file");
+const nextFileBtn = $<HTMLButtonElement>("next-file");
 
 let repo = "";
 let changeset = "";
@@ -166,6 +168,17 @@ function renderFiles() {
     rows.push(none);
   }
   fileList.replaceChildren(...rows);
+  fileList.querySelector(".current")?.scrollIntoView({ block: "nearest" });
+  const i = current ? files.indexOf(current) : -1;
+  prevFileBtn.disabled = i <= 0;
+  nextFileBtn.disabled = i < 0 || i >= files.length - 1;
+}
+
+/** Moves to the previous or next file in the list. */
+function stepFile(dir: 1 | -1) {
+  const i = current ? files.indexOf(current) : -1;
+  const next = files[i + dir];
+  if (next) void selectFile(next);
 }
 
 // ---- diff -----------------------------------------------------------------------------------
@@ -268,6 +281,8 @@ async function chooseParent(i: number) {
   await loadFiles();
 }
 
+prevFileBtn.addEventListener("click", () => stepFile(-1));
+nextFileBtn.addEventListener("click", () => stepFile(1));
 prevBtn.addEventListener("click", () => step(-1));
 nextBtn.addEventListener("click", () => step(1));
 dark.addEventListener("change", () => {
@@ -278,6 +293,10 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "F7") {
     e.preventDefault();
     step(e.shiftKey ? -1 : 1);
+  } else if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !(e.target instanceof Element && e.target.closest(".cm-editor"))) {
+    // Outside the editor (where arrows move the cursor), ↑/↓ move between files.
+    e.preventDefault();
+    stepFile(e.key === "ArrowUp" ? -1 : 1);
   }
 });
 
