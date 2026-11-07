@@ -48,6 +48,8 @@ export interface RawRepo {
   reflogs: Map<string, ReflogEntry[]>;
   /** True when history was cut off at `maxCommits`. */
   truncated: boolean;
+  /** The working tree or index differs from HEAD (including untracked files). */
+  pendingChanges: boolean;
 }
 
 const NUL = "\x00";
@@ -65,7 +67,7 @@ async function tryRun(git: GitRunner, args: string[]): Promise<string | undefine
 export async function loadRepo(git: GitRunner, opts: { maxCommits?: number } = {}): Promise<RawRepo> {
   const maxCommits = opts.maxCommits ?? 20000;
 
-  const [headHashOut, headRefOut, remoteHeadOut, refsOut, reflogOut] = await Promise.all([
+  const [headHashOut, headRefOut, remoteHeadOut, refsOut, reflogOut, statusOut] = await Promise.all([
     tryRun(git, ["rev-parse", "--verify", "-q", "HEAD"]),
     tryRun(git, ["symbolic-ref", "-q", "HEAD"]),
     tryRun(git, ["symbolic-ref", "-q", "refs/remotes/origin/HEAD"]),
@@ -77,6 +79,8 @@ export async function loadRepo(git: GitRunner, opts: { maxCommits?: number } = {
       "refs/tags",
     ]),
     tryRun(git, ["reflog", "show", "--all", "--date=unix", "--format=%gD%x00%H%x00%gs"]),
+    // Any output at all means pending changes. Fails harmlessly in a bare repository.
+    tryRun(git, ["status", "--porcelain", "-z", "--untracked-files=normal"]),
   ]);
 
   const headHash = headHashOut?.trim() || undefined;
@@ -125,6 +129,7 @@ export async function loadRepo(git: GitRunner, opts: { maxCommits?: number } = {
     remoteDefault,
     reflogs: parseReflog(reflogOut ?? ""),
     truncated,
+    pendingChanges: !!statusOut,
   };
 }
 

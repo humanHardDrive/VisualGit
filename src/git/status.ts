@@ -29,7 +29,7 @@ export interface PendingChanges {
   files: PendingFile[];
 }
 
-export const STATUS_ARGS = ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=normal"];
+export const STATUS_ARGS = ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"];
 
 export async function loadPendingChanges(git: GitRunner): Promise<PendingChanges> {
   return parseStatus(await git.run(STATUS_ARGS));

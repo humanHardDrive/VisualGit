@@ -221,18 +221,3 @@ button.icon:hover { color: var(--text); }
 .details pre { white-space: pre-wrap; word-break: break-word; font-family: inherit; margin: 0 0 14px; color: var(--text); }
 .details h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin: 14px 0 6px; }
 
-/* Pending Changes */
-.details-head { display: flex; align-items: flex-start; gap: 6px; }
-.details-head h2 { flex: 1; }
-.details .files { display: flex; flex-direction: column; gap: 1px; margin-bottom: 6px; }
-.file { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; min-width: 0; }
-.file-status { flex: none; width: 14px; text-align: center; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; font-weight: 700; }
-/* The folder shrinks with an ellipsis first; the file name stays readable. */
-.file-path { display: flex; min-width: 0; white-space: nowrap; }
-.file-dir { color: var(--muted); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.file-name { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
-.st-M, .st-T { color: #d97706; }
-.st-A, .st-C, .st-untracked { color: var(--merge); }
-.st-D { color: #d1242f; }
-.st-R { color: var(--accent); }
-.st-U { color: #d1242f; }

@@ -59,6 +59,8 @@ export interface Model {
   headHash?: string;
   headBranch?: string;
   truncated: boolean;
+  /** The working tree has uncommitted changes. */
+  pendingChanges: boolean;
 }
 
 const TRUNK_NAMES = ["main", "master", "trunk", "develop"];
@@ -322,6 +324,7 @@ export function inferModel(raw: RawRepo): Model {
     headHash: raw.headHash,
     headBranch: raw.headBranch,
     truncated: raw.truncated,
+    pendingChanges: raw.pendingChanges,
   };
 }
 
@@ -332,6 +335,16 @@ export function inferModel(raw: RawRepo): Model {
  */
 export function uncommittedHead(model: Model): Branch | undefined {
   return model.branches.find((b) => b.isHead && b.commits.length === 0);
+}
+
+/**
+ * The checked-out branch, when it has changesets and the working tree has
+ * uncommitted changes: it gets an empty "pending changes" changeset after its
+ * latest one, which carries the HEAD marker.
+ */
+export function pendingChangesOn(model: Model): Branch | undefined {
+  if (!model.pendingChanges) return undefined;
+  return model.branches.find((b) => b.isHead && b.commits.length > 0 && b.commits[b.commits.length - 1] === model.headHash);
 }
 
 function compareKey(a: [number, number, string], b: [number, number, string]) {

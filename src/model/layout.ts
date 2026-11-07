@@ -5,7 +5,7 @@
  * when their column spans do not overlap.
  */
 
-import type { Model } from "./infer.ts";
+import { pendingChangesOn, type Model } from "./infer.ts";
 
 export interface Span {
   branch: number;
@@ -17,6 +17,8 @@ export interface Span {
   /** First and last owned commit columns; `null` for empty branches. */
   firstCol: number | null;
   lastCol: number | null;
+  /** Column of the empty "pending changes" changeset after the lane's latest one, if any. */
+  pendingCol: number | null;
 }
 
 export interface Edge {
@@ -58,13 +60,15 @@ export function layoutModel(model: Model): Layout {
     });
   }
 
+  const pendingOn = pendingChangesOn(model)?.id;
   const spans: Span[] = model.branches.map((b) => {
     const firstCol = b.commits.length ? col(b.commits[0]) : null;
     const lastCol = b.commits.length ? col(b.commits[b.commits.length - 1]) : null;
     const baseCol = b.base !== null ? col(b.base) : null;
     const startCol = baseCol ?? firstCol ?? 0;
-    const endCol = Math.max(lastCol ?? startCol + 1, mergedInto.get(b.id) ?? 0);
-    return { branch: b.id, row: 0, startCol, endCol, firstCol, lastCol };
+    const pendingCol = b.id === pendingOn && lastCol !== null ? lastCol + 1 : null;
+    const endCol = Math.max(lastCol ?? startCol + 1, pendingCol ?? 0, mergedInto.get(b.id) ?? 0);
+    return { branch: b.id, row: 0, startCol, endCol, firstCol, lastCol, pendingCol };
   });
 
   // Depth-first: trunk, then other roots; children by fork column.
@@ -98,5 +102,7 @@ export function layoutModel(model: Model): Layout {
     (occupied[row] ??= []).push([lo, hi]);
   }
 
-  return { spans, rows: occupied.length, cols: model.order.length, edges };
+  // The pending-changes bubble can sit one column past the newest changeset.
+  const cols = Math.max(model.order.length, ...spans.map((s) => (s.pendingCol ?? 0) + 1));
+  return { spans, rows: occupied.length, cols, edges };
 }

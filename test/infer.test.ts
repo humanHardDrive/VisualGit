@@ -6,7 +6,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { loadRepo } from "../src/git/load.ts";
 import { loadPendingChanges } from "../src/git/status.ts";
 import { nodeRunner } from "../src/git/nodeRunner.ts";
-import { branchNameFromMerge, inferModel, uncommittedHead, type Model } from "../src/model/infer.ts";
+import { branchNameFromMerge, inferModel, pendingChangesOn, uncommittedHead, type Model } from "../src/model/infer.ts";
 import { layoutModel } from "../src/model/layout.ts";
 import { compileQuery, searchModel } from "../src/model/search.ts";
 
@@ -335,5 +335,34 @@ describe("uncommittedHead", () => {
     expect(uncommittedHead(m)?.name).toBe("fresh");
     commit("f1");
     expect(uncommittedHead(await model())).toBeUndefined();
+  });
+});
+
+describe("pendingChangesOn", () => {
+  it("adds a pending-changes changeset after HEAD when the working tree is dirty", async () => {
+    const { dir, git, commit, model } = fixture();
+    commit("m1");
+    git("checkout", "-q", "-b", "work");
+    const w1 = commit("w1");
+    let m = await model();
+    expect(m.pendingChanges).toBe(false);
+    expect(pendingChangesOn(m)).toBeUndefined();
+    expect(layoutModel(m).spans[branch(m, "work").id].pendingCol).toBeNull();
+
+    writeFileSync(join(dir, "new.txt"), "x\n");
+    m = await model();
+    expect(m.pendingChanges).toBe(true);
+    expect(pendingChangesOn(m)?.name).toBe("work");
+    const l = layoutModel(m);
+    const span = l.spans[branch(m, "work").id];
+    expect(span.pendingCol).toBe(m.index.get(w1)! + 1);
+    expect(span.endCol).toBeGreaterThanOrEqual(span.pendingCol!);
+    expect(l.cols).toBe(m.order.length + 1);
+
+    // A just-created branch already shows HEAD in its empty slot instead.
+    git("checkout", "-q", "-b", "fresh");
+    m = await model();
+    expect(uncommittedHead(m)?.name).toBe("fresh");
+    expect(pendingChangesOn(m)).toBeUndefined();
   });
 });

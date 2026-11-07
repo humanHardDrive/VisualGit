@@ -3,7 +3,7 @@
  * connectors and merge arrows, with pan/zoom and hit testing.
  */
 
-import { uncommittedHead, type Branch, type Model } from "../model/infer.ts";
+import { pendingChangesOn, uncommittedHead, type Branch, type Model } from "../model/infer.ts";
 import type { Layout, Span } from "../model/layout.ts";
 
 export const COL = 30;
@@ -58,6 +58,8 @@ export interface ExplorerEvents {
   onSelect(sel: Selection | null): void;
   /** Right-click on a changeset or branch, after it has been selected. */
   onContextMenu(sel: Selection): void;
+  /** Double-click on the checked-out changeset or the hollow HEAD marker over uncommitted work. */
+  onOpenPending(): void;
 }
 
 export class Explorer {
@@ -74,6 +76,8 @@ export class Explorer {
   private hovered: string | null = null;
   /** Branch whose empty lane carries the HEAD marker, if HEAD's branch has no changesets yet. */
   private headLane: number | null = null;
+  /** Branch with an empty "pending changes" changeset after its latest one (which then carries the HEAD marker). */
+  private pendingLane: number | null = null;
   private matches: Matches | null = null;
   private frame = 0;
   private theme!: Theme;
@@ -100,6 +104,7 @@ export class Explorer {
     this.model = model;
     this.layout = layout;
     this.headLane = uncommittedHead(model)?.id ?? null;
+    this.pendingLane = pendingChangesOn(model)?.id ?? null;
     if (this.selection?.kind === "commit" && !model.commits.has(this.selection.hash)) this.selection = null;
     if (this.selection?.kind === "branch" && !model.branches[this.selection.id]) this.selection = null;
     if (view === "latest") this.latest();
@@ -189,7 +194,7 @@ export class Explorer {
       const left = colX(s.startCol) + COL * 0.6;
       return { left, right: left + EMPTY_W };
     }
-    return { left: colX(s.firstCol) - 12, right: colX(s.lastCol) + 12 };
+    return { left: colX(s.firstCol) - 12, right: colX(s.pendingCol ?? s.lastCol) + 12 };
   }
 
   private commitPos(hash: string) {
@@ -238,9 +243,22 @@ export class Explorer {
     return null;
   }
 
+  /** Whether a screen point is on the hollow HEAD marker (an empty branch's slot or the pending-changes changeset). */
+  private onHollowHead(sx: number, sy: number) {
+    const layout = this.layout;
+    const id = this.headLane ?? this.pendingLane;
+    if (!layout || id === null) return false;
+    const span = layout.spans[id];
+    const { left, right } = this.bandExtent(span);
+    const x = span.pendingCol !== null ? colX(span.pendingCol) : (left + right) / 2;
+    const wx = (sx - this.tx) / this.scale;
+    const wy = (sy - this.ty) / this.scale;
+    return Math.hypot(x - wx, rowMid(span.row) - wy) <= HEAD_R + 4 / this.scale;
+  }
+
   /** The changeset drawn with the HEAD marker (unless HEAD's branch has an empty lane of its own). */
   private isHeadCommit(hash: string) {
-    return hash === this.model?.headHash && this.headLane === null;
+    return hash === this.model?.headHash && this.headLane === null && this.pendingLane === null;
   }
 
   private labelWidth(b: Branch) {
@@ -303,6 +321,13 @@ export class Explorer {
       const hit = this.hitTest(e.clientX - r.left, e.clientY - r.top);
       this.select(hit);
       this.events.onSelect(hit);
+    });
+    c.addEventListener("dblclick", (e) => {
+      const r = c.getBoundingClientRect();
+      const sx = e.clientX - r.left;
+      const sy = e.clientY - r.top;
+      const hit = this.hitTest(sx, sy);
+      if ((hit?.kind === "commit" && hit.hash === this.model?.headHash) || this.onHollowHead(sx, sy)) this.events.onOpenPending();
     });
     c.addEventListener("contextmenu", (e) => {
       // Replace the webview's own menu (Reload, Inspect) on the explorer.
@@ -486,6 +511,19 @@ export class Explorer {
       ctx.stroke();
     }
 
+    // Dashed lane line on to the pending-changes changeset.
+    for (const span of layout.spans) {
+      if (span.pendingCol === null || span.lastCol === null || !visibleRow(span.row)) continue;
+      ctx.beginPath();
+      ctx.moveTo(colX(span.lastCol) + NODE_R, rowMid(span.row));
+      ctx.lineTo(colX(span.pendingCol) - HEAD_R, rowMid(span.row));
+      ctx.strokeStyle = withAlpha(branchColor(model, span.branch), 0.55);
+      ctx.lineWidth = 2;
+      ctx.setLineDash([3, 3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
     // Merges (green arrows) and other cross-lane parent links.
     for (const e of layout.edges) {
       const a = this.commitPos(e.from);
@@ -580,18 +618,21 @@ export class Explorer {
       if (span.branch === this.headLane) {
         // The checked-out branch with nothing committed yet: HEAD sits in its empty slot,
         // hollow because the changes there are still uncommitted.
-        ctx.beginPath();
-        ctx.arc(x, y, HEAD_R, 0, Math.PI * 2);
-        ctx.fillStyle = t.canvas;
-        ctx.fill();
-        ring(ctx, x, y, HEAD_R, t.accent, 2);
-        houseIcon(ctx, x, y, t.accent);
+        hollowHome(ctx, x, y, t);
         continue;
       }
       const color = branchColor(model, span.branch);
       ctx.setLineDash([2, 2]);
       ring(ctx, x, y, NODE_R - 1, color, 1.5);
       ctx.setLineDash([]);
+    }
+
+    // Pending changes on a branch with changesets: an empty changeset after the latest one.
+    for (const span of layout.spans) {
+      if (span.pendingCol === null || !visibleRow(span.row)) continue;
+      const x = colX(span.pendingCol);
+      if (x < view.x0 - 20 || x > view.x1 + 20) continue;
+      hollowHome(ctx, x, rowMid(span.row), t);
     }
   }
 
@@ -643,6 +684,19 @@ function houseIcon(ctx: CanvasRenderingContext2D, x: number, y: number, color: s
   ctx.closePath();
   ctx.fillStyle = color;
   ctx.fill();
+}
+
+/** HEAD over uncommitted work: a hollow disc with the home symbol, in the accent colour. */
+function hollowHome(ctx: CanvasRenderingContext2D, x: number, y: number, t: Theme) {
+  ctx.beginPath();
+  ctx.arc(x, y, HEAD_R, 0, Math.PI * 2);
+  ctx.fillStyle = t.canvas;
+  ctx.fill();
+  // Dashed, like an empty changeset: nothing is committed here yet.
+  ctx.setLineDash([3, 2]);
+  ring(ctx, x, y, HEAD_R, t.accent, 2);
+  ctx.setLineDash([]);
+  houseIcon(ctx, x, y, t.accent);
 }
 
 function ring(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, color: string, width: number) {

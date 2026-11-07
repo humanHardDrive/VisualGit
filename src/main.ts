@@ -4,10 +4,10 @@ import { Menu } from "@tauri-apps/api/menu";
 import { open } from "@tauri-apps/plugin-dialog";
 import { loadRepo, type GitRunner } from "./git/load.ts";
 import { inTauri, tauriRunner } from "./git/tauriRunner.ts";
-import { inferModel, uncommittedHead, type Model } from "./model/infer.ts";
+import { inferModel, pendingChangesOn, uncommittedHead, type Model } from "./model/infer.ts";
 import { layoutModel } from "./model/layout.ts";
 import { searchModel, type SearchResults } from "./model/search.ts";
-import { clearDetails, showBranch, showCommit, showPendingChanges } from "./view/details.ts";
+import { clearDetails, showBranch, showCommit } from "./view/details.ts";
 import { branchColor, Explorer, type Selection, type View } from "./view/explorer.ts";
 
 /** Mirrors `RepoInfo` in src-tauri/src/workspace.rs. */
@@ -56,6 +56,7 @@ const saved = new Map<string, { view: View; selection: SavedSelection | null }>(
 const explorer = new Explorer(canvas, $("tooltip"), {
   onSelect: (sel) => applySelection(sel, false),
   onContextMenu: (sel) => void showContextMenu(sel),
+  onOpenPending: openPendingChanges,
 });
 
 // ---- storage ---------------------------------------------------------------
@@ -79,21 +80,12 @@ function recall(key: string): string | null {
 
 // ---- selection ---------------------------------------------------------------
 
-/** What the details panel shows: the selection, or the pending changes. */
-let showingPending = false;
-
-/** `keepPending`: a reload refreshes an open Pending Changes view in place instead of replacing it. */
-function applySelection(sel: Selection | null, reveal: boolean, keepPending = false) {
+function applySelection(sel: Selection | null, reveal: boolean) {
   selection = sel;
   explorer.select(sel, reveal);
-  if (keepPending && showingPending) {
-    openPendingChanges();
-  } else {
-    showingPending = false;
-    if (!model || !git || !sel) clearDetails(details);
-    else if (sel.kind === "commit") showCommit(details, model, sel.hash, (s) => applySelection(s, true));
-    else showBranch(details, model, sel.id, (s) => applySelection(s, true));
-  }
+  if (!model || !git || !sel) clearDetails(details);
+  else if (sel.kind === "commit") showCommit(details, model, sel.hash, (s) => applySelection(s, true));
+  else showBranch(details, model, sel.id, (s) => applySelection(s, true));
   renderBranches();
   updateNav();
 }
@@ -110,10 +102,9 @@ async function showContextMenu(sel: Selection) {
   await menu.popup();
 }
 
+/** Opens (or brings forward) the Pending Changes window for the open repository. */
 function openPendingChanges() {
-  if (!model || !git) return;
-  showingPending = true;
-  void showPendingChanges(details, model, git, (s) => applySelection(s, true), openPendingChanges);
+  if (repoPath) void invoke("open_pending_window", { repo: repoPath }).catch((err) => showMessage("Could not open Pending Changes", String(err)));
 }
 
 // ---- search ---------------------------------------------------------------------
@@ -300,10 +291,10 @@ function step(dir: -1 | 1) {
   if (target) applySelection({ kind: "commit", hash: target }, true);
 }
 
-/** Where HEAD is drawn: the checked-out branch's empty lane, or the checked-out changeset. */
+/** Where HEAD is drawn: on uncommitted work (an empty lane or a pending-changes changeset) if there is any, else the checked-out changeset. */
 function homeTarget(m: Model | null): Selection | null {
   if (!m) return null;
-  const lane = uncommittedHead(m);
+  const lane = uncommittedHead(m) ?? pendingChangesOn(m);
   if (lane) return { kind: "branch", id: lane.id };
   return m.headHash && m.commits.has(m.headHash) ? { kind: "commit", hash: m.headHash } : null;
 }
@@ -378,8 +369,7 @@ async function loadRepoAt(path: string, opts: { reload?: boolean; remembered?: b
     explorer.setData(next, layout, switching ? (saved.get(root)?.view ?? "latest") : "keep");
     searchInput.disabled = false;
     refreshSearch();
-    // Reloads happen on window focus, so edits made in an editor show up in Pending Changes.
-    applySelection(restoreSelection(next, keptSelection), false, !switching);
+    applySelection(restoreSelection(next, keptSelection), false);
   } catch (err) {
     if (seq !== loadSeq) return;
     if (opts.remembered) {
@@ -659,6 +649,10 @@ if (inTauri()) {
   void listen<string>("menu", (e) => {
     if (e.payload === "open-workspace") void chooseWorkspace();
     else if (e.payload === "open-repository") void chooseRepo();
+  });
+  // A commit or save in a Pending Changes window.
+  void listen<{ repo: string }>("repo-changed", (e) => {
+    if (e.payload.repo === repoPath) reload();
   });
 }
 

@@ -1,4 +1,5 @@
 mod menu;
+mod pending;
 mod workspace;
 
 use std::path::Path;
@@ -100,7 +101,17 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .menu(menu::build)
         .on_menu_event(menu::handle)
-        .invoke_handler(tauri::generate_handler![git, find_repos, initial_repo])
+        .manage(pending::PendingWindows::default())
+        .invoke_handler(tauri::generate_handler![
+            git,
+            find_repos,
+            initial_repo,
+            pending::open_pending_window,
+            pending::window_repo,
+            pending::read_worktree_file,
+            pending::write_worktree_file,
+            pending::commit_changes,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running VisualGit");
 }
