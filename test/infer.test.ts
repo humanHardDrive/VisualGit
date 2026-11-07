@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { loadChangesetFiles } from "../src/git/changeset.ts";
 import { buildTree, loadFiles, loadLastChanges } from "../src/git/files.ts";
+import { loadFileHistory } from "../src/git/history.ts";
+import { ignorePatterns } from "../src/git/ignore.ts";
 import { loadRepo } from "../src/git/load.ts";
 import { loadPendingChanges } from "../src/git/status.ts";
 import { nodeRunner } from "../src/git/nodeRunner.ts";
@@ -531,5 +533,40 @@ describe("files", () => {
     const tree = buildTree(list);
     expect(tree.folders[0].latest?.hash).toBe(second);
     expect(tree.latest?.hash).toBe(second);
+  });
+});
+
+describe("file history and ignore patterns", () => {
+  it("lists the changesets that changed a file, following a rename", async () => {
+    const { dir, git, commit } = fixture();
+    writeFileSync(join(dir, "old.txt"), "one\ntwo\nthree\nfour\n");
+    git("add", ".");
+    const created = commit("create");
+    writeFileSync(join(dir, "other.txt"), "x\n");
+    git("add", ".");
+    commit("unrelated");
+    git("mv", "old.txt", "new.txt");
+    const renamed = commit("rename");
+    writeFileSync(join(dir, "new.txt"), "one\ntwo\nthree\nfive\n");
+    git("add", ".");
+    const edited = commit("edit");
+
+    const h = await loadFileHistory(nodeRunner(dir), "new.txt");
+    expect(h.map((e) => [e.hash, e.status, e.path, e.oldPath])).toEqual([
+      [edited, "M", "new.txt", undefined],
+      [renamed, "R", "new.txt", "old.txt"],
+      [created, "A", "old.txt", undefined],
+    ]);
+    expect(h[2].parent).toBeNull();
+    expect(h[0].subject).toBe("edit");
+  });
+
+  it("builds ignore patterns by name, extension and path", () => {
+    expect(ignorePatterns("src/config/local.json")).toEqual({ name: "local.json", extension: "*.json", path: "/src/config/local.json" });
+    expect(ignorePatterns("archive.tar.gz").extension).toBe("*.gz");
+    expect(ignorePatterns(".env").extension).toBeNull();
+    expect(ignorePatterns("Makefile").extension).toBeNull();
+    // Pattern characters are escaped so only this file's name matches.
+    expect(ignorePatterns("notes/#todo [draft]*.md")).toEqual({ name: "\\#todo \\[draft]\\*.md", extension: "*.md", path: "/notes/\\#todo \\[draft]\\*.md" });
   });
 });

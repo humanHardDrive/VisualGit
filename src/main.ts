@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Menu } from "@tauri-apps/api/menu";
-import { open } from "@tauri-apps/plugin-dialog";
+import { ask, message, open } from "@tauri-apps/plugin-dialog";
 import { loadRepo, type GitRunner } from "./git/load.ts";
 import { inTauri, tauriRunner } from "./git/tauriRunner.ts";
 import { inferModel, pendingChangesOn, uncommittedHead, type Model } from "./model/infer.ts";
@@ -11,6 +11,7 @@ import { branchRows, renderBranchList, type BranchSort } from "./view/branchList
 import { clearDetails, showBranch, showCommit, showFile } from "./view/details.ts";
 import { buildTree, loadFiles, loadLastChanges, type FileList, type Folder, type LastChange } from "./git/files.ts";
 import { fileRows, renderFiles, rowKey, type FileRow } from "./view/files.ts";
+import { ignorePatterns } from "./git/ignore.ts";
 import { branchColor, Explorer, type Selection, type View } from "./view/explorer.ts";
 import { filterRepos, renderWorkspaceList, type RepoInfo } from "./view/workspaceList.ts";
 
@@ -923,7 +924,151 @@ function renderFileView() {
     selected: selectedFile,
     onSelect: (r) => selectFileRow(r),
     onOpen: (r) => openFileRow(r),
+    onContextMenu: (r) => {
+      if (rowKey(r) !== selectedFile) {
+        selectedFile = rowKey(r);
+        renderFileView();
+        showSelectedFile();
+      }
+      if (r.kind === "file") void showFileMenu(r.path);
+    },
   });
+}
+
+// ---- file right-click menu -------------------------------------------------------------
+
+async function showFileMenu(path: string) {
+  if (!files || !repoPath) return;
+  const status = files.list.status.get(path);
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const untracked = status?.letter === "?";
+  const onDisk = status?.letter !== "D";
+  const patterns = ignorePatterns(path);
+  const dot = name.lastIndexOf(".");
+  const ext = patterns.extension ? `*${name.slice(dot)}` : null;
+  const menu = await Menu.new({
+    items: [
+      { id: "open", text: "Open", enabled: onDisk, action: () => void openFile(path) },
+      { id: "open-with", text: "Open With…", enabled: onDisk, action: () => void openFileWith(path) },
+      { item: "Separator" },
+      { id: "history", text: "View History", enabled: !untracked, action: () => openHistory(path) },
+      { item: "Separator" },
+      {
+        text: "Ignore",
+        items: [
+          { id: "ignore-name", text: `Ignore “${name}”`, action: () => void ignoreFile(path, patterns.name, `every file named ${name}`) },
+          {
+            id: "ignore-ext",
+            text: ext ? `Ignore “${ext}”` : "Ignore by Extension",
+            enabled: !!ext,
+            action: () => void ignoreFile(path, patterns.extension!, `every ${ext} file`),
+          },
+          { id: "ignore-path", text: `Ignore “/${path}”`, action: () => void ignoreFile(path, patterns.path, `/${path}`) },
+        ],
+      },
+      { id: "delete", text: "Delete…", action: () => void deleteFile(path, untracked) },
+    ],
+  });
+  await menu.popup();
+}
+
+async function openFile(path: string) {
+  if (!repoPath) return;
+  await invoke("open_file", { repo: repoPath, path }).catch((err) => notify(String(err), "error"));
+}
+
+async function openFileWith(path: string) {
+  if (!repoPath) return;
+  const repo = repoPath;
+  const platform = navigator.userAgent;
+  let app: string | null = null;
+  // Windows has its own "Open with" chooser; elsewhere, pick the application here.
+  if (!platform.includes("Windows")) {
+    const mac = platform.includes("Mac");
+    const chosen = await open({
+      title: `Open “${path.slice(path.lastIndexOf("/") + 1)}” With`,
+      defaultPath: mac ? "/Applications" : "/usr/bin",
+      filters: mac ? [{ name: "Applications", extensions: ["app"] }] : undefined,
+    });
+    if (typeof chosen !== "string") return;
+    app = chosen;
+  }
+  await invoke("open_file_with", { repo, path, app }).catch((err) => notify(String(err), "error"));
+}
+
+/** The file's history in the diff window: every changeset that changed it. */
+function openHistory(path: string) {
+  if (!repoPath || !model?.headHash) return;
+  void invoke("open_diff_window", { repo: repoPath, at: model.headHash, file: path }).catch((err) =>
+    notify(`Could not open the history of ${path}: ${err}`, "error"),
+  );
+}
+
+async function ignoreFile(path: string, pattern: string, what: string) {
+  if (!repoPath) return;
+  try {
+    const added = await invoke<boolean>("add_to_gitignore", { repo: repoPath, pattern });
+    const tracked = files?.list.status.get(path)?.letter !== "?";
+    notify(
+      (added ? `Added ${pattern} to .gitignore, so git ignores ${what}.` : `.gitignore already ignores ${what}.`) +
+        // gitignore only affects files git doesn't track yet.
+        (tracked ? ` ${path} is already in source control, so git keeps tracking it until it's removed (Delete… › Remove from Source Control).` : ""),
+      tracked ? "" : "ok", // the tracked-file note stays until read
+    );
+  } catch (err) {
+    notify(`Could not update .gitignore: ${err}`, "error");
+    return;
+  }
+  reload();
+}
+
+async function deleteFile(path: string, untracked: boolean) {
+  if (!repoPath) return;
+  const repo = repoPath;
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  let fromDisk: boolean;
+  if (untracked) {
+    // Not in source control: the only thing to do is remove it from disk.
+    const ok = await ask(`“${name}” isn't in source control. Move it to the Trash?`, {
+      title: "Delete",
+      kind: "warning",
+      okLabel: "Move to Trash",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
+    fromDisk = true;
+  } else {
+    const KEEP = "Remove from Source Control";
+    const BOTH = "Remove from Source Control and Disk";
+    const choice = await message(
+      `Delete “${path}”?
+
+${KEEP}: git stops tracking it; the file stays on disk as a new, untracked file.
+
+${BOTH}: also moves the file to the Trash.
+
+Either way the removal is a pending change: commit it to record it.`,
+      { title: "Delete", kind: "warning", buttons: { yes: KEEP, no: BOTH, cancel: "Cancel" } },
+    );
+    if (choice === "Yes" || choice === KEEP) fromDisk = false;
+    else if (choice === "No" || choice === BOTH) fromDisk = true;
+    else return;
+  }
+  try {
+    await invoke("remove_file", { repo, path, fromDisk });
+    notify(
+      untracked
+        ? `Moved ${name} to the Trash.`
+        : fromDisk
+          ? `Removed ${path} from source control and moved it to the Trash. Commit to record the removal.`
+          : `Removed ${path} from source control; it's still on disk. Commit to record the removal.`,
+      "ok",
+    );
+  } catch (err) {
+    notify(`Could not delete ${path}: ${err}`, "error");
+    return;
+  }
+  if (repoPath === repo) reload();
 }
 
 function selectFileRow(r: FileRow) {

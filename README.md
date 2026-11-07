@@ -56,6 +56,11 @@ The app opens whatever repository you pass as `visualgit /path/to/repo` or in `V
   - **Opening:** double-click a changed file, or press Enter on it, to open Pending Changes.
   - **Keys:** ↑/↓ move, ←/→ close and open folders, and ⌘F searches file paths (with `*` / `?`) as a flat list.
   - *Expand All* and *Collapse All* do what they say. The list refreshes along with everything else.
+  - **Right-click a file:**
+    - *Open* uses the default app. *Open With…* lets you pick an application on macOS; Windows shows its own chooser.
+    - *View History* opens every changeset that changed the file, newest first and following renames, with the file's diff at each one. ↑/↓ step through them, and double-clicking one shows everything else that changeset changed.
+    - *Ignore* adds the file's name (any folder), its extension (`*.ext`) or its exact path (`/path/to/file`) to the repository's `.gitignore`. Git keeps tracking a file that's already in source control until it's removed.
+    - *Delete…* asks whether to *Remove from Source Control*, which keeps the file on disk as a new, untracked file, or *Remove from Source Control and Disk*, which also moves it to the Trash. Either way it's a pending change for you to commit. A file that isn't in source control is just moved to the Trash, after asking.
 
 The Branch Explorer has its own bar along the top, with *Reload*, the changeset arrows and search. In the Branch List, that bar is replaced by the list's own search. VisualGit remembers which view you were using.
 

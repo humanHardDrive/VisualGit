@@ -1,5 +1,6 @@
 mod branch;
 mod diff;
+mod files;
 mod menu;
 mod merge;
 mod pending;
@@ -122,6 +123,10 @@ pub fn run() {
             branch::create_branch,
             branch::switch_to_changeset,
             branch::switch_to_remote_branch,
+            files::open_file,
+            files::open_file_with,
+            files::add_to_gitignore,
+            files::remove_file,
             diff::open_diff_window,
             diff::diff_window_info,
             merge::open_merge_window,

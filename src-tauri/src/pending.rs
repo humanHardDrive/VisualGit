@@ -273,7 +273,7 @@ fn check_relative(path: &str) -> Result<(), String> {
 
 /// Resolves a repository-relative path, refusing anything that leads outside
 /// the repository, including through symbolic links.
-fn resolve(repo: &str, path: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve(repo: &str, path: &str) -> Result<PathBuf, String> {
     let root = repo_root(repo)?;
     check_relative(path)?;
     let file = root.join(path);

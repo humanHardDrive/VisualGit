@@ -12,6 +12,8 @@ export interface FilesOptions {
   selected: string | null;
   onSelect(row: FileRow): void;
   onOpen(row: FileRow): void;
+  /** Right-click, after the row has been selected. */
+  onContextMenu(row: FileRow): void;
 }
 
 /** The visible rows: expanded folders' contents, or while searching, every matching file. */
@@ -98,6 +100,10 @@ export function renderFiles(host: HTMLElement, tree: Folder, list: FileList, opt
     }
     row.onclick = () => opts.onSelect(r);
     row.ondblclick = () => opts.onOpen(r);
+    row.oncontextmenu = (e) => {
+      e.preventDefault();
+      opts.onContextMenu(r);
+    };
     box.append(row);
   }
   if (rows.length === 0) {
