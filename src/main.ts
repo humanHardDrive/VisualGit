@@ -111,6 +111,9 @@ async function showContextMenu(sel: Selection) {
         action: () => void switchTo(hash, target.branch),
       },
       { id: "create-branch", text: "Create Branch from This Changeset…", enabled: true, action: () => openBranchDialog(hash) },
+      { item: "Separator" },
+      // Merging the checked-out changeset into itself would do nothing.
+      { id: "merge-from", text: "Merge from This Changeset…", enabled: hash !== model.headHash, action: () => openMergeWindow(hash) },
     );
   }
   if (sel.kind === "branch") {
@@ -276,6 +279,11 @@ async function pushBranch(branch: string) {
     notify(`Could not push ${branch}: ${err}`, "error");
   }
   if (repoPath === path) reload();
+}
+
+/** Opens the merge window previewing `hash` merged into the checked-out changeset. */
+function openMergeWindow(hash: string) {
+  if (repoPath) void invoke("open_merge_window", { repo: repoPath, from: hash }).catch((err) => notify(`Could not open the merge window: ${err}`, "error"));
 }
 
 /** Opens (or brings forward) the Pending Changes window for the open repository. */

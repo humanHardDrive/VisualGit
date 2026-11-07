@@ -5,7 +5,7 @@
  */
 
 import { goToNextChunk, goToPreviousChunk, MergeView } from "@codemirror/merge";
-import { Compartment, EditorState, Prec, type Extension } from "@codemirror/state";
+import { Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { invoke } from "@tauri-apps/api/core";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
@@ -16,6 +16,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { basicSetup } from "codemirror";
 import { loadPendingChanges, type PendingChanges, type PendingFile } from "../git/status.ts";
 import { tauriRunner } from "../git/tauriRunner.ts";
+import { dark, lineEndings, readOnly, theme, themeSlot } from "../view/codemirror.ts";
 
 /** Mirrors `FileText` in src-tauri/src/pending.rs. */
 interface FileText {
@@ -153,31 +154,6 @@ function updateCommitButton() {
 }
 
 // ---- diff -------------------------------------------------------------------------------
-
-const dark = matchMedia("(prefers-color-scheme: dark)");
-const themeSlot = new Compartment();
-const theme = (): Extension =>
-  EditorView.theme(
-    {
-      "&": { backgroundColor: "var(--canvas)", color: "var(--text)", fontSize: "12px" },
-      ".cm-content": { fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", caretColor: "var(--text)" },
-      ".cm-gutters": { backgroundColor: "var(--panel)", color: "var(--muted)", borderRight: "1px solid var(--border)" },
-      ".cm-activeLine": { backgroundColor: "color-mix(in srgb, var(--hover) 60%, transparent)" },
-      ".cm-activeLineGutter": { backgroundColor: "var(--hover)" },
-      "&.cm-focused .cm-cursor": { borderLeftColor: "var(--text)" },
-      "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground": {
-        backgroundColor: "color-mix(in srgb, var(--accent) 30%, transparent)",
-      },
-      "&.cm-merge-a .cm-changedLine, .cm-deletedChunk": { backgroundColor: "rgba(238, 68, 51, 0.12)" },
-      "&.cm-merge-b .cm-changedLine": { backgroundColor: "rgba(34, 187, 34, 0.12)" },
-    },
-    { dark: dark.matches },
-  );
-
-/** Keep CRLF files CRLF: CodeMirror otherwise rejoins lines with "\n" on save. */
-const lineEndings = (text: string): Extension => (text.includes("\r\n") ? EditorState.lineSeparator.of("\r\n") : []);
-
-const readOnly: Extension = [EditorState.readOnly.of(true), EditorView.editable.of(false)];
 
 function showMessage(text: string) {
   open?.view.destroy();

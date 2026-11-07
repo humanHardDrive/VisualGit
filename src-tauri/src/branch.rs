@@ -93,7 +93,7 @@ fn track(repo: &str, remote_ref: &str) -> Result<String, String> {
 }
 
 /// The full id of changeset `at`, which must be a (possibly abbreviated) commit id.
-fn commit_id(root: &std::path::Path, at: &str) -> Result<String, String> {
+pub(crate) fn commit_id(root: &std::path::Path, at: &str) -> Result<String, String> {
     if at.is_empty() || !at.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(format!("{at} is not a changeset in this repository"));
     }
