@@ -115,6 +115,8 @@ async function showContextMenu(sel: Selection) {
   }
   if (sel.kind === "branch") {
     const b = model.branches[sel.id];
+    const go = switchToBranchCall(b);
+    items.push({ id: "switch-branch", text: "Switch to This Branch", enabled: !!go && !b.isHead, action: () => go && void runSwitch(b.name, go) });
     const local = b.refs.find((r) => r.startsWith("refs/heads/"));
     if (local) {
       const name = local.slice("refs/heads/".length);
@@ -147,7 +149,29 @@ function switchTarget(m: Model, hash: string): { branch?: string; current: boole
   return { branch: lane ?? names[0], current: false };
 }
 
-async function switchTo(hash: string, branch: string | undefined) {
+function switchTo(hash: string, branch: string | undefined) {
+  void runSwitch(branch ?? hash.slice(0, 8), (repo) => invoke<string>("switch_to_changeset", { repo, at: hash, branch: branch ?? null }));
+}
+
+/**
+ * How "Switch to This Branch" gets there: a local branch is checked out; a
+ * remote-only one gets a local tracking branch; a deleted or unnamed lane's
+ * last changeset is checked out as a detached HEAD.
+ */
+function switchToBranchCall(b: Model["branches"][number]): ((repo: string) => Promise<string>) | null {
+  const local = b.refs.find((r) => r.startsWith("refs/heads/"));
+  if (local) {
+    const name = local.slice("refs/heads/".length);
+    return (repo) => invoke<string>("switch_to_changeset", { repo, at: b.tips[0], branch: name });
+  }
+  const remote = b.refs.find((r) => r.startsWith("refs/remotes/"));
+  if (remote) return (repo) => invoke<string>("switch_to_remote_branch", { repo, remoteRef: remote });
+  const last = b.commits[b.commits.length - 1];
+  return last ? (repo) => invoke<string>("switch_to_changeset", { repo, at: last, branch: null }) : null;
+}
+
+/** Runs a switch unless there are pending changes, then reloads and shows the new HEAD. */
+async function runSwitch(label: string, call: (repo: string) => Promise<string>) {
   if (!repoPath || !git) return;
   const path = repoPath;
   // Pending changes to tracked files: review or commit them before moving away.
@@ -158,9 +182,9 @@ async function switchTo(hash: string, branch: string | undefined) {
     notify("You have pending changes. Commit them in Pending Changes, then switch again.");
     return;
   }
-  notify(branch ? `Switching to ${branch}…` : `Switching to ${hash.slice(0, 8)}…`);
+  notify(`Switching to ${label}…`);
   try {
-    notify(`${await invoke<string>("switch_to_changeset", { repo: path, at: hash, branch: branch ?? null })}.`, "ok");
+    notify(`${await call(path)}.`, "ok");
   } catch (err) {
     notify(`Could not switch: ${err}`, "error");
     return;

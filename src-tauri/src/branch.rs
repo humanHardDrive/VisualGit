@@ -69,6 +69,29 @@ fn switch(repo: &str, at: &str, branch: Option<&str>) -> Result<String, String> 
     Ok(format!("Switched to changeset {short} (detached HEAD). Create a branch here before committing"))
 }
 
+/// Creates a local branch tracking `remote_ref` (`refs/remotes/<remote>/<name>`)
+/// under the same name, and switches to it.
+#[tauri::command]
+pub async fn switch_to_remote_branch(repo: String, remote_ref: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || track(&repo, &remote_ref))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn track(repo: &str, remote_ref: &str) -> Result<String, String> {
+    let root = repo_root(repo)?;
+    let short = remote_ref.strip_prefix("refs/remotes/").ok_or_else(|| format!("{remote_ref} is not a remote branch"))?;
+    let (_, name) = short.split_once('/').ok_or_else(|| format!("{remote_ref} is not a remote branch"))?;
+    if short.starts_with('-') || git(&root, &["rev-parse", "--verify", "-q", remote_ref], &[], None).is_err() {
+        return Err(format!("{short} is not a remote branch"));
+    }
+    if git(&root, &["rev-parse", "--verify", "-q", &format!("refs/heads/{name}")], &[], None).is_ok() {
+        return Err(format!("A local branch named {name} already exists"));
+    }
+    git(&root, &["switch", "-c", name, "--track", short], &[], None)?;
+    Ok(format!("Switched to {name}, a new local branch tracking {short}"))
+}
+
 /// The full id of changeset `at`, which must be a (possibly abbreviated) commit id.
 fn commit_id(root: &std::path::Path, at: &str) -> Result<String, String> {
     if at.is_empty() || !at.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -146,6 +169,22 @@ mod tests {
         assert!(switch(&repo, &first, Some("main")).unwrap_err().contains("does not point"));
         assert!(switch(&repo, &first, Some("nope")).is_err());
         assert!(switch(&repo, "HEAD~1", None).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn tracks_a_remote_only_branch() {
+        let (dir, first, _) = repo_with_two_commits();
+        let repo = dir.to_string_lossy().into_owned();
+        // Fake a fetched remote branch (tracking needs the remote to be configured).
+        git(&dir, &["remote", "add", "origin", "https://example.invalid/repo.git"], &[], None).unwrap();
+        git(&dir, &["update-ref", "refs/remotes/origin/topic", &first], &[], None).unwrap();
+        assert_eq!(track(&repo, "refs/remotes/origin/topic").unwrap(), "Switched to topic, a new local branch tracking origin/topic");
+        assert_eq!(git(&dir, &["symbolic-ref", "--short", "HEAD"], &[], None).unwrap().trim(), "topic");
+        assert_eq!(git(&dir, &["rev-parse", "--abbrev-ref", "@{u}"], &[], None).unwrap().trim(), "origin/topic");
+        assert!(track(&repo, "refs/remotes/origin/topic").unwrap_err().contains("already exists"));
+        assert!(track(&repo, "refs/remotes/origin/missing").is_err());
+        assert!(track(&repo, "refs/heads/main").is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

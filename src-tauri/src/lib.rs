@@ -116,6 +116,7 @@ pub fn run() {
             pending::push_branch,
             branch::create_branch,
             branch::switch_to_changeset,
+            branch::switch_to_remote_branch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running VisualGit");
