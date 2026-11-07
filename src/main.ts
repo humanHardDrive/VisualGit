@@ -10,14 +10,7 @@ import { searchModel, type SearchResults } from "./model/search.ts";
 import { branchRows, renderBranchList, type BranchSort } from "./view/branchList.ts";
 import { clearDetails, showBranch, showCommit } from "./view/details.ts";
 import { branchColor, Explorer, type Selection, type View } from "./view/explorer.ts";
-
-/** Mirrors `RepoInfo` in src-tauri/src/workspace.rs. */
-interface RepoInfo {
-  path: string;
-  name: string;
-  head: string | null;
-  detached: boolean;
-}
+import { filterRepos, renderWorkspaceList, type RepoInfo } from "./view/workspaceList.ts";
 
 /** Selection saved across reloads; branches by name, since ids are reassigned. */
 type SavedSelection = { kind: "commit"; hash: string } | { kind: "branch"; name: string };
@@ -28,10 +21,9 @@ const canvas = $<HTMLCanvasElement>("explorer");
 const details = $("details");
 const searchInput = $<HTMLInputElement>("search");
 const searchPanel = $("search-results");
-const workspaceSection = $("workspace");
 const workspaceName = $("workspace-name");
-const repoList = $("repo-list");
-const repoFilter = $<HTMLInputElement>("repo-filter");
+const workspaceView = $("workspace-view");
+const repoSearch = $<HTMLInputElement>("repo-search");
 const emptyState = $("empty-state");
 const stats = $("stats");
 const repoPathEl = $("repo-path");
@@ -653,10 +645,6 @@ async function openWorkspace(path: string, opts: { remembered?: boolean } = {}) 
     workspace = path;
     repos = found;
     store(WORKSPACE_KEY, path);
-    workspaceSection.hidden = false;
-    workspaceName.textContent = path.split("/").pop() || path;
-    workspaceName.title = path;
-    repoFilter.hidden = repos.length <= 8;
     renderRepos();
     return true;
   } catch (err) {
@@ -687,9 +675,11 @@ function openDefaultRepo() {
     showMessage(
       repos.length ? "Pick a repository" : "No repositories found",
       repos.length
-        ? `${repos.length} repositories in this workspace. Choose one on the left.`
+        ? `${repos.length} repositories in this workspace. Choose one in the Workspace view.`
         : "No Git repositories were found in this folder or the four levels below it.",
     );
+    // Show the list to pick from.
+    showView("workspace");
   }
 }
 
@@ -723,37 +713,33 @@ function listedRepos(): RepoInfo[] {
 }
 
 function renderRepos() {
-  const q = repoFilter.value.trim().toLowerCase();
-  const items = listedRepos()
-    .filter((r) => !q || r.name.toLowerCase().includes(q))
-    .map((r) => {
-      const item = document.createElement("div");
-      item.className = "repo-item";
-      if (r.path === repoPath) item.classList.add("selected");
-      if (r.path === loadingPath) item.classList.add("loading");
-      item.title = r.path;
-      const name = document.createElement("span");
-      name.className = "name";
-      name.textContent = r.name;
-      const head = document.createElement("span");
-      head.className = "head";
-      head.textContent = r.head ?? "";
-      if (r.detached) head.title = "Detached HEAD";
-      item.append(name, head);
-      item.onclick = () => {
-        if (r.path !== repoPath) void loadRepoAt(r.path);
-      };
-      return item;
-    });
-  if (items.length === 0) {
-    const none = document.createElement("div");
-    none.className = "repo-empty";
-    none.textContent = q ? "No matches" : "No repositories found";
-    items.push(none);
-  }
-  repoList.replaceChildren(...items);
-  if (workspace || repoPath) workspaceSection.hidden = false;
-  $("rescan").hidden = !workspace;
+  workspaceName.textContent = workspace ? workspace.split("/").pop() || workspace : "No workspace open";
+  workspaceName.title = workspace ?? "";
+  ($("rescan") as HTMLButtonElement).disabled = !workspace;
+  const list = listedRepos();
+  const shown = filterRepos(list, repoSearch.value).length;
+  $("repo-count").textContent = repoSearch.value.trim()
+    ? `${shown} of ${list.length} repositories`
+    : `${list.length} repositor${list.length === 1 ? "y" : "ies"}`;
+  if (currentView !== "workspace") return;
+  renderWorkspaceList(workspaceView, list, {
+    current: repoPath,
+    loading: loadingPath,
+    query: repoSearch.value,
+    empty: workspace
+      ? "No Git repositories were found in this folder or the four levels below it."
+      : "No workspace is open. Choose Open Workspace… and pick the folder you keep your repositories in.",
+    onOpen: (r) => {
+      if (r.path !== repoPath) void loadRepoAt(r.path);
+    },
+    onActivate: (r) => openRepoInExplorer(r),
+  });
+}
+
+/** Opens a repository (if it isn't already) and shows it in the Branch Explorer. */
+function openRepoInExplorer(r: RepoInfo) {
+  if (r.path !== repoPath) void loadRepoAt(r.path);
+  showView("explorer");
 }
 
 function switchRepo(delta: number) {
@@ -766,11 +752,12 @@ function switchRepo(delta: number) {
 
 // ---- views ---------------------------------------------------------------------
 
-type ViewName = "explorer" | "list";
+type ViewName = "workspace" | "explorer" | "list";
 const VIEW_KEY = "visualgit.view";
 const listView = $("branch-list-view");
 const zoomControls = document.querySelector<HTMLElement>(".zoom")!;
-let currentView: ViewName = recall(VIEW_KEY) === "list" ? "list" : "explorer";
+const remembered = recall(VIEW_KEY);
+let currentView: ViewName = remembered === "list" || remembered === "workspace" ? remembered : "explorer";
 let branchSort: BranchSort = "tree";
 
 function showView(view: ViewName) {
@@ -779,17 +766,24 @@ function showView(view: ViewName) {
   for (const item of document.querySelectorAll<HTMLButtonElement>(".view-item")) {
     item.setAttribute("aria-pressed", String(item.dataset.view === view));
   }
-  const list = view === "list";
-  canvas.hidden = list;
-  zoomControls.hidden = list;
-  // Reload, changeset browsing and search belong to the Branch Explorer; the list has its own search.
-  $("explorer-bar").hidden = list;
-  $("list-bar").hidden = !list;
-  listView.hidden = !list;
-  if (list && searchInput.value) clearSearch();
-  if (list) $("tooltip").hidden = true;
-  else explorer.select(selection, true); // catch up with what was selected in the list
+  const explorerShown = view === "explorer";
+  $("canvas-wrap").dataset.view = view;
+  canvas.hidden = !explorerShown;
+  zoomControls.hidden = !explorerShown;
+  // Each view has its own bar: the explorer's (reload, changeset browsing, search), the list's and the workspace's searches.
+  $("explorer-bar").hidden = !explorerShown;
+  $("list-bar").hidden = view !== "list";
+  $("workspace-bar").hidden = view !== "workspace";
+  listView.hidden = view !== "list";
+  workspaceView.hidden = view !== "workspace";
+  if (!explorerShown) {
+    $("tooltip").hidden = true;
+    if (searchInput.value) clearSearch();
+  } else {
+    explorer.select(selection, true); // catch up with what was selected in another view
+  }
   renderBranchView();
+  renderRepos();
 }
 
 for (const item of document.querySelectorAll<HTMLButtonElement>(".view-item")) {
@@ -862,6 +856,7 @@ async function chooseWorkspace() {
   const dir = await open({ directory: true, title: "Open workspace folder", defaultPath: workspace ?? undefined });
   if (typeof dir !== "string") return;
   if (await openWorkspace(dir)) {
+    showView("workspace");
     // Stay on the current repository if it belongs to the new workspace.
     if (!repoPath || !isInside(repoPath, dir)) {
       rememberCurrent();
@@ -898,7 +893,20 @@ navHome.addEventListener("click", goHome);
 $("zoom-in").addEventListener("click", () => explorer.zoomBy(1.25));
 $("zoom-out").addEventListener("click", () => explorer.zoomBy(0.8));
 $("zoom-fit").addEventListener("click", () => explorer.fit());
-repoFilter.addEventListener("input", renderRepos);
+repoSearch.addEventListener("input", renderRepos);
+repoSearch.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    // Open the first match.
+    const first = filterRepos(listedRepos(), repoSearch.value)[0];
+    if (first) openRepoInExplorer(first);
+  } else if (e.key === "Escape" && repoSearch.value) {
+    e.preventDefault();
+    e.stopPropagation();
+    repoSearch.value = "";
+    renderRepos();
+  }
+});
+$("open-workspace").addEventListener("click", () => void chooseWorkspace());
 
 window.addEventListener("keydown", (e) => {
   if (branchDialog.open) return; // the dialog handles its own keys (Esc closes it)
@@ -910,7 +918,7 @@ window.addEventListener("keydown", (e) => {
   } else if (mod && e.key === "f") {
     e.preventDefault();
     // Each view has its own search.
-    const box = currentView === "list" ? branchSearch : searchInput;
+    const box = currentView === "list" ? branchSearch : currentView === "workspace" ? repoSearch : searchInput;
     box.focus();
     box.select();
   } else if (mod && e.key === "[") {
@@ -944,6 +952,9 @@ window.addEventListener("keydown", (e) => {
     if (currentView === "list" && branchSearch.value) {
       branchSearch.value = "";
       renderBranchView();
+    } else if (currentView === "workspace" && repoSearch.value) {
+      repoSearch.value = "";
+      renderRepos();
     } else if (searchInput.value) clearSearch();
     else applySelection(null, false);
   }

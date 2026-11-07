@@ -28,12 +28,21 @@ npm run app                             # desktop app, hot reload
 VISUALGIT_REPO=/path/to/repo npm run app  # open a repository straight away
 ```
 
-**Workspaces.** Choose *File › Open Workspace…* and pick the folder you keep your repositories in (e.g. `~/Documents/GitHub`). VisualGit finds every repository up to four levels down, skipping hidden folders and `node_modules`/`target`-style build folders. They're listed in the sidebar with their checked-out branch, and one click switches between them. Each repository keeps its own zoom, scroll position and selection while you switch. The workspace and the last repository are reopened at the next launch. *File › Open Repository…* opens a single repository from anywhere.
+**Workspaces.** Choose *File › Open Workspace…* (or *Open Workspace…* in the Workspace view) and pick the folder you keep your repositories in, e.g. `~/Documents/GitHub`.
+
+- **Finding repositories:** VisualGit looks up to four levels down, skipping hidden folders and build folders such as `node_modules` and `target`.
+- **The Workspace view:** one of the entries under *View*. It lists every repository with what it has checked out and its path, and you can search their names with ⌘F.
+  - Click a repository to open it. Double-click it, or press Enter in the search box, to open it and go straight to the Branch Explorer.
+  - *Rescan* looks for new repositories.
+- **Remembered settings:** each repository keeps its own zoom, scroll position and selection while you switch. The workspace and the last repository reopen at the next launch.
+
+*File › Open Repository…* opens a single repository from anywhere.
 
 The app opens whatever repository you pass as `visualgit /path/to/repo` or in `VISUALGIT_REPO`, otherwise the last one you opened.
 
-**Views.** The *View* pane in the sidebar switches between two views:
+**Views.** The *View* pane in the sidebar switches between three views:
 
+- **Workspace:** the repositories in the open workspace (see above).
 - **Branch Explorer:** the lanes.
 - **Branch List:** a table of every branch.
   - **What it shows:** each branch's lane colour, its badges (HEAD, empty, remote, deleted, not pushed), how many changesets it has, its latest changeset, and that changeset's author and date.

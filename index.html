@@ -15,19 +15,14 @@
     </header>
     <main class="layout">
       <aside class="sidebar">
-        <section id="workspace" class="workspace" hidden>
-          <div class="section-head">
-            <span class="section-title">Repositories</span>
-            <span id="workspace-name" class="section-sub"></span>
-            <button id="rescan" class="icon" title="Rescan workspace for repositories">↻</button>
-          </div>
-          <input id="repo-filter" type="search" placeholder="Filter repositories" spellcheck="false" hidden />
-          <div id="repo-list" class="repo-list"></div>
-        </section>
         <div class="section-head">
           <span class="section-title">View</span>
         </div>
         <nav class="view-list" aria-label="View">
+          <button class="view-item" data-view="workspace" aria-pressed="false">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5V12a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1H8L6.5 3.5H3A1 1 0 0 0 2 4.5Z" /></svg>
+            Workspace
+          </button>
           <button class="view-item" data-view="explorer" aria-pressed="true">
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h5M2 12h9M7 4h7M5 4v8M10 12h4" /><circle cx="5" cy="4" r="1.6" /><circle cx="11" cy="4" r="1.6" /><circle cx="11" cy="12" r="1.6" /></svg>
             Branch Explorer
@@ -58,6 +53,16 @@
             <div id="search-results" class="search-results" role="listbox" hidden></div>
           </div>
         </div>
+        <div id="workspace-bar" class="explorer-bar" hidden>
+          <button id="open-workspace" title="Open a folder of repositories (⇧⌘O)">Open Workspace…</button>
+          <button id="rescan" title="Look for repositories again">Rescan</button>
+          <span id="workspace-name" class="workspace-name"></span>
+          <div class="search" title="Search repository names (⌘F). * matches anything, ? matches one character.">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="m10.5 10.5 3 3" /></svg>
+            <input id="repo-search" type="search" placeholder="Search repositories" spellcheck="false" autocomplete="off" aria-label="Search repositories" />
+          </div>
+          <span id="repo-count" class="stats"></span>
+        </div>
         <div id="list-bar" class="explorer-bar" hidden>
           <div class="search" title="Search branch names (⌘F). * matches anything, ? matches one character.">
             <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="m10.5 10.5 3 3" /></svg>
@@ -65,9 +70,10 @@
           </div>
           <span id="branch-count" class="stats"></span>
         </div>
-        <div class="canvas-wrap">
+        <div id="canvas-wrap" class="canvas-wrap">
           <canvas id="explorer"></canvas>
           <div id="branch-list-view" class="branch-list-view" hidden></div>
+          <div id="workspace-view" class="branch-list-view" hidden></div>
           <div id="tooltip" class="tooltip" hidden></div>
           <div id="toast" class="toast" role="status" hidden></div>
           <div class="zoom" role="group" aria-label="Zoom">
