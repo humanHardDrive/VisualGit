@@ -114,7 +114,9 @@ async function showContextMenu(sel: Selection) {
       { item: "Separator" },
       // Merging the checked-out changeset into itself would do nothing.
       { id: "merge-from", text: "Merge from This Changeset", enabled: hash !== model.headHash, action: () => openMergeWindow(hash) },
-      { id: "cherry-pick", text: "Cherry Pick This Changeset", enabled: hash !== model.headHash, action: () => void cherryPick(hash) },
+      // Cherry pick brings in what HEAD doesn't have; a subtractive merge takes out what it does.
+      { id: "cherry-pick", text: "Cherry Pick This Changeset", enabled: !inHead(model, hash), action: () => void applyChangeset(hash, "pick") },
+      { id: "subtract", text: "Subtractive Merge", enabled: inHead(model, hash), action: () => void applyChangeset(hash, "subtract") },
     );
   }
   if (sel.kind === "branch") {
@@ -178,23 +180,54 @@ function switchToBranchCall(b: Model["branches"][number]): ((repo: string) => Pr
 }
 
 /** Applies a changeset on top of HEAD; on conflicts, Pending Changes takes over. */
-async function cherryPick(hash: string) {
+/** The changesets HEAD contains (itself and everything it was built on), per loaded model. */
+const headHistory = new WeakMap<Model, Set<string>>();
+
+function inHead(m: Model, hash: string): boolean {
+  let set = headHistory.get(m);
+  if (!set) {
+    set = new Set();
+    const todo = m.headHash ? [m.headHash] : [];
+    while (todo.length) {
+      const h = todo.pop()!;
+      if (set.has(h) || !m.commits.has(h)) continue;
+      set.add(h);
+      todo.push(...m.commits.get(h)!.parents);
+    }
+    headHistory.set(m, set);
+  }
+  return set.has(hash);
+}
+
+/**
+ * Cherry pick (bring a changeset's changes in) or subtractive merge (take them
+ * back out), each as a new changeset; on conflicts, Pending Changes takes over.
+ */
+async function applyChangeset(hash: string, how: "pick" | "subtract") {
   if (!repoPath || !git || !model) return;
   const path = repoPath;
   const short = hash.slice(0, 8);
-  if (await hasPendingChanges("cherry picking")) return;
-  notify(`Cherry picking ${short}…`);
+  const doing = how === "pick" ? "cherry picking" : "a subtractive merge";
+  if (await hasPendingChanges(doing)) return;
+  notify(how === "pick" ? `Cherry picking ${short}…` : `Taking ${short}'s changes out…`);
   try {
-    const result = await invoke<{ committed: string | null; conflicts: string[] }>("cherry_pick", { repo: path, at: hash });
+    const result = await invoke<{ committed: string | null; conflicts: string[] }>(how === "pick" ? "cherry_pick" : "subtractive_merge", {
+      repo: path,
+      at: hash,
+    });
     if (result.committed) {
-      notify(`Cherry picked ${short} as ${result.committed.slice(0, 8)}.`, "ok");
+      notify(
+        how === "pick" ? `Cherry picked ${short} as ${result.committed.slice(0, 8)}.` : `Took ${short}'s changes out in ${result.committed.slice(0, 8)}.`,
+        "ok",
+      );
     } else {
       const n = result.conflicts.length;
-      notify(`Cherry picking ${short} stopped with conflicts in ${n} file${n === 1 ? "" : "s"}. Resolve them in Pending Changes and commit, or abort there.`, "error");
+      const what = how === "pick" ? `Cherry picking ${short}` : `The subtractive merge of ${short}`;
+      notify(`${what} stopped with conflicts in ${n} file${n === 1 ? "" : "s"}. Resolve them in Pending Changes and commit, or abort there.`, "error");
       openPendingChanges();
     }
   } catch (err) {
-    notify(`Could not cherry pick ${short}: ${err}`, "error");
+    notify(`Could not ${how === "pick" ? "cherry pick" : "take out"} ${short}: ${err}`, "error");
     return;
   }
   if (repoPath !== path) return;

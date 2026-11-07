@@ -291,7 +291,7 @@ async function selectFile(f: PendingFile) {
 
 /** Mirrors `Operation` in src-tauri/src/merge.rs. */
 interface Operation {
-  kind: "merge" | "cherry pick";
+  kind: "merge" | "cherry pick" | "subtractive merge";
   from: string | null;
   message: string | null;
 }
@@ -305,7 +305,7 @@ async function refreshOperation() {
   const bar = $("operation");
   bar.hidden = !operation;
   if (!operation) return;
-  const what = operation.kind === "merge" ? "Merging" : "Cherry picking";
+  const what = { merge: "Merging", "cherry pick": "Cherry picking", "subtractive merge": "Taking out the changes of" }[operation.kind];
   $("operation-text").textContent =
     `${what} ${operation.from?.slice(0, 8) ?? ""}. Resolve any conflicts, then commit; the commit includes every changed file. Or abort to put everything back as it was.`;
   if (operation.message && !messageBox.value.trim() && prefilled !== operation.message) {
