@@ -1,5 +1,6 @@
 //! The Pending Changes window and the commands that change a repository:
-//! reading and saving working-tree files, and committing selected files.
+//! reading and saving working-tree files, committing selected files, and
+//! pushing the checked-out branch.
 //!
 //! These are deliberately separate from the read-only `git` command: each one
 //! does a single, narrow thing, with its paths checked to stay inside the
@@ -124,6 +125,43 @@ fn commit(repo: &str, message: &str, paths: &[String]) -> Result<String, String>
     let only: &[&str] = if merging { &["commit", "-F", "-"] } else { &["commit", "-F", "-", "--"] };
     git(&root, only, selection, Some(message))?;
     Ok(git(&root, &["rev-parse", "HEAD"], &[], None)?.trim().to_string())
+}
+
+/// Pushes the checked-out branch and returns a summary like "Pushed main to origin".
+#[tauri::command]
+pub async fn push_current_branch(repo: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || push(&repo)).await.map_err(|e| e.to_string())?
+}
+
+fn push(repo: &str) -> Result<String, String> {
+    let root = repo_root(repo)?;
+    let branch = git(&root, &["symbolic-ref", "-q", "--short", "HEAD"], &[], None)
+        .map_err(|_| "HEAD is detached. Check out a branch to push it.".to_string())?
+        .trim()
+        .to_string();
+    let config = |key: String| git(&root, &["config", "--get", &key], &[], None).ok().map(|s| s.trim().to_string());
+
+    // A branch with an upstream goes to that remote and branch.
+    if let (Some(remote), Some(merge)) = (config(format!("branch.{branch}.remote")), config(format!("branch.{branch}.merge"))) {
+        if remote != "." {
+            git(&root, &["push", "--porcelain", &remote, &format!("HEAD:{merge}")], &[], None)?;
+            let target = merge.strip_prefix("refs/heads/").unwrap_or(&merge);
+            return Ok(format!("Pushed {branch} to {remote}/{target}"));
+        }
+    }
+    // Otherwise publish it under the same name and track it from now on.
+    let remotes: Vec<String> = git(&root, &["remote"], &[], None)?.lines().map(str::to_string).collect();
+    let remote = if remotes.iter().any(|r| r == "origin") {
+        "origin".to_string()
+    } else if remotes.len() == 1 {
+        remotes[0].clone()
+    } else if remotes.is_empty() {
+        return Err("This repository has no remote to push to.".into());
+    } else {
+        return Err(format!("{branch} has no upstream and there is no origin remote; set one with git push -u <remote> {branch}"));
+    };
+    git(&root, &["push", "--porcelain", "-u", &remote, &format!("refs/heads/{branch}:refs/heads/{branch}")], &[], None)?;
+    Ok(format!("Pushed {branch} to {remote} (new branch)"))
 }
 
 fn git(root: &Path, args: &[&str], paths: &[String], stdin: Option<&str>) -> Result<String, String> {
@@ -251,6 +289,32 @@ mod tests {
         assert!(commit(&repo, "x", &[]).is_err());
         assert!(commit(&repo, "x", &["../escape".into()]).is_err());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn pushes_the_checked_out_branch() {
+        let dir = scratch_repo();
+        let repo = dir.to_string_lossy().into_owned();
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        commit(&repo, "first", &["a.txt".into()]).unwrap();
+        assert!(push(&repo).unwrap_err().contains("no remote"));
+
+        let remote = dir.with_extension("remote.git");
+        let _ = std::fs::remove_dir_all(&remote);
+        assert!(Command::new("git").args(["init", "-q", "--bare"]).arg(&remote).status().unwrap().success());
+        git(&dir, &["remote", "add", "origin", &remote.to_string_lossy()], &[], None).unwrap();
+
+        // First push publishes the branch and sets its upstream.
+        assert_eq!(push(&repo).unwrap(), "Pushed main to origin (new branch)");
+        assert_eq!(git(&dir, &["rev-parse", "--abbrev-ref", "@{u}"], &[], None).unwrap().trim(), "origin/main");
+        // Later pushes go to the upstream.
+        std::fs::write(dir.join("a.txt"), "a2\n").unwrap();
+        let second = commit(&repo, "second", &["a.txt".into()]).unwrap();
+        assert_eq!(push(&repo).unwrap(), "Pushed main to origin/main");
+        let on_remote = Command::new("git").arg("-C").arg(&remote).args(["rev-parse", "main"]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&on_remote.stdout).trim(), second);
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&remote).ok();
     }
 
     #[test]

@@ -8,7 +8,9 @@ import { goToNextChunk, goToPreviousChunk, MergeView } from "@codemirror/merge";
 import { Compartment, EditorState, Prec, type Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { invoke } from "@tauri-apps/api/core";
+import { LogicalPosition } from "@tauri-apps/api/dpi";
 import { emit } from "@tauri-apps/api/event";
+import { Menu } from "@tauri-apps/api/menu";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { basicSetup } from "codemirror";
 import { loadPendingChanges, type PendingChanges, type PendingFile } from "../git/status.ts";
@@ -25,6 +27,7 @@ interface FileText {
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const messageBox = $<HTMLTextAreaElement>("message");
 const commitBtn = $<HTMLButtonElement>("commit");
+const commitMore = $<HTMLButtonElement>("commit-more");
 const commitStatus = $("commit-status");
 const checkAll = $<HTMLInputElement>("check-all");
 const fileCount = $("file-count");
@@ -139,8 +142,10 @@ checkAll.addEventListener("change", () => {
   renderFiles();
 });
 
+let busy = false;
+
 function updateCommitButton() {
-  commitBtn.disabled = !messageBox.value.trim() || selectedFiles().length === 0;
+  commitBtn.disabled = commitMore.disabled = busy || !messageBox.value.trim() || selectedFiles().length === 0;
 }
 
 // ---- diff -------------------------------------------------------------------------------
@@ -333,32 +338,58 @@ async function refresh() {
   }
 }
 
-async function commit() {
+/** Commits the selected files; with `andPush`, then pushes the checked-out branch. */
+async function commit(andPush = false) {
   const message = messageBox.value.trim();
   const files = selectedFiles();
-  if (!message || files.length === 0) return;
+  if (busy || !message || files.length === 0) return;
   if (!(await save())) return;
   // A rename commits both its new and its old path.
   const paths = files.flatMap((f) => (f.origPath ? [f.path, f.origPath] : [f.path]));
-  commitBtn.disabled = true;
+  busy = true;
+  updateCommitButton();
   setStatus("Committing…");
   try {
     const hash = await invoke<string>("commit_changes", { repo, message, paths });
     messageBox.value = "";
     setStatus(`Committed ${hash.slice(0, 8)}`, "ok");
     announce();
+    if (andPush) {
+      setStatus(`Committed ${hash.slice(0, 8)}. Pushing…`);
+      try {
+        const pushed = await invoke<string>("push_current_branch", { repo });
+        setStatus(`Committed ${hash.slice(0, 8)}. ${pushed}.`, "ok");
+      } catch (err) {
+        // The commit stands; only the push needs another go.
+        setStatus(`Committed ${hash.slice(0, 8)}, but the push failed: ${err}`, "error");
+      }
+      announce();
+    }
   } catch (err) {
     setStatus(String(err), "error");
   }
+  busy = false;
   await refresh();
 }
 
 commitBtn.addEventListener("click", () => void commit());
+commitMore.addEventListener("click", async () => {
+  const left = commitBtn.getBoundingClientRect().left;
+  const bottom = commitMore.getBoundingClientRect().bottom;
+  const menu = await Menu.new({
+    items: [
+      { id: "commit", text: "Commit", accelerator: "CmdOrCtrl+Enter", action: () => void commit() },
+      { id: "commit-push", text: "Commit & Push", accelerator: "CmdOrCtrl+Shift+Enter", action: () => void commit(true) },
+    ],
+  });
+  // Drop down under the split button, lined up with its left edge.
+  await menu.popup(new LogicalPosition(left, bottom + 4));
+});
 messageBox.addEventListener("input", updateCommitButton);
 messageBox.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
     e.preventDefault();
-    void commit();
+    void commit(e.shiftKey);
   }
 });
 $("refresh").addEventListener("click", () => void refresh());

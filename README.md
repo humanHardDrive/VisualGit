@@ -49,7 +49,7 @@ Using it: drag or scroll to pan, ⌘/Ctrl + scroll (or pinch) to zoom, click a c
 - **Files** on the left: every changed, new, deleted, renamed or conflicted file, each with a checkbox. Ticked files go into the next commit.
 - **Diff** on the right: the checked-out changeset next to your working copy. ↑/↓ in the diff bar (or F7 / ⇧F7) move from change to change, and the arrows between the sides put the committed text back over a change.
 - **Editing**: the working-copy side is an editor. ⌘S saves. Edits are also saved when you switch files, commit or close the window. Line endings (LF or CRLF) are kept as they were.
-- **Commit** at the top: type a message and press *Commit* (or ⌘↩). Only the ticked files are committed, exactly as they are on disk; anything else you had staged stays staged. During a merge, git requires the whole merge to be committed at once.
+- **Commit** at the top: type a message and press *Commit* (or ⌘↩). The ▾ next to it offers *Commit & Push* (⇧⌘↩), which pushes the checked-out branch after committing. It pushes to the branch's upstream, or, for a branch that has never been pushed, publishes it to `origin` and tracks it from then on. Only the ticked files are committed, exactly as they are on disk; anything else you had staged stays staged. During a merge, git requires the whole merge to be committed at once.
 
 The window refreshes when it regains focus, and the branch explorer reloads after each commit.
 

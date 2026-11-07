@@ -18,7 +18,12 @@ button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(
 }
 .commit-bar textarea:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: -1px; border-color: var(--accent); }
 .commit-side { display: flex; flex-direction: column; gap: 6px; width: 220px; }
-.commit-side button { padding: 6px 12px; }
+/* Split button: the main action, plus a caret for the alternatives. */
+.split { display: flex; }
+.split button { padding: 6px 12px; }
+.split #commit { flex: 1; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.split .caret { display: flex; align-items: center; padding: 0 8px; border-top-left-radius: 0; border-bottom-left-radius: 0; border-left: 1px solid color-mix(in srgb, #000 22%, var(--accent)); }
+.split .caret svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .commit-status { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; max-height: 5.5em; overflow: auto; }
 .commit-status.error { color: #d1242f; }
 .commit-status.ok { color: var(--merge); }
