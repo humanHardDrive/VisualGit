@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Permissions for the main window and the Pending Changes windows",
   "windows": ["main", "pending-*"],
-  "permissions": ["core:default", "core:window:allow-destroy", "dialog:allow-open"]
+  "permissions": ["core:default", "core:window:allow-destroy", "dialog:allow-open", "dialog:allow-ask"]
 }

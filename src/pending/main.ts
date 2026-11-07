@@ -11,6 +11,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
 import { emit } from "@tauri-apps/api/event";
 import { Menu } from "@tauri-apps/api/menu";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { basicSetup } from "codemirror";
 import { loadPendingChanges, type PendingChanges, type PendingFile } from "../git/status.ts";
@@ -145,7 +146,10 @@ checkAll.addEventListener("change", () => {
 let busy = false;
 
 function updateCommitButton() {
-  commitBtn.disabled = commitMore.disabled = busy || !messageBox.value.trim() || selectedFiles().length === 0;
+  const files = selectedFiles().length;
+  commitBtn.disabled = busy || !messageBox.value.trim() || files === 0;
+  // The drop-down also offers Undo Changes, which needs files but no message.
+  commitMore.disabled = busy || files === 0;
 }
 
 // ---- diff -------------------------------------------------------------------------------
@@ -372,14 +376,56 @@ async function commit(andPush = false) {
   await refresh();
 }
 
+/** True for files the checked-out changeset doesn't have: undoing them means removing them. */
+const isNew = (f: PendingFile) => !!f.untracked || f.staged === "A" || f.staged === "C" || (f.staged === "R" && !!f.origPath) || !pending.head;
+
+/** Puts the selected files back as they are in the checked-out changeset, after asking. */
+async function undoChanges() {
+  const files = selectedFiles();
+  if (busy || files.length === 0) return;
+  const created = files.filter(isNew).map((f) => f.path);
+  // Tracked files go back to their committed content; a rename also restores its old path.
+  const tracked = files.flatMap((f) => (isNew(f) ? (f.staged === "R" && f.origPath ? [f.origPath] : []) : [f.path]));
+  const what = files.length === 1 ? files[0].path : `${files.length} files`;
+  const ok = await ask(
+    `Undo the changes to ${what}? Their content goes back to the checked-out changeset and your edits are lost.` +
+      (created.length ? `
+
+New files (${created.length}) are moved to the Trash.` : ""),
+    { title: "Undo Changes", kind: "warning", okLabel: "Undo Changes", cancelLabel: "Cancel" },
+  );
+  if (!ok) return;
+  // Unsaved edits to an undone file are dropped, not saved first.
+  if (open && files.some((f) => f.path === open!.path)) {
+    open.view.destroy();
+    open = null;
+  }
+  busy = true;
+  updateCommitButton();
+  try {
+    await invoke("undo_changes", { repo, tracked, created });
+    setStatus(`Undid changes to ${what}`, "ok");
+    announce();
+  } catch (err) {
+    setStatus(String(err), "error");
+  }
+  busy = false;
+  if (current && files.some((f) => f.path === current!.path)) current = null;
+  await refresh();
+}
+
 commitBtn.addEventListener("click", () => void commit());
 commitMore.addEventListener("click", async () => {
   const left = commitBtn.getBoundingClientRect().left;
   const bottom = commitMore.getBoundingClientRect().bottom;
+  const canCommit = !!messageBox.value.trim();
+  const n = selectedFiles().length;
   const menu = await Menu.new({
     items: [
-      { id: "commit", text: "Commit", accelerator: "CmdOrCtrl+Enter", action: () => void commit() },
-      { id: "commit-push", text: "Commit & Push", accelerator: "CmdOrCtrl+Shift+Enter", action: () => void commit(true) },
+      { id: "commit", text: "Commit", accelerator: "CmdOrCtrl+Enter", enabled: canCommit, action: () => void commit() },
+      { id: "commit-push", text: "Commit & Push", accelerator: "CmdOrCtrl+Shift+Enter", enabled: canCommit, action: () => void commit(true) },
+      { item: "Separator" },
+      { id: "undo", text: `Undo Changes${n === 1 ? "" : ` (${n} files)`}…`, action: () => void undoChanges() },
     ],
   });
   // Drop down under the split button, lined up with its left edge.
