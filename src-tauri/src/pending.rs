@@ -1,6 +1,6 @@
 //! The Pending Changes window and the commands that change a repository:
-//! reading and saving working-tree files, committing selected files, and
-//! pushing branches.
+//! reading and saving working-tree files, committing selected files, undoing
+//! changes, and pushing branches.
 //!
 //! These are deliberately separate from the read-only `git` command: each one
 //! does a single, narrow thing, with its paths checked to stay inside the
@@ -119,12 +119,49 @@ fn commit(repo: &str, message: &str, paths: &[String]) -> Result<String, String>
     }
     // Stage the selected files exactly as they are on disk, including deletions.
     git(&root, &["add", "-A", "--"], paths, None)?;
-    // A merge must be committed whole; otherwise commit only the selection.
-    let merging = git(&root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"], &[], None).is_ok();
+    // A merge or cherry pick in progress must be committed whole; otherwise commit only the selection.
+    let merging = ["MERGE_HEAD", "CHERRY_PICK_HEAD"]
+        .iter()
+        .any(|r| git(&root, &["rev-parse", "-q", "--verify", r], &[], None).is_ok());
     let selection: &[String] = if merging { &[] } else { paths };
     let only: &[&str] = if merging { &["commit", "-F", "-"] } else { &["commit", "-F", "-", "--"] };
     git(&root, only, selection, Some(message))?;
     Ok(git(&root, &["rev-parse", "HEAD"], &[], None)?.trim().to_string())
+}
+
+/// Undoes pending changes. `tracked` paths (in the checked-out changeset) get
+/// their committed content back, in the working tree and the index. `created`
+/// paths (new files) are unstaged and moved to the Trash, so they can still be
+/// recovered.
+#[tauri::command]
+pub async fn undo_changes(repo: String, tracked: Vec<String>, created: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || undo(&repo, &tracked, &created, &to_trash))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn to_trash(files: &[&PathBuf]) -> Result<(), String> {
+    trash::delete_all(files).map_err(|e| format!("could not move new files to the Trash: {e}"))
+}
+
+/// `discard` gets rid of the new files (the Trash in the app; tests delete them).
+fn undo(repo: &str, tracked: &[String], created: &[String], discard: &dyn Fn(&[&PathBuf]) -> Result<(), String>) -> Result<(), String> {
+    let root = repo_root(repo)?;
+    for p in tracked.iter().chain(created) {
+        check_relative(p)?;
+    }
+    let files: Vec<PathBuf> = created.iter().map(|p| resolve(repo, p)).collect::<Result<_, _>>()?;
+    if !created.is_empty() {
+        git(&root, &["rm", "--cached", "--quiet", "--ignore-unmatch", "-r", "--"], created, None)?;
+    }
+    if !tracked.is_empty() {
+        git(&root, &["restore", "--source=HEAD", "--staged", "--worktree", "--"], tracked, None)?;
+    }
+    let existing: Vec<&PathBuf> = files.iter().filter(|f| f.symlink_metadata().is_ok()).collect();
+    if !existing.is_empty() {
+        discard(&existing)?;
+    }
+    Ok(())
 }
 
 /// Pushes the checked-out branch and returns a summary like "Pushed main to origin".
@@ -180,7 +217,7 @@ fn push_named(root: &Path, branch: &str) -> Result<String, String> {
     Ok(format!("Pushed {branch} to {remote} (new branch)"))
 }
 
-fn git(root: &Path, args: &[&str], paths: &[String], stdin: Option<&str>) -> Result<String, String> {
+pub(crate) fn git(root: &Path, args: &[&str], paths: &[String], stdin: Option<&str>) -> Result<String, String> {
     let mut cmd = Command::new("git");
     cmd.arg("-C")
         .arg(root)
@@ -209,7 +246,7 @@ fn git(root: &Path, args: &[&str], paths: &[String], stdin: Option<&str>) -> Res
 }
 
 /// The repository's top-level folder, canonicalised.
-fn repo_root(repo: &str) -> Result<PathBuf, String> {
+pub(crate) fn repo_root(repo: &str) -> Result<PathBuf, String> {
     let path = Path::new(repo).canonicalize().map_err(|_| format!("not a directory: {repo}"))?;
     if !path.join(".git").exists() {
         return Err(format!("not the top of a Git repository: {repo}"));
@@ -337,6 +374,32 @@ mod tests {
         assert!(push_named(&dir, "--force").is_err());
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&remote).ok();
+    }
+
+    #[test]
+    fn undoes_changes_and_trashes_new_files() {
+        let dir = scratch_repo();
+        let repo = dir.to_string_lossy().into_owned();
+        std::fs::write(dir.join("keep.txt"), "original\n").unwrap();
+        std::fs::write(dir.join("gone.txt"), "g\n").unwrap();
+        commit(&repo, "base", &["keep.txt".into(), "gone.txt".into()]).unwrap();
+
+        std::fs::write(dir.join("keep.txt"), "edited\n").unwrap();
+        git(&dir, &["add", "keep.txt"], &[], None).unwrap(); // staged too
+        std::fs::remove_file(dir.join("gone.txt")).unwrap();
+        std::fs::write(dir.join("added.txt"), "a\n").unwrap();
+        git(&dir, &["add", "added.txt"], &[], None).unwrap();
+
+        let delete = |files: &[&PathBuf]| {
+            files.iter().try_for_each(|f| std::fs::remove_file(f)).map_err(|e| e.to_string())
+        };
+        undo(&repo, &["keep.txt".into(), "gone.txt".into()], &["added.txt".into()], &delete).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("keep.txt")).unwrap(), "original\n");
+        assert_eq!(std::fs::read_to_string(dir.join("gone.txt")).unwrap(), "g\n");
+        assert!(!dir.join("added.txt").exists());
+        assert_eq!(git(&dir, &["status", "--porcelain"], &[], None).unwrap(), "");
+        assert!(undo(&repo, &["../x".into()], &[], &delete).is_err());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

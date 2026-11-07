@@ -57,6 +57,8 @@ const explorer = new Explorer(canvas, $("tooltip"), {
   onSelect: (sel) => applySelection(sel, false),
   onContextMenu: (sel) => void showContextMenu(sel),
   onOpenPending: openPendingChanges,
+  onOpenChangeset: (hash) => openDiffWindow(hash),
+  onOpenBranch: (id) => openBranchDiff(id),
 });
 
 // ---- storage ---------------------------------------------------------------
@@ -96,11 +98,36 @@ async function showContextMenu(sel: Selection) {
   if (!model) return;
   // Pending changes are relative to the checked-out changeset: offered on it and on the checked-out branch.
   const isHead = sel.kind === "commit" ? sel.hash === model.headHash : model.branches[sel.id].isHead;
-  const items: { id: string; text: string; enabled: boolean; action: () => void }[] = [
+  const items: ({ id: string; text: string; enabled: boolean; action: () => void } | { item: "Separator" })[] = [
     { id: "pending-changes", text: "Pending Changes", enabled: isHead, action: openPendingChanges },
   ];
+  if (sel.kind === "commit") {
+    const hash = sel.hash;
+    const target = switchTarget(model, hash);
+    // The double-click action, so it comes first.
+    items.unshift({ id: "view-changes", text: "View Changes", enabled: true, action: () => openDiffWindow(hash) });
+    items.push(
+      { item: "Separator" },
+      {
+        id: "switch",
+        text: target.branch ? `Switch to This Changeset (${target.branch})` : "Switch to This Changeset",
+        enabled: !target.current,
+        action: () => void switchTo(hash, target.branch),
+      },
+      { id: "create-branch", text: "Create Branch from This Changeset", enabled: true, action: () => openBranchDialog(hash) },
+      { item: "Separator" },
+      // Merging the checked-out changeset into itself would do nothing.
+      { id: "merge-from", text: "Merge from This Changeset", enabled: hash !== model.headHash, action: () => openMergeWindow(hash) },
+      { id: "cherry-pick", text: "Cherry Pick This Changeset", enabled: hash !== model.headHash, action: () => void cherryPick(hash) },
+    );
+  }
   if (sel.kind === "branch") {
     const b = model.branches[sel.id];
+    const id = sel.id;
+    // The double-click action, so it comes first; a branch with no changesets has nothing to show.
+    items.unshift({ id: "view-branch-changes", text: "View Changes", enabled: b.commits.length > 0, action: () => openBranchDiff(id) });
+    const go = switchToBranchCall(b);
+    items.push({ id: "switch-branch", text: "Switch to This Branch", enabled: !!go && !b.isHead, action: () => go && void runSwitch(b.name, go) });
     const local = b.refs.find((r) => r.startsWith("refs/heads/"));
     if (local) {
       const name = local.slice("refs/heads/".length);
@@ -112,6 +139,161 @@ async function showContextMenu(sel: Selection) {
   const menu = await Menu.new({ items });
   await menu.popup();
 }
+
+// ---- switch ----------------------------------------------------------------------
+
+/**
+ * What switching to `hash` checks out: a local branch whose tip it is (the
+ * lane's own branch first), else the changeset itself as a detached HEAD.
+ * `current` when that is what's checked out already.
+ */
+function switchTarget(m: Model, hash: string): { branch?: string; current: boolean } {
+  const tipOf = (b: Model["branches"][number]) => {
+    const local = b.refs.find((r) => r.startsWith("refs/heads/"));
+    return local && b.tips[0] === hash ? local.slice("refs/heads/".length) : undefined;
+  };
+  const names = m.branches.map(tipOf).filter((n): n is string => !!n);
+  if (hash === m.headHash && (m.headBranch ? names.includes(m.headBranch) : names.length === 0)) {
+    return { branch: m.headBranch, current: true };
+  }
+  const lane = tipOf(m.branches[m.owner.get(hash)!]);
+  return { branch: lane ?? names[0], current: false };
+}
+
+function switchTo(hash: string, branch: string | undefined) {
+  void runSwitch(branch ?? hash.slice(0, 8), (repo) => invoke<string>("switch_to_changeset", { repo, at: hash, branch: branch ?? null }));
+}
+
+/**
+ * How "Switch to This Branch" gets there: a local branch is checked out; a
+ * remote-only one gets a local tracking branch; a deleted or unnamed lane's
+ * last changeset is checked out as a detached HEAD.
+ */
+function switchToBranchCall(b: Model["branches"][number]): ((repo: string) => Promise<string>) | null {
+  const local = b.refs.find((r) => r.startsWith("refs/heads/"));
+  if (local) {
+    const name = local.slice("refs/heads/".length);
+    return (repo) => invoke<string>("switch_to_changeset", { repo, at: b.tips[0], branch: name });
+  }
+  const remote = b.refs.find((r) => r.startsWith("refs/remotes/"));
+  if (remote) return (repo) => invoke<string>("switch_to_remote_branch", { repo, remoteRef: remote });
+  const last = b.commits[b.commits.length - 1];
+  return last ? (repo) => invoke<string>("switch_to_changeset", { repo, at: last, branch: null }) : null;
+}
+
+/** Applies a changeset on top of HEAD; on conflicts, Pending Changes takes over. */
+async function cherryPick(hash: string) {
+  if (!repoPath || !git || !model) return;
+  const path = repoPath;
+  const short = hash.slice(0, 8);
+  if (await hasPendingChanges("cherry picking")) return;
+  notify(`Cherry picking ${short}…`);
+  try {
+    const result = await invoke<{ committed: string | null; conflicts: string[] }>("cherry_pick", { repo: path, at: hash });
+    if (result.committed) {
+      notify(`Cherry picked ${short} as ${result.committed.slice(0, 8)}.`, "ok");
+    } else {
+      const n = result.conflicts.length;
+      notify(`Cherry picking ${short} stopped with conflicts in ${n} file${n === 1 ? "" : "s"}. Resolve them in Pending Changes and commit, or abort there.`, "error");
+      openPendingChanges();
+    }
+  } catch (err) {
+    notify(`Could not cherry pick ${short}: ${err}`, "error");
+    return;
+  }
+  if (repoPath !== path) return;
+  await loadRepoAt(path, { reload: true });
+  goHome();
+}
+
+/**
+ * True (after opening Pending Changes) when tracked files have uncommitted
+ * changes, which should be committed before `doing` something to HEAD.
+ * Untracked files don't get in the way and simply stay put.
+ */
+async function hasPendingChanges(doing: string): Promise<boolean> {
+  const status = await git!.run(["status", "--porcelain", "-z", "--untracked-files=no"]).catch(() => "");
+  if (!status) return false;
+  openPendingChanges();
+  notify(`You have pending changes. Commit them in Pending Changes before ${doing}.`);
+  return true;
+}
+
+/** Runs a switch unless there are pending changes, then reloads and shows the new HEAD. */
+async function runSwitch(label: string, call: (repo: string) => Promise<string>) {
+  if (!repoPath || !git) return;
+  const path = repoPath;
+  if (await hasPendingChanges("switching")) return;
+  notify(`Switching to ${label}…`);
+  try {
+    notify(`${await call(path)}.`, "ok");
+  } catch (err) {
+    notify(`Could not switch: ${err}`, "error");
+    return;
+  }
+  if (repoPath !== path) return;
+  await loadRepoAt(path, { reload: true });
+  goHome();
+}
+
+// ---- create branch -----------------------------------------------------------------
+
+const branchDialog = $<HTMLDialogElement>("branch-dialog");
+const branchName = $<HTMLInputElement>("branch-name");
+const branchSwitch = $<HTMLInputElement>("branch-switch");
+const branchError = $("branch-error");
+const branchCreate = $<HTMLButtonElement>("branch-create");
+let branchAt: string | null = null;
+
+function openBranchDialog(hash: string) {
+  if (!model) return;
+  branchAt = hash;
+  const owner = model.branches[model.owner.get(hash)!];
+  $("branch-from").textContent = hash.slice(0, 8);
+  $("branch-from-branch").textContent = owner.name;
+  $("branch-from-branch").style.color = branchColor(model, owner.id);
+  branchName.value = "";
+  branchError.textContent = "";
+  // Switching from the checked-out changeset just carries any work in progress along.
+  branchSwitch.checked = hash === model.headHash;
+  branchCreate.disabled = true;
+  branchDialog.showModal();
+  branchName.focus();
+}
+
+branchName.addEventListener("input", () => {
+  const name = branchName.value.trim();
+  const taken = model?.branches.some((b) => b.name === name && b.refs.some((r) => r === `refs/heads/${name}`));
+  branchError.textContent = taken ? `A branch named “${name}” already exists` : /\s/.test(name) ? "Branch names can't contain spaces" : "";
+  branchCreate.disabled = !name || !!branchError.textContent;
+});
+$("branch-cancel").addEventListener("click", () => branchDialog.close());
+
+$("branch-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!repoPath || !branchAt) return;
+  const path = repoPath;
+  const name = branchName.value.trim();
+  branchCreate.disabled = true;
+  try {
+    const result = await invoke<{ switched: boolean; switchError: string | null }>("create_branch", {
+      repo: path,
+      name,
+      at: branchAt,
+      switchTo: branchSwitch.checked,
+    });
+    branchDialog.close();
+    if (result.switchError) notify(`Created ${name}, but could not switch to it: ${result.switchError}`, "error");
+    else notify(result.switched ? `Created ${name} and switched to it.` : `Created ${name}.`, "ok");
+    if (repoPath !== path) return;
+    await loadRepoAt(path, { reload: true });
+    const created = model?.branches.find((b) => b.name === name);
+    if (created) applySelection({ kind: "branch", id: created.id }, true);
+  } catch (err) {
+    branchError.textContent = String(err);
+    branchCreate.disabled = false;
+  }
+});
 
 const toast = $("toast");
 let toastTimer = 0;
@@ -136,6 +318,34 @@ async function pushBranch(branch: string) {
     notify(`Could not push ${branch}: ${err}`, "error");
   }
   if (repoPath === path) reload();
+}
+
+/** Opens the diff window showing what changeset `hash` changed. */
+function openDiffWindow(hash: string) {
+  if (repoPath) void invoke("open_diff_window", { repo: repoPath, at: hash }).catch((err) => notify(`Could not open the changeset: ${err}`, "error"));
+}
+
+/**
+ * Opens the diff window with everything branch `id` changed: from the
+ * changeset it was created from (or from nothing, for a root branch) to its
+ * latest changeset.
+ */
+function openBranchDiff(id: number) {
+  if (!repoPath || !model) return;
+  const b = model.branches[id];
+  const tip = b.commits[b.commits.length - 1];
+  if (!tip) {
+    notify(`${b.name} has no changesets of its own yet, so it hasn't changed anything.`, "ok");
+    return;
+  }
+  void invoke("open_diff_window", { repo: repoPath, at: tip, branch: b.name, base: b.base }).catch((err) =>
+    notify(`Could not open the changes on ${b.name}: ${err}`, "error"),
+  );
+}
+
+/** Opens the merge window previewing `hash` merged into the checked-out changeset. */
+function openMergeWindow(hash: string) {
+  if (repoPath) void invoke("open_merge_window", { repo: repoPath, from: hash }).catch((err) => notify(`Could not open the merge window: ${err}`, "error"));
 }
 
 /** Opens (or brings forward) the Pending Changes window for the open repository. */
@@ -589,6 +799,7 @@ function renderBranches() {
     if (push) badge(push.replace("not pushed · ", "local · "), "unpushed");
     if (b.kind === "deleted") badge("deleted");
     item.onclick = () => applySelection({ kind: "branch", id }, true);
+    item.ondblclick = () => openBranchDiff(id);
     item.oncontextmenu = (e) => {
       e.preventDefault();
       applySelection({ kind: "branch", id }, true);
@@ -646,6 +857,7 @@ $("zoom-fit").addEventListener("click", () => explorer.fit());
 repoFilter.addEventListener("input", renderRepos);
 
 window.addEventListener("keydown", (e) => {
+  if (branchDialog.open) return; // the dialog handles its own keys (Esc closes it)
   const mod = e.metaKey || e.ctrlKey;
   // ⌘O and ⇧⌘O are File menu accelerators (src-tauri/src/menu.rs).
   if (mod && e.key === "r") {

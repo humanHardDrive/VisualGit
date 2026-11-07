@@ -1,7 +1,5 @@
 /* Pending Changes window. Shares colours, buttons and the nav buttons with styles.css. */
 
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
 
 .commit-bar { display: flex; gap: 10px; padding: 10px 12px; background: var(--panel); border-bottom: 1px solid var(--border); }
 .commit-bar textarea {
@@ -27,6 +25,11 @@ button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(
 .commit-status { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; max-height: 5.5em; overflow: auto; }
 .commit-status.error { color: #d1242f; }
 .commit-status.ok { color: var(--merge); }
+
+/* A merge or cherry pick waiting for its conflicts to be resolved. */
+.operation-bar { display: flex; align-items: center; gap: 10px; padding: 6px 12px; background: color-mix(in srgb, #d97706 14%, var(--panel)); border-bottom: 1px solid var(--border); }
+.operation-bar span { flex: 1; min-width: 0; }
+.operation-bar button { flex: none; }
 
 .pending-layout { flex: 1; display: grid; grid-template-columns: 300px 1fr; min-height: 0; }
 
