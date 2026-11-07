@@ -3,7 +3,7 @@
  * connectors and merge arrows, with pan/zoom and hit testing.
  */
 
-import type { Branch, Model } from "../model/infer.ts";
+import { pendingChangesOn, uncommittedHead, type Branch, type Model } from "../model/infer.ts";
 import type { Layout, Span } from "../model/layout.ts";
 
 export const COL = 30;
@@ -35,6 +35,17 @@ export interface View {
   ty: number;
 }
 
+/**
+ * How a local branch stands against its remote: "↑3" (three changesets not
+ * pushed), "not pushed" (never pushed), or null when it's up to date or
+ * there's no remote to compare with.
+ */
+export function pushLabel(model: Model, b: Branch): string | null {
+  if (!model.hasRemotes || !b.refs.some((r) => r.startsWith("refs/heads/"))) return null;
+  if (!b.published) return b.unpushed ? `not pushed · ↑${b.unpushed}` : "not pushed";
+  return b.unpushed ? `↑${b.unpushed}` : null;
+}
+
 export function branchColor(model: Model, id: number): string {
   return id === model.trunk ? TRUNK_COLOR : PALETTE[id % PALETTE.length];
 }
@@ -52,10 +63,15 @@ interface Theme {
   nodeStroke: string;
   canvas: string;
   match: string;
+  unpushed: string;
 }
 
 export interface ExplorerEvents {
   onSelect(sel: Selection | null): void;
+  /** Right-click on a changeset or branch, after it has been selected. */
+  onContextMenu(sel: Selection): void;
+  /** Double-click on the checked-out changeset or the hollow HEAD marker over uncommitted work. */
+  onOpenPending(): void;
 }
 
 export class Explorer {
@@ -70,6 +86,10 @@ export class Explorer {
   private ty = 0;
   private selection: Selection | null = null;
   private hovered: string | null = null;
+  /** Branch whose empty lane carries the HEAD marker, if HEAD's branch has no changesets yet. */
+  private headLane: number | null = null;
+  /** Branch with an empty "pending changes" changeset after its latest one (which then carries the HEAD marker). */
+  private pendingLane: number | null = null;
   private matches: Matches | null = null;
   private frame = 0;
   private theme!: Theme;
@@ -95,6 +115,8 @@ export class Explorer {
   setData(model: Model, layout: Layout, view: "keep" | "latest" | View) {
     this.model = model;
     this.layout = layout;
+    this.headLane = uncommittedHead(model)?.id ?? null;
+    this.pendingLane = pendingChangesOn(model)?.id ?? null;
     if (this.selection?.kind === "commit" && !model.commits.has(this.selection.hash)) this.selection = null;
     if (this.selection?.kind === "branch" && !model.branches[this.selection.id]) this.selection = null;
     if (view === "latest") this.latest();
@@ -184,7 +206,7 @@ export class Explorer {
       const left = colX(s.startCol) + COL * 0.6;
       return { left, right: left + EMPTY_W };
     }
-    return { left: colX(s.firstCol) - 12, right: colX(s.lastCol) + 12 };
+    return { left: colX(s.firstCol) - 12, right: colX(s.pendingCol ?? s.lastCol) + 12 };
   }
 
   private commitPos(hash: string) {
@@ -219,7 +241,7 @@ export class Explorer {
     if (col >= 0 && col < model.order.length) {
       const h = model.order[col];
       const p = this.commitPos(h);
-      const radius = model.tags.has(h) ? RELEASE_R : (h === model.headHash ? HEAD_R : NODE_R) + 4 / this.scale;
+      const radius = model.tags.has(h) ? RELEASE_R : (this.isHeadCommit(h) ? HEAD_R : NODE_R) + 4 / this.scale;
       if (Math.hypot(p.x - wx, p.y - wy) <= radius) return { kind: "commit", hash: h };
     }
     for (const s of layout.spans) {
@@ -231,6 +253,24 @@ export class Explorer {
       }
     }
     return null;
+  }
+
+  /** Whether a screen point is on the hollow HEAD marker (an empty branch's slot or the pending-changes changeset). */
+  private onHollowHead(sx: number, sy: number) {
+    const layout = this.layout;
+    const id = this.headLane ?? this.pendingLane;
+    if (!layout || id === null) return false;
+    const span = layout.spans[id];
+    const { left, right } = this.bandExtent(span);
+    const x = span.pendingCol !== null ? colX(span.pendingCol) : (left + right) / 2;
+    const wx = (sx - this.tx) / this.scale;
+    const wy = (sy - this.ty) / this.scale;
+    return Math.hypot(x - wx, rowMid(span.row) - wy) <= HEAD_R + 4 / this.scale;
+  }
+
+  /** The changeset drawn with the HEAD marker (unless HEAD's branch has an empty lane of its own). */
+  private isHeadCommit(hash: string) {
+    return hash === this.model?.headHash && this.headLane === null && this.pendingLane === null;
   }
 
   private labelWidth(b: Branch) {
@@ -253,6 +293,7 @@ export class Explorer {
     let drag: { x: number; y: number; tx: number; ty: number; moved: boolean } | null = null;
 
     c.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return; // only the primary button pans and selects
       c.setPointerCapture(e.pointerId);
       drag = { x: e.clientX, y: e.clientY, tx: this.tx, ty: this.ty, moved: false };
     });
@@ -283,6 +324,7 @@ export class Explorer {
       this.showTooltip(h, e.clientX - r.left, e.clientY - r.top);
     });
     c.addEventListener("pointerup", (e) => {
+      if (e.button !== 0) return;
       c.classList.remove("dragging");
       const wasDrag = drag?.moved;
       drag = null;
@@ -291,6 +333,24 @@ export class Explorer {
       const hit = this.hitTest(e.clientX - r.left, e.clientY - r.top);
       this.select(hit);
       this.events.onSelect(hit);
+    });
+    c.addEventListener("dblclick", (e) => {
+      const r = c.getBoundingClientRect();
+      const sx = e.clientX - r.left;
+      const sy = e.clientY - r.top;
+      const hit = this.hitTest(sx, sy);
+      if ((hit?.kind === "commit" && hit.hash === this.model?.headHash) || this.onHollowHead(sx, sy)) this.events.onOpenPending();
+    });
+    c.addEventListener("contextmenu", (e) => {
+      // Replace the webview's own menu (Reload, Inspect) on the explorer.
+      e.preventDefault();
+      const r = c.getBoundingClientRect();
+      const hit = this.hitTest(e.clientX - r.left, e.clientY - r.top);
+      if (!hit) return;
+      this.showTooltip(null, 0, 0);
+      this.select(hit);
+      this.events.onSelect(hit);
+      this.events.onContextMenu(hit);
     });
     c.addEventListener("pointerleave", () => {
       this.hovered = null;
@@ -329,6 +389,12 @@ export class Explorer {
     meta.className = "meta";
     meta.textContent = `${hash.slice(0, 8)} · ${b.name} · ${c.author} · ${new Date(c.time * 1000).toLocaleString()}`;
     tip.append(title, meta);
+    if (this.model.unpushed.has(hash)) {
+      const note = document.createElement("div");
+      note.className = "meta unpushed";
+      note.textContent = "Not pushed";
+      tip.append(note);
+    }
     const tags = this.model.tags.get(hash);
     if (tags) {
       const release = document.createElement("div");
@@ -356,6 +422,7 @@ export class Explorer {
       nodeStroke: v("--node-stroke"),
       canvas: v("--canvas"),
       match: v("--match"),
+      unpushed: v("--unpushed"),
     };
   }
 
@@ -423,10 +490,17 @@ export class Explorer {
         const lx = Math.max(left + 2, Math.min(view.x0 + 8, right - tw - 2));
         ctx.fillStyle = ghost ? t.muted : t.text;
         ctx.fillText(label, lx, rowTop(span.row) + 15);
+        let after = lx + tw + 8;
+        ctx.font = "700 10px -apple-system, system-ui, sans-serif";
         if (b.isHead) {
           ctx.fillStyle = t.accent;
-          ctx.font = "700 10px -apple-system, system-ui, sans-serif";
-          ctx.fillText("HEAD", lx + tw + 8, rowTop(span.row) + 15);
+          ctx.fillText("HEAD", after, rowTop(span.row) + 15);
+          after += ctx.measureText("HEAD").width + 8;
+        }
+        const push = pushLabel(model, b);
+        if (push) {
+          ctx.fillStyle = t.unpushed;
+          ctx.fillText(push, after, rowTop(span.row) + 15);
         }
       }
     }
@@ -461,6 +535,19 @@ export class Explorer {
       ctx.lineTo(Math.min(colX(span.lastCol), view.x1 + 10), rowMid(span.row));
       ctx.strokeStyle = withAlpha(branchColor(model, span.branch), 0.55);
       ctx.stroke();
+    }
+
+    // Dashed lane line on to the pending-changes changeset.
+    for (const span of layout.spans) {
+      if (span.pendingCol === null || span.lastCol === null || !visibleRow(span.row)) continue;
+      ctx.beginPath();
+      ctx.moveTo(colX(span.lastCol) + NODE_R, rowMid(span.row));
+      ctx.lineTo(colX(span.pendingCol) - HEAD_R, rowMid(span.row));
+      ctx.strokeStyle = withAlpha(branchColor(model, span.branch), 0.55);
+      ctx.lineWidth = 2;
+      ctx.setLineDash([3, 3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
 
     // Merges (green arrows) and other cross-lane parent links.
@@ -498,7 +585,7 @@ export class Explorer {
       const commit = model.commits.get(hash)!;
       const ghost = model.branches[id].kind === "deleted" || model.branches[id].kind === "anonymous";
       const tags = model.tags.get(hash);
-      const isHead = hash === model.headHash;
+      const isHead = this.isHeadCommit(hash);
       const r = isHead ? HEAD_R : NODE_R;
       const hit = this.matches?.commits.has(hash);
       // While searching, changesets that don't match (and aren't on a matching branch) fade back.
@@ -532,6 +619,8 @@ export class Explorer {
         ctx.fill();
       }
       if (hash === this.hovered && hash !== selectedHash) ring(ctx, x, y, r + 3, withAlpha(t.text, 0.5), 1.5);
+      // Not pushed: a small up-arrow above the changeset.
+      if (model.unpushed.has(hash) && s > 0.35) upArrow(ctx, x, y - r - 2, t.unpushed);
 
       // Releases (tags): a circle drawn around the changeset, with the release name under it.
       if (tags) {
@@ -552,10 +641,26 @@ export class Explorer {
       if (span.firstCol !== null) continue;
       const { left, right } = this.bandExtent(span);
       if (right < view.x0 || left > view.x1 || !visibleRow(span.row)) continue;
+      const x = (left + right) / 2;
+      const y = rowMid(span.row);
+      if (span.branch === this.headLane) {
+        // The checked-out branch with nothing committed yet: HEAD sits in its empty slot,
+        // hollow because the changes there are still uncommitted.
+        hollowHome(ctx, x, y, t);
+        continue;
+      }
       const color = branchColor(model, span.branch);
       ctx.setLineDash([2, 2]);
-      ring(ctx, (left + right) / 2, rowMid(span.row), NODE_R - 1, color, 1.5);
+      ring(ctx, x, y, NODE_R - 1, color, 1.5);
       ctx.setLineDash([]);
+    }
+
+    // Pending changes on a branch with changesets: an empty changeset after the latest one.
+    for (const span of layout.spans) {
+      if (span.pendingCol === null || !visibleRow(span.row)) continue;
+      const x = colX(span.pendingCol);
+      if (x < view.x0 - 20 || x > view.x1 + 20) continue;
+      hollowHome(ctx, x, rowMid(span.row), t);
     }
   }
 
@@ -604,6 +709,34 @@ function houseIcon(ctx: CanvasRenderingContext2D, x: number, y: number, color: s
   ctx.lineTo(x - 3.4, y + 4.4);
   ctx.lineTo(x - 3.4, y - 0.6);
   ctx.lineTo(x - 5, y - 0.6);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+}
+
+/** HEAD over uncommitted work: a hollow disc with the home symbol, in the accent colour. */
+function hollowHome(ctx: CanvasRenderingContext2D, x: number, y: number, t: Theme) {
+  ctx.beginPath();
+  ctx.arc(x, y, HEAD_R, 0, Math.PI * 2);
+  ctx.fillStyle = t.canvas;
+  ctx.fill();
+  // Dashed, like an empty changeset: nothing is committed here yet.
+  ctx.setLineDash([3, 2]);
+  ring(ctx, x, y, HEAD_R, t.accent, 2);
+  ctx.setLineDash([]);
+  houseIcon(ctx, x, y, t.accent);
+}
+
+/** A small solid arrow pointing up, its base at (x, y). */
+function upArrow(ctx: CanvasRenderingContext2D, x: number, y: number, color: string) {
+  ctx.beginPath();
+  ctx.moveTo(x, y - 6);
+  ctx.lineTo(x + 3.5, y - 2.5);
+  ctx.lineTo(x + 1.2, y - 2.5);
+  ctx.lineTo(x + 1.2, y);
+  ctx.lineTo(x - 1.2, y);
+  ctx.lineTo(x - 1.2, y - 2.5);
+  ctx.lineTo(x - 3.5, y - 2.5);
   ctx.closePath();
   ctx.fillStyle = color;
   ctx.fill();

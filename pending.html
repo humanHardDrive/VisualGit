@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pending Changes</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <link rel="stylesheet" href="/src/pending/pending.css" />
+  </head>
+  <body class="pending-window">
+    <header class="commit-bar">
+      <textarea id="message" rows="2" placeholder="Commit message (⌘↩ commit · ⇧⌘↩ commit &amp; push)" spellcheck="true" aria-label="Commit message"></textarea>
+      <div class="commit-side">
+        <div class="split" role="group" aria-label="Commit">
+          <button id="commit" class="primary" title="Commit the selected files (⌘↩)" disabled>Commit</button>
+          <button id="commit-more" class="primary caret" title="More commit options" aria-label="More commit options" aria-haspopup="menu" disabled>
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
+          </button>
+        </div>
+        <div id="commit-status" class="commit-status" role="status"></div>
+      </div>
+    </header>
+    <main class="pending-layout">
+      <aside class="file-pane">
+        <div class="file-head">
+          <label class="check-all"><input id="check-all" type="checkbox" checked /> <span id="file-count">Files</span></label>
+          <button id="refresh" class="icon" title="Refresh">↻</button>
+        </div>
+        <div id="branch-info" class="branch-info"></div>
+        <div id="file-list" class="file-list" role="listbox" aria-label="Pending changes"></div>
+      </aside>
+      <section class="diff-pane">
+        <div class="diff-bar">
+          <div id="diff-title" class="diff-title"></div>
+          <div class="spacer"></div>
+          <span id="change-count" class="change-count"></span>
+          <div class="nav" role="group" aria-label="Change navigation">
+            <button id="prev-change" class="nav-btn" title="Previous change (⇧F7)" aria-label="Previous change" disabled>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 10 5-5 5 5" /></svg>
+            </button>
+            <button id="next-change" class="nav-btn" title="Next change (F7)" aria-label="Next change" disabled>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 6 5 5 5-5" /></svg>
+            </button>
+          </div>
+          <button id="save" title="Save the file (⌘S)" disabled>Save</button>
+        </div>
+        <div class="diff-sides"><span>Checked-out changeset</span><span>Working copy</span></div>
+        <div id="diff" class="diff"></div>
+        <div id="diff-message" class="diff-message" hidden></div>
+      </section>
+    </main>
+    <script type="module" src="/src/pending/main.ts"></script>
+  </body>
+</html>

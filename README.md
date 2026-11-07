@@ -2,7 +2,7 @@
 
 A free, open-source Git client built around a **Plastic SCM–style Branch Explorer**: every branch is its own horizontal lane, changesets sit on the lane they were made on, you can see where each branch was created and how branches merge back. Even a brand-new branch with no commits shows up as its own lane.
 
-> Status: milestone 1, a read-only explorer. Open a repository and browse it. Writing (creating branches, merging) comes next.
+> Status: 1.0 is the branch explorer. Work in progress: committing from the Pending Changes window. Creating branches and merging come next.
 
 ## Why this is hard in Git
 
@@ -32,7 +32,26 @@ VISUALGIT_REPO=/path/to/repo npm run app  # open a repository straight away
 
 The app opens whatever repository you pass as `visualgit /path/to/repo` or in `VISUALGIT_REPO`, otherwise the last one you opened.
 
+The home symbol marks what's checked out. When you have uncommitted changes, an empty changeset is drawn at the end of the checked-out branch, after its latest changeset, with a hollow, dashed home symbol. A branch you've just created and switched to shows the same hollow home symbol in its empty slot. Right-click either one for *Pending Changes*.
+
+**What hasn't been pushed** is shown in orange, as of your last fetch:
+
+- A changeset that no remote-tracking branch contains gets a small up-arrow.
+- A branch shows ↑3 when three of its changesets aren't pushed, or *not pushed* if the branch itself has never been pushed. This appears on its lane, in the sidebar and in the details panel.
+- The toolbar shows how many changesets are waiting to be pushed in total.
+
+A repository with no remote-tracking branches shows none of this. To push a branch, right-click it (on its lane or in the sidebar) and choose *Push*. This is offered while the branch has changesets to push or has never been pushed. A branch with an upstream goes to it; a new branch is published to `origin` and tracks it from then on.
+
 Using it: drag or scroll to pan, ⌘/Ctrl + scroll (or pinch) to zoom, click a changeset or branch for details.
+
+**Pending Changes.** Double-click the checked-out changeset (the one with the home symbol), or right-click it or its branch and choose *Pending Changes*. This opens a window for that repository:
+
+- **Files** on the left: every changed, new, deleted, renamed or conflicted file, each with a checkbox. Ticked files go into the next commit.
+- **Diff** on the right: the checked-out changeset next to your working copy. ↑/↓ in the diff bar (or F7 / ⇧F7) move from change to change, and the arrows between the sides put the committed text back over a change.
+- **Editing**: the working-copy side is an editor. ⌘S saves. Edits are also saved when you switch files, commit or close the window. Line endings (LF or CRLF) are kept as they were.
+- **Commit** at the top: type a message and press *Commit* (or ⌘↩). The ▾ next to it offers *Commit & Push* (⇧⌘↩), which pushes the checked-out branch after committing. It pushes to the branch's upstream, or, for a branch that has never been pushed, publishes it to `origin` and tracks it from then on. Only the ticked files are committed, exactly as they are on disk; anything else you had staged stays staged. During a merge, git requires the whole merge to be committed at once.
+
+The window refreshes when it regains focus, and the branch explorer reloads after each commit.
 
 **Search.** The search box in the toolbar (⌘F) looks through branch names, changeset ids and commit messages (the full message, not just the first line), plus release names. Matching ignores case and finds the text anywhere, and two wildcards are supported: `*` matches any run of characters and `?` matches exactly one, so `feat*login` finds `feature/login-page` and `v1.?` finds `v1.2`. A changeset id matches from its start once you've typed four or more hex digits. Matches are highlighted in the explorer and everything else fades back. ↑/↓ steps through the results list, Enter jumps to one, Esc ends the search.
 
@@ -61,12 +80,15 @@ cd src-tauri && cargo test              # backend tests: command validation, wor
 | Path | What it does |
 | --- | --- |
 | [src/git/load.ts](src/git/load.ts) | Reads refs, history and reflogs with read-only git commands |
+| [src/git/status.ts](src/git/status.ts) | Reads pending changes (`git status --porcelain=v2`) |
 | [src/model/infer.ts](src/model/infer.ts) | Turns raw history into branches with parents, bases and owned changesets |
 | [src/model/layout.ts](src/model/layout.ts) | Assigns lanes to rows and changesets to columns |
 | [src/model/search.ts](src/model/search.ts) | Search with `*` / `?` wildcards |
 | [src/view/explorer.ts](src/view/explorer.ts) | Canvas renderer, pan/zoom and hit testing |
 | [src/view/details.ts](src/view/details.ts) | Changeset and branch details panel |
 | [src-tauri/src/lib.rs](src-tauri/src/lib.rs) | Rust backend: one `git` command that only allows read-only subcommands |
+| [src-tauri/src/pending.rs](src-tauri/src/pending.rs) | The commands that change things: open the Pending Changes window, read and save working-tree files (paths checked to stay inside the repository), commit selected files |
+| [src/pending/main.ts](src/pending/main.ts) | Pending Changes window: file list, diff editor ([CodeMirror](https://codemirror.net) merge view), commit box |
 | [src-tauri/src/workspace.rs](src-tauri/src/workspace.rs) | Finds the repositories inside a workspace folder |
 | [src-tauri/src/menu.rs](src-tauri/src/menu.rs) | Native menu bar (File › Open Workspace…, Open Repository…) |
 

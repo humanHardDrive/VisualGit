@@ -1,4 +1,5 @@
 mod menu;
+mod pending;
 mod workspace;
 
 use std::path::Path;
@@ -7,7 +8,9 @@ use workspace::RepoInfo;
 
 /// Subcommands the UI may run. Everything here is read-only once the
 /// argument checks in `validate` pass.
-const ALLOWED: &[&str] = &["log", "show", "for-each-ref", "rev-parse", "reflog", "symbolic-ref"];
+/// `status` would refresh the index's stat cache, but GIT_OPTIONAL_LOCKS=0
+/// (set in `run_git`) makes it skip that write.
+const ALLOWED: &[&str] = &["log", "show", "for-each-ref", "rev-parse", "reflog", "symbolic-ref", "status"];
 
 /// Rejects anything that could modify the repository or write files.
 fn validate(args: &[String]) -> Result<(), String> {
@@ -98,7 +101,19 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .menu(menu::build)
         .on_menu_event(menu::handle)
-        .invoke_handler(tauri::generate_handler![git, find_repos, initial_repo])
+        .manage(pending::PendingWindows::default())
+        .invoke_handler(tauri::generate_handler![
+            git,
+            find_repos,
+            initial_repo,
+            pending::open_pending_window,
+            pending::window_repo,
+            pending::read_worktree_file,
+            pending::write_worktree_file,
+            pending::commit_changes,
+            pending::push_current_branch,
+            pending::push_branch,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running VisualGit");
 }
@@ -117,6 +132,7 @@ mod tests {
         assert!(v(&["reflog", "show", "--all"]).is_ok());
         assert!(v(&["symbolic-ref", "-q", "HEAD"]).is_ok());
         assert!(v(&["for-each-ref", "refs/heads"]).is_ok());
+        assert!(v(&["status", "--porcelain=v2", "-z", "--branch"]).is_ok());
     }
 
     #[test]

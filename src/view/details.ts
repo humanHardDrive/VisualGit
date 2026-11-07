@@ -1,7 +1,7 @@
 /** Right-hand panel: details for the selected changeset or branch. */
 
 import type { Model } from "../model/infer.ts";
-import { branchColor, type Selection } from "./explorer.ts";
+import { branchColor, pushLabel, type Selection } from "./explorer.ts";
 
 type Navigate = (sel: Selection) => void;
 
@@ -55,6 +55,7 @@ export function showCommit(panel: HTMLElement, model: Model, hash: string, go: N
   if (tags) row(dl, tags.length > 1 ? "Releases" : "Release", tags.join(", "));
   const refs = model.refsAt.get(hash);
   if (refs) row(dl, "Refs", refs.join(", "));
+  if (model.unpushed.has(hash)) row(dl, "Pushed", el("span", { className: "unpushed" }, "No, not on any remote branch yet"));
 
   const message = el("pre", {}, c.body ? `${c.subject}\n\n${c.body}` : c.subject);
   panel.replaceChildren(
@@ -89,6 +90,15 @@ export function showBranch(panel: HTMLElement, model: Model, id: number, go: Nav
     row(dl, "Latest", commitLink(model, last.hash, go), ` · ${formatDate(last.time)}`);
   }
   if (b.refs.length) row(dl, "Refs", b.refs.join("\n"));
+  const push = pushLabel(model, b);
+  if (push) {
+    const text = b.published
+      ? `${b.unpushed} changeset${b.unpushed === 1 ? "" : "s"} not pushed`
+      : `Never pushed${b.unpushed ? `; ${b.unpushed} changeset${b.unpushed === 1 ? "" : "s"} only here` : ""}`;
+    row(dl, "Pushed", el("span", { className: "unpushed" }, text));
+  } else if (model.hasRemotes && b.published && b.refs.some((r) => r.startsWith("refs/heads/"))) {
+    row(dl, "Pushed", "Up to date with the remote (as of the last fetch)");
+  }
   if (b.children.length) {
     const kids = el("span");
     b.children.forEach((c, i) => {

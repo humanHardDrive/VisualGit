@@ -1,13 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { Menu } from "@tauri-apps/api/menu";
 import { open } from "@tauri-apps/plugin-dialog";
 import { loadRepo, type GitRunner } from "./git/load.ts";
 import { inTauri, tauriRunner } from "./git/tauriRunner.ts";
-import { inferModel, type Model } from "./model/infer.ts";
+import { inferModel, pendingChangesOn, uncommittedHead, type Model } from "./model/infer.ts";
 import { layoutModel } from "./model/layout.ts";
 import { searchModel, type SearchResults } from "./model/search.ts";
 import { clearDetails, showBranch, showCommit } from "./view/details.ts";
-import { branchColor, Explorer, type Selection, type View } from "./view/explorer.ts";
+import { branchColor, Explorer, pushLabel, type Selection, type View } from "./view/explorer.ts";
 
 /** Mirrors `RepoInfo` in src-tauri/src/workspace.rs. */
 interface RepoInfo {
@@ -52,7 +53,11 @@ let loadingPath: string | null = null;
 /** Per-repository pan/zoom and selection, restored when switching back. */
 const saved = new Map<string, { view: View; selection: SavedSelection | null }>();
 
-const explorer = new Explorer(canvas, $("tooltip"), { onSelect: (sel) => applySelection(sel, false) });
+const explorer = new Explorer(canvas, $("tooltip"), {
+  onSelect: (sel) => applySelection(sel, false),
+  onContextMenu: (sel) => void showContextMenu(sel),
+  onOpenPending: openPendingChanges,
+});
 
 // ---- storage ---------------------------------------------------------------
 
@@ -83,6 +88,59 @@ function applySelection(sel: Selection | null, reveal: boolean) {
   else showBranch(details, model, sel.id, (s) => applySelection(s, true));
   renderBranches();
   updateNav();
+}
+
+// ---- context menu and pending changes ---------------------------------------------
+
+async function showContextMenu(sel: Selection) {
+  if (!model) return;
+  // Pending changes are relative to the checked-out changeset: offered on it and on the checked-out branch.
+  const isHead = sel.kind === "commit" ? sel.hash === model.headHash : model.branches[sel.id].isHead;
+  const items: { id: string; text: string; enabled: boolean; action: () => void }[] = [
+    { id: "pending-changes", text: "Pending Changes", enabled: isHead, action: openPendingChanges },
+  ];
+  if (sel.kind === "branch") {
+    const b = model.branches[sel.id];
+    const local = b.refs.find((r) => r.startsWith("refs/heads/"));
+    if (local) {
+      const name = local.slice("refs/heads/".length);
+      // Offered while there is something to push: unpushed changesets, or a branch never pushed.
+      const text = !b.published ? "Push (new branch)" : b.unpushed ? `Push (↑${b.unpushed})` : "Push (up to date)";
+      items.push({ id: "push", text, enabled: !b.published || b.unpushed > 0, action: () => void pushBranch(name) });
+    }
+  }
+  const menu = await Menu.new({ items });
+  await menu.popup();
+}
+
+const toast = $("toast");
+let toastTimer = 0;
+
+/** A short notice in the explorer's corner; errors stay until clicked. */
+function notify(text: string, kind: "" | "ok" | "error" = "") {
+  clearTimeout(toastTimer);
+  toast.textContent = text;
+  toast.className = `toast ${kind}`;
+  toast.hidden = false;
+  if (kind === "ok") toastTimer = window.setTimeout(() => (toast.hidden = true), 4000);
+}
+toast.addEventListener("click", () => (toast.hidden = true));
+
+async function pushBranch(branch: string) {
+  if (!repoPath) return;
+  const path = repoPath;
+  notify(`Pushing ${branch}…`);
+  try {
+    notify(`${await invoke<string>("push_branch", { repo: path, branch })}.`, "ok");
+  } catch (err) {
+    notify(`Could not push ${branch}: ${err}`, "error");
+  }
+  if (repoPath === path) reload();
+}
+
+/** Opens (or brings forward) the Pending Changes window for the open repository. */
+function openPendingChanges() {
+  if (repoPath) void invoke("open_pending_window", { repo: repoPath }).catch((err) => showMessage("Could not open Pending Changes", String(err)));
 }
 
 // ---- search ---------------------------------------------------------------------
@@ -269,15 +327,23 @@ function step(dir: -1 | 1) {
   if (target) applySelection({ kind: "commit", hash: target }, true);
 }
 
+/** Where HEAD is drawn: on uncommitted work (an empty lane or a pending-changes changeset) if there is any, else the checked-out changeset. */
+function homeTarget(m: Model | null): Selection | null {
+  if (!m) return null;
+  const lane = uncommittedHead(m) ?? pendingChangesOn(m);
+  if (lane) return { kind: "branch", id: lane.id };
+  return m.headHash && m.commits.has(m.headHash) ? { kind: "commit", hash: m.headHash } : null;
+}
+
 function goHome() {
-  const head = model?.headHash;
-  if (head && model!.commits.has(head)) applySelection({ kind: "commit", hash: head }, true);
+  const target = homeTarget(model);
+  if (target) applySelection(target, true);
 }
 
 function updateNav() {
   navPrev.disabled = navTarget(-1) === null;
   navNext.disabled = navTarget(1) === null;
-  navHome.disabled = !model?.headHash || !model.commits.has(model.headHash);
+  navHome.disabled = homeTarget(model) === null;
 }
 
 function saveSelection(): SavedSelection | null {
@@ -332,6 +398,7 @@ async function loadRepoAt(path: string, opts: { reload?: boolean; remembered?: b
     document.title = `${root.split("/").pop()} · VisualGit`;
     stats.textContent =
       `${next.order.length.toLocaleString()} changesets · ${next.branches.length} branches` +
+      (next.unpushed.size ? ` · ${next.unpushed.size.toLocaleString()} not pushed` : "") +
       (next.truncated ? " · history truncated" : "");
     if (next.branches.length === 0) showMessage("Empty repository", "This repository has no commits yet.");
     else emptyState.hidden = true;
@@ -518,8 +585,15 @@ function renderBranches() {
     if (b.isHead) badge("HEAD", "head");
     if (b.commits.length === 0 && b.kind !== "trunk") badge("empty");
     if (b.kind === "remote") badge("remote");
+    const push = pushLabel(m, b);
+    if (push) badge(push.replace("not pushed · ", "local · "), "unpushed");
     if (b.kind === "deleted") badge("deleted");
     item.onclick = () => applySelection({ kind: "branch", id }, true);
+    item.oncontextmenu = (e) => {
+      e.preventDefault();
+      applySelection({ kind: "branch", id }, true);
+      void showContextMenu({ kind: "branch", id });
+    };
     items.push(item);
     for (const c of b.children) add(c, depth + 1);
   };
@@ -614,6 +688,10 @@ if (inTauri()) {
   void listen<string>("menu", (e) => {
     if (e.payload === "open-workspace") void chooseWorkspace();
     else if (e.payload === "open-repository") void chooseRepo();
+  });
+  // A commit or save in a Pending Changes window.
+  void listen<{ repo: string }>("repo-changed", (e) => {
+    if (e.payload.repo === repoPath) reload();
   });
 }
 

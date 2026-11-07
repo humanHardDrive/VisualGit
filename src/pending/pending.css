@@ -1,0 +1,67 @@
+/* Pending Changes window. Shares colours, buttons and the nav buttons with styles.css. */
+
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
+
+.commit-bar { display: flex; gap: 10px; padding: 10px 12px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.commit-bar textarea {
+  flex: 1;
+  resize: vertical;
+  min-height: 44px;
+  max-height: 40vh;
+  padding: 6px 8px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.commit-bar textarea:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: -1px; border-color: var(--accent); }
+.commit-side { display: flex; flex-direction: column; gap: 6px; width: 220px; }
+/* Split button: the main action, plus a caret for the alternatives. */
+.split { display: flex; }
+.split button { padding: 6px 12px; }
+.split #commit { flex: 1; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.split .caret { display: flex; align-items: center; padding: 0 8px; border-top-left-radius: 0; border-bottom-left-radius: 0; border-left: 1px solid color-mix(in srgb, #000 22%, var(--accent)); }
+.split .caret svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.commit-status { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; max-height: 5.5em; overflow: auto; }
+.commit-status.error { color: #d1242f; }
+.commit-status.ok { color: var(--merge); }
+
+.pending-layout { flex: 1; display: grid; grid-template-columns: 300px 1fr; min-height: 0; }
+
+.file-pane { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); background: var(--panel); }
+.file-head { display: flex; align-items: center; gap: 6px; padding: 8px 8px 4px 10px; }
+.check-all { flex: 1; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.branch-info { padding: 0 10px 6px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-list { overflow: auto; flex: 1; padding: 4px 0; }
+.file-empty { padding: 12px 10px; color: var(--muted); }
+
+.pfile { display: flex; align-items: center; gap: 6px; padding: 3px 8px 3px 10px; cursor: pointer; border-left: 2px solid transparent; min-width: 0; }
+.pfile:hover { background: var(--hover); }
+.pfile.current { background: color-mix(in srgb, var(--accent) 18%, transparent); border-left-color: var(--accent); }
+.pfile input { flex: none; margin: 0; }
+.pfile .file-status { flex: none; width: 14px; text-align: center; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; font-weight: 700; }
+/* The folder shrinks with an ellipsis first; the file name stays readable. */
+.pfile .file-path { display: flex; min-width: 0; white-space: nowrap; }
+.pfile .file-dir { color: var(--muted); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.pfile .file-name { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.pfile .dirty { color: var(--accent); flex: none; }
+.st-M, .st-T { color: #d97706; }
+.st-A, .st-C, .st-untracked { color: var(--merge); }
+.st-D, .st-U { color: #d1242f; }
+.st-R { color: var(--accent); }
+
+.diff-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--canvas); }
+.diff-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.diff-title { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.diff-title .dirty { color: var(--accent); margin-left: 4px; }
+.change-count { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.diff-sides { display: grid; grid-template-columns: 1fr 1fr; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); border-bottom: 1px solid var(--border); background: var(--panel); }
+.diff-sides span { padding: 4px 10px; }
+.diff-sides span + span { border-left: 1px solid var(--border); }
+.diff { flex: 1; min-height: 0; position: relative; }
+.diff .cm-mergeView { position: absolute; inset: 0; overflow: auto; }
+.diff .cm-mergeViewEditors { min-height: 100%; }
+.diff .cm-editor { min-height: 100%; }
+.diff-message { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--muted); padding: 24px; text-align: center; }
