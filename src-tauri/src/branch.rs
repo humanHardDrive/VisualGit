@@ -1,4 +1,4 @@
-//! Creating branches from the explorer.
+//! Creating branches and switching between changesets from the explorer.
 
 use crate::pending::{git, repo_root};
 use serde::Serialize;
@@ -32,9 +32,7 @@ fn create(repo: &str, name: &str, at: &str, switch_to: bool) -> Result<Created, 
     if git(&root, &["rev-parse", "--verify", "-q", &format!("refs/heads/{name}")], &[], None).is_ok() {
         return Err(format!("A branch named “{name}” already exists"));
     }
-    if !at.chars().all(|c| c.is_ascii_hexdigit()) || git(&root, &["rev-parse", "--verify", "-q", &format!("{at}^{{commit}}")], &[], None).is_err() {
-        return Err(format!("{at} is not a changeset in this repository"));
-    }
+    commit_id(&root, at)?;
     git(&root, &["branch", "--no-track", name, at], &[], None)?;
     if !switch_to {
         return Ok(Created { switched: false, switch_error: None });
@@ -44,6 +42,41 @@ fn create(repo: &str, name: &str, at: &str, switch_to: bool) -> Result<Created, 
         Ok(_) => Ok(Created { switched: true, switch_error: None }),
         Err(e) => Ok(Created { switched: false, switch_error: Some(e) }),
     }
+}
+
+/// Checks out changeset `at`: as `branch` when given (it must point there), otherwise
+/// as a detached HEAD. Returns a summary for the user.
+#[tauri::command]
+pub async fn switch_to_changeset(repo: String, at: String, branch: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || switch(&repo, &at, branch.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn switch(repo: &str, at: &str, branch: Option<&str>) -> Result<String, String> {
+    let root = repo_root(repo)?;
+    let full = commit_id(&root, at)?;
+    let short = &full[..8.min(full.len())];
+    if let Some(b) = branch {
+        let tip = git(&root, &["rev-parse", "--verify", "-q", &format!("refs/heads/{b}")], &[], None).map_err(|_| format!("{b} is not a local branch"))?;
+        if b.starts_with('-') || tip.trim() != full {
+            return Err(format!("{b} does not point at {short}"));
+        }
+        git(&root, &["switch", b], &[], None)?;
+        return Ok(format!("Switched to {b}"));
+    }
+    git(&root, &["switch", "--detach", &full], &[], None)?;
+    Ok(format!("Switched to changeset {short} (detached HEAD). Create a branch here before committing"))
+}
+
+/// The full id of changeset `at`, which must be a (possibly abbreviated) commit id.
+fn commit_id(root: &std::path::Path, at: &str) -> Result<String, String> {
+    if at.is_empty() || !at.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!("{at} is not a changeset in this repository"));
+    }
+    git(root, &["rev-parse", "--verify", "-q", &format!("{at}^{{commit}}")], &[], None)
+        .map(|s| s.trim().to_string())
+        .map_err(|_| format!("{at} is not a changeset in this repository"))
 }
 
 #[cfg(test)]
@@ -94,6 +127,25 @@ mod tests {
         assert!(create(&repo, "", &first, false).is_err());
         assert!(create(&repo, "ok", "HEAD~1", false).is_err()); // ids only, no revision syntax
         assert!(create(&repo, "ok", "deadbeef", false).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn switches_to_a_branch_or_detaches() {
+        let (dir, first, second) = repo_with_two_commits();
+        let repo = dir.to_string_lossy().into_owned();
+        let head = || git(&dir, &["rev-parse", "HEAD"], &[], None).unwrap().trim().to_string();
+
+        assert!(switch(&repo, &first, None).unwrap().contains("detached"));
+        assert_eq!(head(), first);
+        assert!(git(&dir, &["symbolic-ref", "-q", "HEAD"], &[], None).is_err());
+
+        assert_eq!(switch(&repo, &second[..10], Some("main")).unwrap(), "Switched to main");
+        assert_eq!(git(&dir, &["symbolic-ref", "--short", "HEAD"], &[], None).unwrap().trim(), "main");
+
+        assert!(switch(&repo, &first, Some("main")).unwrap_err().contains("does not point"));
+        assert!(switch(&repo, &first, Some("nope")).is_err());
+        assert!(switch(&repo, "HEAD~1", None).is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -101,7 +101,17 @@ async function showContextMenu(sel: Selection) {
   ];
   if (sel.kind === "commit") {
     const hash = sel.hash;
-    items.push({ item: "Separator" }, { id: "create-branch", text: "Create Branch from This Changeset…", enabled: true, action: () => openBranchDialog(hash) });
+    const target = switchTarget(model, hash);
+    items.push(
+      { item: "Separator" },
+      {
+        id: "switch",
+        text: target.branch ? `Switch to This Changeset (${target.branch})` : "Switch to This Changeset",
+        enabled: !target.current,
+        action: () => void switchTo(hash, target.branch),
+      },
+      { id: "create-branch", text: "Create Branch from This Changeset…", enabled: true, action: () => openBranchDialog(hash) },
+    );
   }
   if (sel.kind === "branch") {
     const b = model.branches[sel.id];
@@ -115,6 +125,49 @@ async function showContextMenu(sel: Selection) {
   }
   const menu = await Menu.new({ items });
   await menu.popup();
+}
+
+// ---- switch ----------------------------------------------------------------------
+
+/**
+ * What switching to `hash` checks out: a local branch whose tip it is (the
+ * lane's own branch first), else the changeset itself as a detached HEAD.
+ * `current` when that is what's checked out already.
+ */
+function switchTarget(m: Model, hash: string): { branch?: string; current: boolean } {
+  const tipOf = (b: Model["branches"][number]) => {
+    const local = b.refs.find((r) => r.startsWith("refs/heads/"));
+    return local && b.tips[0] === hash ? local.slice("refs/heads/".length) : undefined;
+  };
+  const names = m.branches.map(tipOf).filter((n): n is string => !!n);
+  if (hash === m.headHash && (m.headBranch ? names.includes(m.headBranch) : names.length === 0)) {
+    return { branch: m.headBranch, current: true };
+  }
+  const lane = tipOf(m.branches[m.owner.get(hash)!]);
+  return { branch: lane ?? names[0], current: false };
+}
+
+async function switchTo(hash: string, branch: string | undefined) {
+  if (!repoPath || !git) return;
+  const path = repoPath;
+  // Pending changes to tracked files: review or commit them before moving away.
+  // (Untracked files don't get in the way and simply stay put.)
+  const status = await git.run(["status", "--porcelain", "-z", "--untracked-files=no"]).catch(() => "");
+  if (status) {
+    openPendingChanges();
+    notify("You have pending changes. Commit them in Pending Changes, then switch again.");
+    return;
+  }
+  notify(branch ? `Switching to ${branch}…` : `Switching to ${hash.slice(0, 8)}…`);
+  try {
+    notify(`${await invoke<string>("switch_to_changeset", { repo: path, at: hash, branch: branch ?? null })}.`, "ok");
+  } catch (err) {
+    notify(`Could not switch: ${err}`, "error");
+    return;
+  }
+  if (repoPath !== path) return;
+  await loadRepoAt(path, { reload: true });
+  goHome();
 }
 
 // ---- create branch -----------------------------------------------------------------
