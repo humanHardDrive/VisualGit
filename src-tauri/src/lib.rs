@@ -1,3 +1,4 @@
+mod branch;
 mod menu;
 mod pending;
 mod workspace;
@@ -113,6 +114,7 @@ pub fn run() {
             pending::commit_changes,
             pending::push_current_branch,
             pending::push_branch,
+            branch::create_branch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running VisualGit");

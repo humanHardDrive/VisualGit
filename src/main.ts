@@ -96,9 +96,13 @@ async function showContextMenu(sel: Selection) {
   if (!model) return;
   // Pending changes are relative to the checked-out changeset: offered on it and on the checked-out branch.
   const isHead = sel.kind === "commit" ? sel.hash === model.headHash : model.branches[sel.id].isHead;
-  const items: { id: string; text: string; enabled: boolean; action: () => void }[] = [
+  const items: ({ id: string; text: string; enabled: boolean; action: () => void } | { item: "Separator" })[] = [
     { id: "pending-changes", text: "Pending Changes", enabled: isHead, action: openPendingChanges },
   ];
+  if (sel.kind === "commit") {
+    const hash = sel.hash;
+    items.push({ item: "Separator" }, { id: "create-branch", text: "Create Branch from This Changeset…", enabled: true, action: () => openBranchDialog(hash) });
+  }
   if (sel.kind === "branch") {
     const b = model.branches[sel.id];
     const local = b.refs.find((r) => r.startsWith("refs/heads/"));
@@ -112,6 +116,65 @@ async function showContextMenu(sel: Selection) {
   const menu = await Menu.new({ items });
   await menu.popup();
 }
+
+// ---- create branch -----------------------------------------------------------------
+
+const branchDialog = $<HTMLDialogElement>("branch-dialog");
+const branchName = $<HTMLInputElement>("branch-name");
+const branchSwitch = $<HTMLInputElement>("branch-switch");
+const branchError = $("branch-error");
+const branchCreate = $<HTMLButtonElement>("branch-create");
+let branchAt: string | null = null;
+
+function openBranchDialog(hash: string) {
+  if (!model) return;
+  branchAt = hash;
+  const owner = model.branches[model.owner.get(hash)!];
+  $("branch-from").textContent = hash.slice(0, 8);
+  $("branch-from-branch").textContent = owner.name;
+  $("branch-from-branch").style.color = branchColor(model, owner.id);
+  branchName.value = "";
+  branchError.textContent = "";
+  // Switching from the checked-out changeset just carries any work in progress along.
+  branchSwitch.checked = hash === model.headHash;
+  branchCreate.disabled = true;
+  branchDialog.showModal();
+  branchName.focus();
+}
+
+branchName.addEventListener("input", () => {
+  const name = branchName.value.trim();
+  const taken = model?.branches.some((b) => b.name === name && b.refs.some((r) => r === `refs/heads/${name}`));
+  branchError.textContent = taken ? `A branch named “${name}” already exists` : /\s/.test(name) ? "Branch names can't contain spaces" : "";
+  branchCreate.disabled = !name || !!branchError.textContent;
+});
+$("branch-cancel").addEventListener("click", () => branchDialog.close());
+
+$("branch-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!repoPath || !branchAt) return;
+  const path = repoPath;
+  const name = branchName.value.trim();
+  branchCreate.disabled = true;
+  try {
+    const result = await invoke<{ switched: boolean; switchError: string | null }>("create_branch", {
+      repo: path,
+      name,
+      at: branchAt,
+      switchTo: branchSwitch.checked,
+    });
+    branchDialog.close();
+    if (result.switchError) notify(`Created ${name}, but could not switch to it: ${result.switchError}`, "error");
+    else notify(result.switched ? `Created ${name} and switched to it.` : `Created ${name}.`, "ok");
+    if (repoPath !== path) return;
+    await loadRepoAt(path, { reload: true });
+    const created = model?.branches.find((b) => b.name === name);
+    if (created) applySelection({ kind: "branch", id: created.id }, true);
+  } catch (err) {
+    branchError.textContent = String(err);
+    branchCreate.disabled = false;
+  }
+});
 
 const toast = $("toast");
 let toastTimer = 0;
@@ -646,6 +709,7 @@ $("zoom-fit").addEventListener("click", () => explorer.fit());
 repoFilter.addEventListener("input", renderRepos);
 
 window.addEventListener("keydown", (e) => {
+  if (branchDialog.open) return; // the dialog handles its own keys (Esc closes it)
   const mod = e.metaKey || e.ctrlKey;
   // ⌘O and ⇧⌘O are File menu accelerators (src-tauri/src/menu.rs).
   if (mod && e.key === "r") {
