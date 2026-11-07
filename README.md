@@ -40,7 +40,7 @@ The home symbol marks what's checked out. When you have uncommitted changes, an 
 - A branch shows ↑3 when three of its changesets aren't pushed, or *not pushed* if the branch itself has never been pushed. This appears on its lane, in the sidebar and in the details panel.
 - The toolbar shows how many changesets are waiting to be pushed in total.
 
-A repository with no remote-tracking branches shows none of this.
+A repository with no remote-tracking branches shows none of this. To push a branch, right-click it (on its lane or in the sidebar) and choose *Push*. This is offered while the branch has changesets to push or has never been pushed. A branch with an upstream goes to it; a new branch is published to `origin` and tracks it from then on.
 
 Using it: drag or scroll to pan, ⌘/Ctrl + scroll (or pinch) to zoom, click a changeset or branch for details.
 

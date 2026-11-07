@@ -183,6 +183,25 @@ button.icon:hover { color: var(--text); }
 }
 .zoom button { border-color: transparent; min-width: 28px; padding: 3px 8px; }
 
+/* Short notices about actions (pushing), bottom left of the explorer. */
+.toast {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 4;
+  max-width: min(520px, calc(100% - 140px));
+  padding: 8px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.15);
+  overflow-wrap: anywhere;
+  cursor: default;
+}
+.toast.ok { border-left-color: var(--merge); }
+.toast.error { border-left-color: #d1242f; }
+
 .tooltip {
   position: absolute;
   z-index: 3;

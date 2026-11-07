@@ -1,6 +1,6 @@
 //! The Pending Changes window and the commands that change a repository:
 //! reading and saving working-tree files, committing selected files, and
-//! pushing the checked-out branch.
+//! pushing branches.
 //!
 //! These are deliberately separate from the read-only `git` command: each one
 //! does a single, narrow thing, with its paths checked to stay inside the
@@ -133,18 +133,34 @@ pub async fn push_current_branch(repo: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || push(&repo)).await.map_err(|e| e.to_string())?
 }
 
+/// Pushes a local branch (checked out or not) and returns a summary.
+#[tauri::command]
+pub async fn push_branch(repo: String, branch: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || push_named(&repo_root(&repo)?, &branch)).await.map_err(|e| e.to_string())?
+}
+
 fn push(repo: &str) -> Result<String, String> {
     let root = repo_root(repo)?;
     let branch = git(&root, &["symbolic-ref", "-q", "--short", "HEAD"], &[], None)
         .map_err(|_| "HEAD is detached. Check out a branch to push it.".to_string())?
         .trim()
         .to_string();
+    push_named(&root, &branch)
+}
+
+/// Pushes `refs/heads/<branch>`: to its upstream if it has one, otherwise to
+/// origin (or the only remote) under the same name, setting the upstream.
+fn push_named(root: &Path, branch: &str) -> Result<String, String> {
+    let root = root.to_path_buf();
+    if branch.starts_with('-') || git(&root, &["rev-parse", "--verify", "-q", &format!("refs/heads/{branch}")], &[], None).is_err() {
+        return Err(format!("{branch} is not a local branch"));
+    }
     let config = |key: String| git(&root, &["config", "--get", &key], &[], None).ok().map(|s| s.trim().to_string());
 
     // A branch with an upstream goes to that remote and branch.
     if let (Some(remote), Some(merge)) = (config(format!("branch.{branch}.remote")), config(format!("branch.{branch}.merge"))) {
         if remote != "." {
-            git(&root, &["push", "--porcelain", &remote, &format!("HEAD:{merge}")], &[], None)?;
+            git(&root, &["push", "--porcelain", &remote, &format!("refs/heads/{branch}:{merge}")], &[], None)?;
             let target = merge.strip_prefix("refs/heads/").unwrap_or(&merge);
             return Ok(format!("Pushed {branch} to {remote}/{target}"));
         }
@@ -313,6 +329,12 @@ mod tests {
         assert_eq!(push(&repo).unwrap(), "Pushed main to origin/main");
         let on_remote = Command::new("git").arg("-C").arg(&remote).args(["rev-parse", "main"]).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&on_remote.stdout).trim(), second);
+
+        // Any local branch can be pushed, not just the checked-out one.
+        git(&dir, &["branch", "side"], &[], None).unwrap();
+        assert_eq!(push_named(&dir, "side").unwrap(), "Pushed side to origin (new branch)");
+        assert!(push_named(&dir, "no-such-branch").is_err());
+        assert!(push_named(&dir, "--force").is_err());
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&remote).ok();
     }

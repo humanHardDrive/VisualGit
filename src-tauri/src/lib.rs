@@ -112,6 +112,7 @@ pub fn run() {
             pending::write_worktree_file,
             pending::commit_changes,
             pending::push_current_branch,
+            pending::push_branch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running VisualGit");

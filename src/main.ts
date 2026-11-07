@@ -96,10 +96,46 @@ async function showContextMenu(sel: Selection) {
   if (!model) return;
   // Pending changes are relative to the checked-out changeset: offered on it and on the checked-out branch.
   const isHead = sel.kind === "commit" ? sel.hash === model.headHash : model.branches[sel.id].isHead;
-  const menu = await Menu.new({
-    items: [{ id: "pending-changes", text: "Pending Changes", enabled: isHead, action: openPendingChanges }],
-  });
+  const items: { id: string; text: string; enabled: boolean; action: () => void }[] = [
+    { id: "pending-changes", text: "Pending Changes", enabled: isHead, action: openPendingChanges },
+  ];
+  if (sel.kind === "branch") {
+    const b = model.branches[sel.id];
+    const local = b.refs.find((r) => r.startsWith("refs/heads/"));
+    if (local) {
+      const name = local.slice("refs/heads/".length);
+      // Offered while there is something to push: unpushed changesets, or a branch never pushed.
+      const text = !b.published ? "Push (new branch)" : b.unpushed ? `Push (↑${b.unpushed})` : "Push (up to date)";
+      items.push({ id: "push", text, enabled: !b.published || b.unpushed > 0, action: () => void pushBranch(name) });
+    }
+  }
+  const menu = await Menu.new({ items });
   await menu.popup();
+}
+
+const toast = $("toast");
+let toastTimer = 0;
+
+/** A short notice in the explorer's corner; errors stay until clicked. */
+function notify(text: string, kind: "" | "ok" | "error" = "") {
+  clearTimeout(toastTimer);
+  toast.textContent = text;
+  toast.className = `toast ${kind}`;
+  toast.hidden = false;
+  if (kind === "ok") toastTimer = window.setTimeout(() => (toast.hidden = true), 4000);
+}
+toast.addEventListener("click", () => (toast.hidden = true));
+
+async function pushBranch(branch: string) {
+  if (!repoPath) return;
+  const path = repoPath;
+  notify(`Pushing ${branch}…`);
+  try {
+    notify(`${await invoke<string>("push_branch", { repo: path, branch })}.`, "ok");
+  } catch (err) {
+    notify(`Could not push ${branch}: ${err}`, "error");
+  }
+  if (repoPath === path) reload();
 }
 
 /** Opens (or brings forward) the Pending Changes window for the open repository. */
