@@ -112,6 +112,7 @@ pub fn run() {
             pending::read_worktree_file,
             pending::write_worktree_file,
             pending::commit_changes,
+            pending::undo_changes,
             pending::push_current_branch,
             pending::push_branch,
             branch::create_branch,
