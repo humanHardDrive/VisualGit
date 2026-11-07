@@ -34,6 +34,14 @@ The app opens whatever repository you pass as `visualgit /path/to/repo` or in `V
 
 The home symbol marks what's checked out. When you have uncommitted changes, an empty changeset is drawn at the end of the checked-out branch, after its latest changeset, with a hollow, dashed home symbol. A branch you've just created and switched to shows the same hollow home symbol in its empty slot. Right-click either one for *Pending Changes*.
 
+**What hasn't been pushed** is shown in orange, as of your last fetch:
+
+- A changeset that no remote-tracking branch contains gets a small up-arrow.
+- A branch shows ↑3 when three of its changesets aren't pushed, or *not pushed* if the branch itself has never been pushed. This appears on its lane, in the sidebar and in the details panel.
+- The toolbar shows how many changesets are waiting to be pushed in total.
+
+A repository with no remote-tracking branches shows none of this.
+
 Using it: drag or scroll to pan, ⌘/Ctrl + scroll (or pinch) to zoom, click a changeset or branch for details.
 
 **Pending Changes.** Double-click the checked-out changeset (the one with the home symbol), or right-click it or its branch and choose *Pending Changes*. This opens a window for that repository:

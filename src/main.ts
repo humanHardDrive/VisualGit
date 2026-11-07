@@ -8,7 +8,7 @@ import { inferModel, pendingChangesOn, uncommittedHead, type Model } from "./mod
 import { layoutModel } from "./model/layout.ts";
 import { searchModel, type SearchResults } from "./model/search.ts";
 import { clearDetails, showBranch, showCommit } from "./view/details.ts";
-import { branchColor, Explorer, type Selection, type View } from "./view/explorer.ts";
+import { branchColor, Explorer, pushLabel, type Selection, type View } from "./view/explorer.ts";
 
 /** Mirrors `RepoInfo` in src-tauri/src/workspace.rs. */
 interface RepoInfo {
@@ -362,6 +362,7 @@ async function loadRepoAt(path: string, opts: { reload?: boolean; remembered?: b
     document.title = `${root.split("/").pop()} · VisualGit`;
     stats.textContent =
       `${next.order.length.toLocaleString()} changesets · ${next.branches.length} branches` +
+      (next.unpushed.size ? ` · ${next.unpushed.size.toLocaleString()} not pushed` : "") +
       (next.truncated ? " · history truncated" : "");
     if (next.branches.length === 0) showMessage("Empty repository", "This repository has no commits yet.");
     else emptyState.hidden = true;
@@ -548,6 +549,8 @@ function renderBranches() {
     if (b.isHead) badge("HEAD", "head");
     if (b.commits.length === 0 && b.kind !== "trunk") badge("empty");
     if (b.kind === "remote") badge("remote");
+    const push = pushLabel(m, b);
+    if (push) badge(push.replace("not pushed · ", "local · "), "unpushed");
     if (b.kind === "deleted") badge("deleted");
     item.onclick = () => applySelection({ kind: "branch", id }, true);
     item.oncontextmenu = (e) => {

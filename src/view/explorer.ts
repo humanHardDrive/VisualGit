@@ -35,6 +35,17 @@ export interface View {
   ty: number;
 }
 
+/**
+ * How a local branch stands against its remote: "↑3" (three changesets not
+ * pushed), "not pushed" (never pushed), or null when it's up to date or
+ * there's no remote to compare with.
+ */
+export function pushLabel(model: Model, b: Branch): string | null {
+  if (!model.hasRemotes || !b.refs.some((r) => r.startsWith("refs/heads/"))) return null;
+  if (!b.published) return b.unpushed ? `not pushed · ↑${b.unpushed}` : "not pushed";
+  return b.unpushed ? `↑${b.unpushed}` : null;
+}
+
 export function branchColor(model: Model, id: number): string {
   return id === model.trunk ? TRUNK_COLOR : PALETTE[id % PALETTE.length];
 }
@@ -52,6 +63,7 @@ interface Theme {
   nodeStroke: string;
   canvas: string;
   match: string;
+  unpushed: string;
 }
 
 export interface ExplorerEvents {
@@ -377,6 +389,12 @@ export class Explorer {
     meta.className = "meta";
     meta.textContent = `${hash.slice(0, 8)} · ${b.name} · ${c.author} · ${new Date(c.time * 1000).toLocaleString()}`;
     tip.append(title, meta);
+    if (this.model.unpushed.has(hash)) {
+      const note = document.createElement("div");
+      note.className = "meta unpushed";
+      note.textContent = "Not pushed";
+      tip.append(note);
+    }
     const tags = this.model.tags.get(hash);
     if (tags) {
       const release = document.createElement("div");
@@ -404,6 +422,7 @@ export class Explorer {
       nodeStroke: v("--node-stroke"),
       canvas: v("--canvas"),
       match: v("--match"),
+      unpushed: v("--unpushed"),
     };
   }
 
@@ -471,10 +490,17 @@ export class Explorer {
         const lx = Math.max(left + 2, Math.min(view.x0 + 8, right - tw - 2));
         ctx.fillStyle = ghost ? t.muted : t.text;
         ctx.fillText(label, lx, rowTop(span.row) + 15);
+        let after = lx + tw + 8;
+        ctx.font = "700 10px -apple-system, system-ui, sans-serif";
         if (b.isHead) {
           ctx.fillStyle = t.accent;
-          ctx.font = "700 10px -apple-system, system-ui, sans-serif";
-          ctx.fillText("HEAD", lx + tw + 8, rowTop(span.row) + 15);
+          ctx.fillText("HEAD", after, rowTop(span.row) + 15);
+          after += ctx.measureText("HEAD").width + 8;
+        }
+        const push = pushLabel(model, b);
+        if (push) {
+          ctx.fillStyle = t.unpushed;
+          ctx.fillText(push, after, rowTop(span.row) + 15);
         }
       }
     }
@@ -593,6 +619,8 @@ export class Explorer {
         ctx.fill();
       }
       if (hash === this.hovered && hash !== selectedHash) ring(ctx, x, y, r + 3, withAlpha(t.text, 0.5), 1.5);
+      // Not pushed: a small up-arrow above the changeset.
+      if (model.unpushed.has(hash) && s > 0.35) upArrow(ctx, x, y - r - 2, t.unpushed);
 
       // Releases (tags): a circle drawn around the changeset, with the release name under it.
       if (tags) {
@@ -697,6 +725,21 @@ function hollowHome(ctx: CanvasRenderingContext2D, x: number, y: number, t: Them
   ring(ctx, x, y, HEAD_R, t.accent, 2);
   ctx.setLineDash([]);
   houseIcon(ctx, x, y, t.accent);
+}
+
+/** A small solid arrow pointing up, its base at (x, y). */
+function upArrow(ctx: CanvasRenderingContext2D, x: number, y: number, color: string) {
+  ctx.beginPath();
+  ctx.moveTo(x, y - 6);
+  ctx.lineTo(x + 3.5, y - 2.5);
+  ctx.lineTo(x + 1.2, y - 2.5);
+  ctx.lineTo(x + 1.2, y);
+  ctx.lineTo(x - 1.2, y);
+  ctx.lineTo(x - 1.2, y - 2.5);
+  ctx.lineTo(x - 3.5, y - 2.5);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
 }
 
 function ring(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, color: string, width: number) {

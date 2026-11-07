@@ -366,3 +366,42 @@ describe("pendingChangesOn", () => {
     expect(pendingChangesOn(m)).toBeUndefined();
   });
 });
+
+describe("unpushed", () => {
+  it("marks changesets and branches no remote-tracking branch has", async () => {
+    const { git, commit, model } = fixture();
+    const m1 = commit("m1");
+    // No remote yet: nothing is marked.
+    let m = await model();
+    expect(m.hasRemotes).toBe(false);
+    expect(m.unpushed.size).toBe(0);
+
+    const remote = mkdtempSync(join(tmpdir(), "visualgit-remote-"));
+    dirs.push(remote);
+    execFileSync("git", ["init", "-q", "--bare", remote]);
+    git("remote", "add", "origin", remote);
+    git("push", "-q", "-u", "origin", "main");
+    const m2 = commit("m2");
+    git("checkout", "-q", "-b", "local-only");
+    const l1 = commit("l1");
+    git("branch", "empty-local");
+
+    m = await model();
+    expect(m.hasRemotes).toBe(true);
+    expect([...m.unpushed].sort()).toEqual([m2, l1].sort());
+    expect(m.unpushed.has(m1)).toBe(false);
+    const main = branch(m, "main");
+    expect(main.published).toBe(true);
+    expect(main.unpushed).toBe(1);
+    const local = branch(m, "local-only");
+    expect(local.published).toBe(false);
+    expect(local.unpushed).toBe(2); // m2 and l1
+    expect(branch(m, "empty-local").published).toBe(false);
+
+    git("push", "-q", "origin", "main", "local-only");
+    m = await model();
+    expect(m.unpushed.size).toBe(0);
+    expect(branch(m, "local-only").published).toBe(true);
+    expect(branch(m, "local-only").unpushed).toBe(0);
+  });
+});

@@ -43,6 +43,10 @@ export interface Branch {
   /** Unix seconds, from the reflog. */
   createdAt?: number;
   isHead: boolean;
+  /** Has a remote-tracking ref, i.e. has been pushed (or fetched) at some point. */
+  published: boolean;
+  /** Changesets reachable from the local branch that are on no remote-tracking branch. */
+  unpushed: number;
 }
 
 export interface Model {
@@ -61,6 +65,10 @@ export interface Model {
   truncated: boolean;
   /** The working tree has uncommitted changes. */
   pendingChanges: boolean;
+  /** The repository has remote-tracking branches, so pushed/unpushed is meaningful. */
+  hasRemotes: boolean;
+  /** Changesets on local branches (or a detached HEAD) that no remote-tracking branch contains. */
+  unpushed: Set<string>;
 }
 
 const TRUNK_NAMES = ["main", "master", "trunk", "develop"];
@@ -180,6 +188,8 @@ export function inferModel(raw: RawRepo): Model {
       createdFrom: cand.createdFrom,
       createdAt: cand.createdAt,
       isHead: cand.kind === "detached" || (cand.kind === "local" && cand.name === raw.headBranch),
+      published: cand.refs.some((r) => r.startsWith("refs/remotes/")),
+      unpushed: 0,
     };
     branches.push(b);
     return b;
@@ -312,6 +322,8 @@ export function inferModel(raw: RawRepo): Model {
 
   for (const b of branches) if (b.parent !== null) branches[b.parent].children.push(b.id);
 
+  const { hasRemotes, unpushed } = findUnpushed(raw, commits, branches);
+
   return {
     commits,
     order,
@@ -325,6 +337,8 @@ export function inferModel(raw: RawRepo): Model {
     headBranch: raw.headBranch,
     truncated: raw.truncated,
     pendingChanges: raw.pendingChanges,
+    hasRemotes,
+    unpushed,
   };
 }
 
@@ -335,6 +349,49 @@ export function inferModel(raw: RawRepo): Model {
  */
 export function uncommittedHead(model: Model): Branch | undefined {
   return model.branches.find((b) => b.isHead && b.commits.length === 0);
+}
+
+/**
+ * What hasn't been pushed, as of the last fetch: changesets reachable from a
+ * local branch (or a detached HEAD) but from no remote-tracking ref. Also sets
+ * each local branch's `unpushed` count. Nothing is marked in a repository with
+ * no remote-tracking refs, where everything would be.
+ */
+function findUnpushed(raw: RawRepo, commits: Map<string, RawCommit>, branches: Branch[]) {
+  const remoteTips = raw.refs.filter((r) => r.name.startsWith("refs/remotes/") && commits.has(r.hash)).map((r) => r.hash);
+  const unpushed = new Set<string>();
+  if (remoteTips.length === 0) return { hasRemotes: false, unpushed };
+
+  const pushed = new Set<string>();
+  const stack = [...remoteTips];
+  while (stack.length) {
+    const h = stack.pop()!;
+    if (pushed.has(h)) continue;
+    pushed.add(h);
+    for (const p of commits.get(h)!.parents) if (commits.has(p) && !pushed.has(p)) stack.push(p);
+  }
+  /** Walks back from `tip` through changesets no remote has; returns how many. */
+  const walk = (tip: string) => {
+    const seen = new Set<string>();
+    const todo = [tip];
+    while (todo.length) {
+      const h = todo.pop()!;
+      if (seen.has(h) || pushed.has(h) || !commits.has(h)) continue;
+      seen.add(h);
+      unpushed.add(h);
+      todo.push(...commits.get(h)!.parents);
+    }
+    return seen.size;
+  };
+  const byRef = new Map(branches.flatMap((b) => b.refs.map((r) => [r, b] as const)));
+  for (const ref of raw.refs) {
+    if (!ref.name.startsWith("refs/heads/")) continue;
+    const n = walk(ref.hash);
+    const b = byRef.get(ref.name);
+    if (b) b.unpushed = n;
+  }
+  if (!raw.headBranch && raw.headHash) walk(raw.headHash);
+  return { hasRemotes: true, unpushed };
 }
 
 /**
