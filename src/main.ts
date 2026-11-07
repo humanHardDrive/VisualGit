@@ -7,8 +7,9 @@ import { inTauri, tauriRunner } from "./git/tauriRunner.ts";
 import { inferModel, pendingChangesOn, uncommittedHead, type Model } from "./model/infer.ts";
 import { layoutModel } from "./model/layout.ts";
 import { searchModel, type SearchResults } from "./model/search.ts";
+import { branchRows, renderBranchList, type BranchSort } from "./view/branchList.ts";
 import { clearDetails, showBranch, showCommit } from "./view/details.ts";
-import { branchColor, Explorer, pushLabel, type Selection, type View } from "./view/explorer.ts";
+import { branchColor, Explorer, type Selection, type View } from "./view/explorer.ts";
 
 /** Mirrors `RepoInfo` in src-tauri/src/workspace.rs. */
 interface RepoInfo {
@@ -25,7 +26,6 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 
 const canvas = $<HTMLCanvasElement>("explorer");
 const details = $("details");
-const branchList = $("branch-list");
 const searchInput = $<HTMLInputElement>("search");
 const searchPanel = $("search-results");
 const workspaceSection = $("workspace");
@@ -84,11 +84,12 @@ function recall(key: string): string | null {
 
 function applySelection(sel: Selection | null, reveal: boolean) {
   selection = sel;
-  explorer.select(sel, reveal);
+  // The explorer only scrolls to the selection while it's on screen (see showView).
+  explorer.select(sel, reveal && currentView === "explorer");
   if (!model || !git || !sel) clearDetails(details);
   else if (sel.kind === "commit") showCommit(details, model, sel.hash, (s) => applySelection(s, true));
   else showBranch(details, model, sel.id, (s) => applySelection(s, true));
-  renderBranches();
+  renderBranchView();
   updateNav();
 }
 
@@ -370,6 +371,7 @@ function runSearch(open: boolean) {
   activeResult = -1;
   renderResults();
   searchPanel.hidden = !open || !results;
+  renderBranchView();
 }
 
 /** After a reload or repository switch: same query, new history. */
@@ -762,54 +764,77 @@ function switchRepo(delta: number) {
   if (next.path !== repoPath) void loadRepoAt(next.path);
 }
 
-function renderBranches() {
+// ---- views ---------------------------------------------------------------------
+
+type ViewName = "explorer" | "list";
+const VIEW_KEY = "visualgit.view";
+const listView = $("branch-list-view");
+const zoomControls = document.querySelector<HTMLElement>(".zoom")!;
+let currentView: ViewName = recall(VIEW_KEY) === "list" ? "list" : "explorer";
+let branchSort: BranchSort = "tree";
+
+function showView(view: ViewName) {
+  currentView = view;
+  store(VIEW_KEY, view);
+  for (const item of document.querySelectorAll<HTMLButtonElement>(".view-item")) {
+    item.setAttribute("aria-pressed", String(item.dataset.view === view));
+  }
+  const list = view === "list";
+  canvas.hidden = list;
+  zoomControls.hidden = list;
+  listView.hidden = !list;
+  if (list) $("tooltip").hidden = true;
+  else explorer.select(selection, true); // catch up with what was selected in the list
+  renderBranchView();
+}
+
+for (const item of document.querySelectorAll<HTMLButtonElement>(".view-item")) {
+  item.addEventListener("click", () => showView(item.dataset.view as ViewName));
+}
+
+/** The branch the selection belongs to: the selected branch, or the selected changeset's lane. */
+function selectedBranchId(m: Model): number | undefined {
+  return selection?.kind === "branch" ? selection.id : selection?.kind === "commit" ? m.owner.get(selection.hash) : undefined;
+}
+
+/** While searching: matching branches, plus the branches of matching changesets. */
+function searchedBranches(m: Model): Set<number> | undefined {
+  if (!results) return undefined;
+  return new Set([...results.branches, ...results.commits.map((h) => m.owner.get(h)!)]);
+}
+
+function renderBranchView() {
+  if (currentView !== "list") return;
   if (!model) {
-    branchList.replaceChildren();
+    listView.replaceChildren();
     return;
   }
   const m = model;
-  const selectedBranch =
-    selection?.kind === "branch" ? selection.id : selection?.kind === "commit" ? m.owner.get(selection.hash) : undefined;
-  const items: HTMLElement[] = [];
-  const add = (id: number, depth: number) => {
-    const b = m.branches[id];
-    const item = document.createElement("div");
-    item.className = "branch-item";
-    if (id === selectedBranch) item.classList.add("selected");
-    if (b.kind === "deleted" || b.kind === "anonymous") item.classList.add("dim");
-    item.style.paddingLeft = `${8 + depth * 14}px`;
-    const swatch = document.createElement("span");
-    swatch.className = "swatch";
-    swatch.style.background = branchColor(m, id);
-    const name = document.createElement("span");
-    name.className = "name";
-    name.textContent = b.name;
-    name.title = b.name;
-    item.append(swatch, name);
-    const badge = (text: string, cls = "") => {
-      const s = document.createElement("span");
-      s.className = `badge ${cls}`;
-      s.textContent = text;
-      item.append(s);
-    };
-    if (b.isHead) badge("HEAD", "head");
-    if (b.commits.length === 0 && b.kind !== "trunk") badge("empty");
-    if (b.kind === "remote") badge("remote");
-    const push = pushLabel(m, b);
-    if (push) badge(push.replace("not pushed · ", "local · "), "unpushed");
-    if (b.kind === "deleted") badge("deleted");
-    item.onclick = () => applySelection({ kind: "branch", id }, true);
-    item.ondblclick = () => openBranchDiff(id);
-    item.oncontextmenu = (e) => {
-      e.preventDefault();
+  renderBranchList(listView, m, {
+    selected: selectedBranchId(m),
+    only: searchedBranches(m),
+    sort: branchSort,
+    onSelect: (id) => applySelection({ kind: "branch", id }, true),
+    onOpen: (id) => openBranchDiff(id),
+    onContextMenu: (id) => {
       applySelection({ kind: "branch", id }, true);
       void showContextMenu({ kind: "branch", id });
-    };
-    items.push(item);
-    for (const c of b.children) add(c, depth + 1);
-  };
-  for (const b of m.branches) if (b.parent === null) add(b.id, 0);
-  branchList.replaceChildren(...items);
+    },
+    onSort: (sort) => {
+      branchSort = sort;
+      renderBranchView();
+    },
+  });
+}
+
+/** ↑/↓ in the Branch List: select the row above or below. */
+function stepRow(dir: 1 | -1) {
+  if (!model) return;
+  const rows = branchRows(model, branchSort, searchedBranches(model));
+  if (rows.length === 0) return;
+  const at = rows.findIndex((r) => r.id === selectedBranchId(model!));
+  const next = rows[at < 0 ? 0 : Math.max(0, Math.min(rows.length - 1, at + dir))];
+  applySelection({ kind: "branch", id: next.id }, true);
 }
 
 // ---- commands ----------------------------------------------------------------------
@@ -875,10 +900,15 @@ window.addEventListener("keydown", (e) => {
     switchRepo(1);
   } else if (e.target instanceof HTMLInputElement) {
     if (e.key === "Escape") e.target.blur();
-  } else if (e.key === "+" || e.key === "=") explorer.zoomBy(1.25);
-  else if (e.key === "-") explorer.zoomBy(0.8);
-  else if (e.key === "0") explorer.fit();
-  else if (e.key === "l" || e.key === "L") explorer.latest();
+  } else if (currentView === "list" && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+    e.preventDefault();
+    stepRow(e.key === "ArrowUp" ? -1 : 1);
+  } else if (currentView === "list" && e.key === "Enter" && selection?.kind === "branch") {
+    openBranchDiff(selection.id);
+  } else if (currentView === "explorer" && (e.key === "+" || e.key === "=")) explorer.zoomBy(1.25);
+  else if (currentView === "explorer" && e.key === "-") explorer.zoomBy(0.8);
+  else if (currentView === "explorer" && e.key === "0") explorer.fit();
+  else if (currentView === "explorer" && (e.key === "l" || e.key === "L")) explorer.latest();
   else if (e.key === "ArrowLeft") {
     e.preventDefault();
     step(-1);
@@ -923,6 +953,8 @@ async function start() {
     if (last) void loadRepoAt(last, { remembered: true });
   }
 }
+
+showView(currentView);
 
 if (!inTauri()) {
   showMessage("Run inside the desktop app", "VisualGit reads repositories through its Tauri backend. Start it with `npm run app`.");

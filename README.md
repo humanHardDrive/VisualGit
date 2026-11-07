@@ -32,6 +32,16 @@ VISUALGIT_REPO=/path/to/repo npm run app  # open a repository straight away
 
 The app opens whatever repository you pass as `visualgit /path/to/repo` or in `VISUALGIT_REPO`, otherwise the last one you opened.
 
+**Views.** The *View* pane in the sidebar switches between two views:
+
+- **Branch Explorer:** the lanes.
+- **Branch List:** a table of every branch.
+  - **What it shows:** each branch's lane colour, its badges (HEAD, empty, remote, deleted, not pushed), how many changesets it has, its latest changeset, and that changeset's author and date.
+  - **Sorting:** branches are nested under their parent. Click *Branch* to sort them A–Z instead, or sort by *Changesets*, *Latest changeset* or *Date*.
+  - **Using it:** click a row for details, double-click it (or press Enter) for its changes, and right-click it for the branch menu. ↑/↓ move between rows, and the search box filters them.
+
+VisualGit remembers which view you were using.
+
 The home symbol marks what's checked out. When you have uncommitted changes, an empty changeset is drawn at the end of the checked-out branch, after its latest changeset, with a hollow, dashed home symbol. A branch you've just created and switched to shows the same hollow home symbol in its empty slot. Right-click either one for *Pending Changes*.
 
 **Creating branches.** Right-click any changeset and choose *Create Branch from This Changeset…*. Type a name and choose whether to switch to the new branch. Switching is ticked by default when you start from the checked-out changeset, so any work in progress comes along. The new branch shows up straight away as its own empty lane, starting at that changeset.
@@ -56,10 +66,10 @@ The preview comes from `git merge-tree`, which computes the merge without touchi
 **What hasn't been pushed** is shown in orange, as of your last fetch:
 
 - A changeset that no remote-tracking branch contains gets a small up-arrow.
-- A branch shows ↑3 when three of its changesets aren't pushed, or *not pushed* if the branch itself has never been pushed. This appears on its lane, in the sidebar and in the details panel.
+- A branch shows ↑3 when three of its changesets aren't pushed, or *not pushed* if the branch itself has never been pushed. This appears on its lane, in the Branch List and in the details panel.
 - The toolbar shows how many changesets are waiting to be pushed in total.
 
-A repository with no remote-tracking branches shows none of this. To push a branch, right-click it (on its lane or in the sidebar) and choose *Push*. This is offered while the branch has changesets to push or has never been pushed. A branch with an upstream goes to it; a new branch is published to `origin` and tracks it from then on.
+A repository with no remote-tracking branches shows none of this. To push a branch, right-click it (on its lane in the Branch Explorer, or its row in the Branch List) and choose *Push*. This is offered while the branch has changesets to push or has never been pushed. A branch with an upstream goes to it; a new branch is published to `origin` and tracks it from then on.
 
 **Changeset diffs.** Double-click any committed changeset (or right-click it and choose *View Changes*) to open a window showing what it changed.
 
@@ -68,7 +78,7 @@ A repository with no remote-tracking branches shows none of this. To push a bran
 - **Diff:** each file before (in the parent) and after (in the changeset). F7 / ⇧F7, or the arrows in the diff bar, step through the changes. The arrows above the file list, or ↑/↓ when you're not in the editor, move to the previous or next file.
 - **Merge changesets:** these can be compared with either parent.
 
-**Branch changes.** Double-click a branch, on its lane or in the sidebar, or right-click it and choose *View Changes*, to see everything it changed in one diff. That's from the changeset it was created from to its latest changeset. A root branch such as `main` is compared with nothing, so every file shows as added.
+**Branch changes.** Double-click a branch, on its lane or its row in the Branch List, or right-click it and choose *View Changes*, to see everything it changed in one diff. That's from the changeset it was created from to its latest changeset. A root branch such as `main` is compared with nothing, so every file shows as added.
 
 Using it: drag or scroll to pan, ⌘/Ctrl + scroll (or pinch) to zoom, click a changeset or branch for details.
 

@@ -42,12 +42,22 @@
           <div id="repo-list" class="repo-list"></div>
         </section>
         <div class="section-head">
-          <span class="section-title">Branches</span>
+          <span class="section-title">View</span>
         </div>
-        <div id="branch-list" class="branch-list"></div>
+        <nav class="view-list" aria-label="View">
+          <button class="view-item" data-view="explorer" aria-pressed="true">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h5M2 12h9M7 4h7M5 4v8M10 12h4" /><circle cx="5" cy="4" r="1.6" /><circle cx="11" cy="4" r="1.6" /><circle cx="11" cy="12" r="1.6" /></svg>
+            Branch Explorer
+          </button>
+          <button class="view-item" data-view="list" aria-pressed="false">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 4h9M5 8h9M5 12h9M2 4h.01M2 8h.01M2 12h.01" /></svg>
+            Branch List
+          </button>
+        </nav>
       </aside>
       <section class="canvas-wrap">
         <canvas id="explorer"></canvas>
+        <div id="branch-list-view" class="branch-list-view" hidden></div>
         <div id="tooltip" class="tooltip" hidden></div>
         <div id="toast" class="toast" role="status" hidden></div>
         <div class="zoom" role="group" aria-label="Zoom">
