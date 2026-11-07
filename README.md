@@ -61,9 +61,18 @@ The preview comes from `git merge-tree`, which computes the merge without touchi
 
 A repository with no remote-tracking branches shows none of this. To push a branch, right-click it (on its lane or in the sidebar) and choose *Push*. This is offered while the branch has changesets to push or has never been pushed. A branch with an upstream goes to it; a new branch is published to `origin` and tracks it from then on.
 
+**Changeset diffs.** Double-click any committed changeset (or right-click it and choose *View Changes*) to open a window showing what it changed.
+
+- **Header:** its message, id, branch, author, date and release.
+- **Files:** the files it added, modified, deleted or renamed.
+- **Diff:** each file before (in the parent) and after (in the changeset). F7 / ⇧F7, or the arrows in the diff bar, step through the changes. The arrows above the file list, or ↑/↓ when you're not in the editor, move to the previous or next file.
+- **Merge changesets:** these can be compared with either parent.
+
+**Branch changes.** Double-click a branch, on its lane or in the sidebar, or right-click it and choose *View Changes*, to see everything it changed in one diff. That's from the changeset it was created from to its latest changeset. A root branch such as `main` is compared with nothing, so every file shows as added.
+
 Using it: drag or scroll to pan, ⌘/Ctrl + scroll (or pinch) to zoom, click a changeset or branch for details.
 
-**Pending Changes.** Double-click the checked-out changeset (the one with the home symbol), or right-click it or its branch and choose *Pending Changes*. This opens a window for that repository:
+**Pending Changes.** Double-click the hollow home symbol (uncommitted work), or right-click the checked-out changeset or its branch and choose *Pending Changes*. This opens a window for that repository:
 
 - **Files** on the left: every changed, new, deleted, renamed or conflicted file, each with a checkbox. Ticked files go into the next commit.
 - **Diff** on the right: the checked-out changeset next to your working copy. ↑/↓ in the diff bar (or F7 / ⇧F7) move from change to change, and the arrows between the sides put the committed text back over a change.

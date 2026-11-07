@@ -57,6 +57,8 @@ const explorer = new Explorer(canvas, $("tooltip"), {
   onSelect: (sel) => applySelection(sel, false),
   onContextMenu: (sel) => void showContextMenu(sel),
   onOpenPending: openPendingChanges,
+  onOpenChangeset: (hash) => openDiffWindow(hash),
+  onOpenBranch: (id) => openBranchDiff(id),
 });
 
 // ---- storage ---------------------------------------------------------------
@@ -102,6 +104,8 @@ async function showContextMenu(sel: Selection) {
   if (sel.kind === "commit") {
     const hash = sel.hash;
     const target = switchTarget(model, hash);
+    // The double-click action, so it comes first.
+    items.unshift({ id: "view-changes", text: "View Changes", enabled: true, action: () => openDiffWindow(hash) });
     items.push(
       { item: "Separator" },
       {
@@ -119,6 +123,9 @@ async function showContextMenu(sel: Selection) {
   }
   if (sel.kind === "branch") {
     const b = model.branches[sel.id];
+    const id = sel.id;
+    // The double-click action, so it comes first; a branch with no changesets has nothing to show.
+    items.unshift({ id: "view-branch-changes", text: "View Changes", enabled: b.commits.length > 0, action: () => openBranchDiff(id) });
     const go = switchToBranchCall(b);
     items.push({ id: "switch-branch", text: "Switch to This Branch", enabled: !!go && !b.isHead, action: () => go && void runSwitch(b.name, go) });
     const local = b.refs.find((r) => r.startsWith("refs/heads/"));
@@ -311,6 +318,29 @@ async function pushBranch(branch: string) {
     notify(`Could not push ${branch}: ${err}`, "error");
   }
   if (repoPath === path) reload();
+}
+
+/** Opens the diff window showing what changeset `hash` changed. */
+function openDiffWindow(hash: string) {
+  if (repoPath) void invoke("open_diff_window", { repo: repoPath, at: hash }).catch((err) => notify(`Could not open the changeset: ${err}`, "error"));
+}
+
+/**
+ * Opens the diff window with everything branch `id` changed: from the
+ * changeset it was created from (or from nothing, for a root branch) to its
+ * latest changeset.
+ */
+function openBranchDiff(id: number) {
+  if (!repoPath || !model) return;
+  const b = model.branches[id];
+  const tip = b.commits[b.commits.length - 1];
+  if (!tip) {
+    notify(`${b.name} has no changesets of its own yet, so it hasn't changed anything.`, "ok");
+    return;
+  }
+  void invoke("open_diff_window", { repo: repoPath, at: tip, branch: b.name, base: b.base }).catch((err) =>
+    notify(`Could not open the changes on ${b.name}: ${err}`, "error"),
+  );
 }
 
 /** Opens the merge window previewing `hash` merged into the checked-out changeset. */
@@ -769,6 +799,7 @@ function renderBranches() {
     if (push) badge(push.replace("not pushed · ", "local · "), "unpushed");
     if (b.kind === "deleted") badge("deleted");
     item.onclick = () => applySelection({ kind: "branch", id }, true);
+    item.ondblclick = () => openBranchDiff(id);
     item.oncontextmenu = (e) => {
       e.preventDefault();
       applySelection({ kind: "branch", id }, true);

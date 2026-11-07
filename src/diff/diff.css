@@ -1,0 +1,6 @@
+/* Changeset diff window. Layout comes from pending.css and merge.css. */
+
+.cs-subject { font-size: 15px; margin: 0; line-height: 1.35; overflow-wrap: anywhere; }
+.cs-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; color: var(--muted); font-size: 12px; }
+.cs-meta .mono { cursor: text; user-select: all; }
+.cs-tags { color: var(--text); font-weight: 700; }

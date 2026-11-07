@@ -1,4 +1,5 @@
 mod branch;
+mod diff;
 mod menu;
 mod merge;
 mod pending;
@@ -12,7 +13,7 @@ use workspace::RepoInfo;
 /// argument checks in `validate` pass.
 /// `status` would refresh the index's stat cache, but GIT_OPTIONAL_LOCKS=0
 /// (set in `run_git`) makes it skip that write.
-const ALLOWED: &[&str] = &["log", "show", "for-each-ref", "rev-parse", "reflog", "symbolic-ref", "status"];
+const ALLOWED: &[&str] = &["log", "show", "for-each-ref", "rev-parse", "reflog", "symbolic-ref", "status", "diff-tree"];
 
 /// Rejects anything that could modify the repository or write files.
 fn validate(args: &[String]) -> Result<(), String> {
@@ -53,7 +54,7 @@ fn run_git(repo: &str, args: &[String]) -> Result<String, String> {
         .args(["--no-pager", "-c", "core.quotepath=off"])
         .arg(&args[0]);
     // Never invoke user-configured external diff or textconv programs.
-    if matches!(args[0].as_str(), "log" | "show") {
+    if matches!(args[0].as_str(), "log" | "show" | "diff-tree") {
         cmd.args(["--no-ext-diff", "--no-textconv"]);
     }
     let output = cmd
@@ -105,6 +106,7 @@ pub fn run() {
         .on_menu_event(menu::handle)
         .manage(pending::PendingWindows::default())
         .manage(merge::MergeWindows::default())
+        .manage(diff::DiffWindows::default())
         .invoke_handler(tauri::generate_handler![
             git,
             find_repos,
@@ -120,6 +122,8 @@ pub fn run() {
             branch::create_branch,
             branch::switch_to_changeset,
             branch::switch_to_remote_branch,
+            diff::open_diff_window,
+            diff::diff_window_info,
             merge::open_merge_window,
             merge::merge_window_info,
             merge::merge_preview,
@@ -146,6 +150,7 @@ mod tests {
         assert!(v(&["symbolic-ref", "-q", "HEAD"]).is_ok());
         assert!(v(&["for-each-ref", "refs/heads"]).is_ok());
         assert!(v(&["status", "--porcelain=v2", "-z", "--branch"]).is_ok());
+        assert!(v(&["diff-tree", "-r", "-z", "--name-status", "HEAD~1", "HEAD"]).is_ok());
     }
 
     #[test]
