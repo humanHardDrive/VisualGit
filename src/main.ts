@@ -1,12 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { Menu } from "@tauri-apps/api/menu";
 import { open } from "@tauri-apps/plugin-dialog";
 import { loadRepo, type GitRunner } from "./git/load.ts";
 import { inTauri, tauriRunner } from "./git/tauriRunner.ts";
-import { inferModel, type Model } from "./model/infer.ts";
+import { inferModel, uncommittedHead, type Model } from "./model/infer.ts";
 import { layoutModel } from "./model/layout.ts";
 import { searchModel, type SearchResults } from "./model/search.ts";
-import { clearDetails, showBranch, showCommit } from "./view/details.ts";
+import { clearDetails, showBranch, showCommit, showPendingChanges } from "./view/details.ts";
 import { branchColor, Explorer, type Selection, type View } from "./view/explorer.ts";
 
 /** Mirrors `RepoInfo` in src-tauri/src/workspace.rs. */
@@ -52,7 +53,10 @@ let loadingPath: string | null = null;
 /** Per-repository pan/zoom and selection, restored when switching back. */
 const saved = new Map<string, { view: View; selection: SavedSelection | null }>();
 
-const explorer = new Explorer(canvas, $("tooltip"), { onSelect: (sel) => applySelection(sel, false) });
+const explorer = new Explorer(canvas, $("tooltip"), {
+  onSelect: (sel) => applySelection(sel, false),
+  onContextMenu: (sel) => void showContextMenu(sel),
+});
 
 // ---- storage ---------------------------------------------------------------
 
@@ -75,14 +79,41 @@ function recall(key: string): string | null {
 
 // ---- selection ---------------------------------------------------------------
 
-function applySelection(sel: Selection | null, reveal: boolean) {
+/** What the details panel shows: the selection, or the pending changes. */
+let showingPending = false;
+
+/** `keepPending`: a reload refreshes an open Pending Changes view in place instead of replacing it. */
+function applySelection(sel: Selection | null, reveal: boolean, keepPending = false) {
   selection = sel;
   explorer.select(sel, reveal);
-  if (!model || !git || !sel) clearDetails(details);
-  else if (sel.kind === "commit") showCommit(details, model, sel.hash, (s) => applySelection(s, true));
-  else showBranch(details, model, sel.id, (s) => applySelection(s, true));
+  if (keepPending && showingPending) {
+    openPendingChanges();
+  } else {
+    showingPending = false;
+    if (!model || !git || !sel) clearDetails(details);
+    else if (sel.kind === "commit") showCommit(details, model, sel.hash, (s) => applySelection(s, true));
+    else showBranch(details, model, sel.id, (s) => applySelection(s, true));
+  }
   renderBranches();
   updateNav();
+}
+
+// ---- context menu and pending changes ---------------------------------------------
+
+async function showContextMenu(sel: Selection) {
+  if (!model) return;
+  // Pending changes are relative to the checked-out changeset: offered on it and on the checked-out branch.
+  const isHead = sel.kind === "commit" ? sel.hash === model.headHash : model.branches[sel.id].isHead;
+  const menu = await Menu.new({
+    items: [{ id: "pending-changes", text: "Pending Changes", enabled: isHead, action: openPendingChanges }],
+  });
+  await menu.popup();
+}
+
+function openPendingChanges() {
+  if (!model || !git) return;
+  showingPending = true;
+  void showPendingChanges(details, model, git, (s) => applySelection(s, true), openPendingChanges);
 }
 
 // ---- search ---------------------------------------------------------------------
@@ -269,15 +300,23 @@ function step(dir: -1 | 1) {
   if (target) applySelection({ kind: "commit", hash: target }, true);
 }
 
+/** Where HEAD is drawn: the checked-out branch's empty lane, or the checked-out changeset. */
+function homeTarget(m: Model | null): Selection | null {
+  if (!m) return null;
+  const lane = uncommittedHead(m);
+  if (lane) return { kind: "branch", id: lane.id };
+  return m.headHash && m.commits.has(m.headHash) ? { kind: "commit", hash: m.headHash } : null;
+}
+
 function goHome() {
-  const head = model?.headHash;
-  if (head && model!.commits.has(head)) applySelection({ kind: "commit", hash: head }, true);
+  const target = homeTarget(model);
+  if (target) applySelection(target, true);
 }
 
 function updateNav() {
   navPrev.disabled = navTarget(-1) === null;
   navNext.disabled = navTarget(1) === null;
-  navHome.disabled = !model?.headHash || !model.commits.has(model.headHash);
+  navHome.disabled = homeTarget(model) === null;
 }
 
 function saveSelection(): SavedSelection | null {
@@ -339,7 +378,8 @@ async function loadRepoAt(path: string, opts: { reload?: boolean; remembered?: b
     explorer.setData(next, layout, switching ? (saved.get(root)?.view ?? "latest") : "keep");
     searchInput.disabled = false;
     refreshSearch();
-    applySelection(restoreSelection(next, keptSelection), false);
+    // Reloads happen on window focus, so edits made in an editor show up in Pending Changes.
+    applySelection(restoreSelection(next, keptSelection), false, !switching);
   } catch (err) {
     if (seq !== loadSeq) return;
     if (opts.remembered) {
@@ -520,6 +560,11 @@ function renderBranches() {
     if (b.kind === "remote") badge("remote");
     if (b.kind === "deleted") badge("deleted");
     item.onclick = () => applySelection({ kind: "branch", id }, true);
+    item.oncontextmenu = (e) => {
+      e.preventDefault();
+      applySelection({ kind: "branch", id }, true);
+      void showContextMenu({ kind: "branch", id });
+    };
     items.push(item);
     for (const c of b.children) add(c, depth + 1);
   };

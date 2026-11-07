@@ -1,11 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { loadRepo } from "../src/git/load.ts";
+import { loadPendingChanges } from "../src/git/status.ts";
 import { nodeRunner } from "../src/git/nodeRunner.ts";
-import { branchNameFromMerge, inferModel, type Model } from "../src/model/infer.ts";
+import { branchNameFromMerge, inferModel, uncommittedHead, type Model } from "../src/model/infer.ts";
 import { layoutModel } from "../src/model/layout.ts";
 import { compileQuery, searchModel } from "../src/model/search.ts";
 
@@ -270,5 +271,69 @@ describe("search", () => {
     // Regex characters are literal.
     expect(messages("(")).toEqual([]);
     expect(compileQuery("a.b")!.test("axb")).toBe(false);
+  });
+});
+
+describe("pending changes", () => {
+  it("reads staged, unstaged, untracked, renamed and conflicted files", async () => {
+    const { dir, git, commit } = fixture();
+    const write = (path: string, text: string) => writeFileSync(join(dir, path), text);
+    write("a.txt", "a\n");
+    write("old name.txt", "o\n");
+    write("gone.txt", "g\n");
+    git("add", ".");
+    const base = commit("base");
+    write("a.txt", "a2\n"); // unstaged edit
+    git("mv", "old name.txt", "new name.txt"); // staged rename, with spaces
+    git("rm", "-q", "gone.txt"); // staged delete
+    write("new.txt", "n\n"); // untracked
+    write("b.txt", "b\n");
+    git("add", "b.txt");
+    write("b.txt", "b2\n"); // staged add, then edited again
+
+    const p = await loadPendingChanges(nodeRunner(dir));
+    expect(p.branch).toBe("main");
+    expect(p.head).toBe(base);
+    expect(p.files).toEqual([
+      { path: "a.txt", staged: undefined, unstaged: "M" },
+      { path: "b.txt", staged: "A", unstaged: "M" },
+      { path: "gone.txt", staged: "D", unstaged: undefined },
+      { path: "new name.txt", staged: "R", unstaged: undefined, origPath: "old name.txt" },
+      { path: "new.txt", untracked: true },
+    ]);
+  });
+
+  it("reports merge conflicts and a clean tree", async () => {
+    const { dir, git, commit } = fixture();
+    const write = (text: string) => writeFileSync(join(dir, "f.txt"), text);
+    write("1\n");
+    git("add", ".");
+    commit("base");
+    expect((await loadPendingChanges(nodeRunner(dir))).files).toEqual([]);
+    git("checkout", "-q", "-b", "other");
+    write("2\n");
+    git("commit", "-q", "-am", "other");
+    git("checkout", "-q", "main");
+    write("3\n");
+    git("commit", "-q", "-am", "main");
+    try {
+      git("merge", "-q", "other");
+    } catch {
+      // Conflict expected.
+    }
+    expect((await loadPendingChanges(nodeRunner(dir))).files).toEqual([{ path: "f.txt", conflict: true }]);
+  });
+});
+
+describe("uncommittedHead", () => {
+  it("is the checked-out branch while it has no changesets of its own", async () => {
+    const { git, commit, model } = fixture();
+    commit("m1");
+    expect(uncommittedHead(await model())).toBeUndefined();
+    git("checkout", "-q", "-b", "fresh");
+    const m = await model();
+    expect(uncommittedHead(m)?.name).toBe("fresh");
+    commit("f1");
+    expect(uncommittedHead(await model())).toBeUndefined();
   });
 });

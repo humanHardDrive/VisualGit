@@ -32,7 +32,11 @@ VISUALGIT_REPO=/path/to/repo npm run app  # open a repository straight away
 
 The app opens whatever repository you pass as `visualgit /path/to/repo` or in `VISUALGIT_REPO`, otherwise the last one you opened.
 
+The home symbol marks what's checked out. On a branch you've just created and switched to, it's drawn hollow (nothing committed there yet) in that branch's empty slot, rather than on the changeset the branch started from.
+
 Using it: drag or scroll to pan, ⌘/Ctrl + scroll (or pinch) to zoom, click a changeset or branch for details.
+
+**Pending Changes.** Right-click the checked-out changeset or branch (the one with the home symbol) and choose *Pending Changes* to see what's changed in the working tree since that changeset. The list is grouped into conflicts, staged changes, unstaged changes and untracked files. It refreshes whenever the window regains focus, so edits made in your editor show up.
 
 **Search.** The search box in the toolbar (⌘F) looks through branch names, changeset ids and commit messages (the full message, not just the first line), plus release names. Matching ignores case and finds the text anywhere, and two wildcards are supported: `*` matches any run of characters and `?` matches exactly one, so `feat*login` finds `feature/login-page` and `v1.?` finds `v1.2`. A changeset id matches from its start once you've typed four or more hex digits. Matches are highlighted in the explorer and everything else fades back. ↑/↓ steps through the results list, Enter jumps to one, Esc ends the search.
 
@@ -61,6 +65,7 @@ cd src-tauri && cargo test              # backend tests: command validation, wor
 | Path | What it does |
 | --- | --- |
 | [src/git/load.ts](src/git/load.ts) | Reads refs, history and reflogs with read-only git commands |
+| [src/git/status.ts](src/git/status.ts) | Reads pending changes (`git status --porcelain=v2`) |
 | [src/model/infer.ts](src/model/infer.ts) | Turns raw history into branches with parents, bases and owned changesets |
 | [src/model/layout.ts](src/model/layout.ts) | Assigns lanes to rows and changesets to columns |
 | [src/model/search.ts](src/model/search.ts) | Search with `*` / `?` wildcards |

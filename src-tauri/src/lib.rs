@@ -7,7 +7,9 @@ use workspace::RepoInfo;
 
 /// Subcommands the UI may run. Everything here is read-only once the
 /// argument checks in `validate` pass.
-const ALLOWED: &[&str] = &["log", "show", "for-each-ref", "rev-parse", "reflog", "symbolic-ref"];
+/// `status` would refresh the index's stat cache, but GIT_OPTIONAL_LOCKS=0
+/// (set in `run_git`) makes it skip that write.
+const ALLOWED: &[&str] = &["log", "show", "for-each-ref", "rev-parse", "reflog", "symbolic-ref", "status"];
 
 /// Rejects anything that could modify the repository or write files.
 fn validate(args: &[String]) -> Result<(), String> {
@@ -117,6 +119,7 @@ mod tests {
         assert!(v(&["reflog", "show", "--all"]).is_ok());
         assert!(v(&["symbolic-ref", "-q", "HEAD"]).is_ok());
         assert!(v(&["for-each-ref", "refs/heads"]).is_ok());
+        assert!(v(&["status", "--porcelain=v2", "-z", "--branch"]).is_ok());
     }
 
     #[test]

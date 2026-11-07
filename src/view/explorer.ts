@@ -3,7 +3,7 @@
  * connectors and merge arrows, with pan/zoom and hit testing.
  */
 
-import type { Branch, Model } from "../model/infer.ts";
+import { uncommittedHead, type Branch, type Model } from "../model/infer.ts";
 import type { Layout, Span } from "../model/layout.ts";
 
 export const COL = 30;
@@ -56,6 +56,8 @@ interface Theme {
 
 export interface ExplorerEvents {
   onSelect(sel: Selection | null): void;
+  /** Right-click on a changeset or branch, after it has been selected. */
+  onContextMenu(sel: Selection): void;
 }
 
 export class Explorer {
@@ -70,6 +72,8 @@ export class Explorer {
   private ty = 0;
   private selection: Selection | null = null;
   private hovered: string | null = null;
+  /** Branch whose empty lane carries the HEAD marker, if HEAD's branch has no changesets yet. */
+  private headLane: number | null = null;
   private matches: Matches | null = null;
   private frame = 0;
   private theme!: Theme;
@@ -95,6 +99,7 @@ export class Explorer {
   setData(model: Model, layout: Layout, view: "keep" | "latest" | View) {
     this.model = model;
     this.layout = layout;
+    this.headLane = uncommittedHead(model)?.id ?? null;
     if (this.selection?.kind === "commit" && !model.commits.has(this.selection.hash)) this.selection = null;
     if (this.selection?.kind === "branch" && !model.branches[this.selection.id]) this.selection = null;
     if (view === "latest") this.latest();
@@ -219,7 +224,7 @@ export class Explorer {
     if (col >= 0 && col < model.order.length) {
       const h = model.order[col];
       const p = this.commitPos(h);
-      const radius = model.tags.has(h) ? RELEASE_R : (h === model.headHash ? HEAD_R : NODE_R) + 4 / this.scale;
+      const radius = model.tags.has(h) ? RELEASE_R : (this.isHeadCommit(h) ? HEAD_R : NODE_R) + 4 / this.scale;
       if (Math.hypot(p.x - wx, p.y - wy) <= radius) return { kind: "commit", hash: h };
     }
     for (const s of layout.spans) {
@@ -231,6 +236,11 @@ export class Explorer {
       }
     }
     return null;
+  }
+
+  /** The changeset drawn with the HEAD marker (unless HEAD's branch has an empty lane of its own). */
+  private isHeadCommit(hash: string) {
+    return hash === this.model?.headHash && this.headLane === null;
   }
 
   private labelWidth(b: Branch) {
@@ -253,6 +263,7 @@ export class Explorer {
     let drag: { x: number; y: number; tx: number; ty: number; moved: boolean } | null = null;
 
     c.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return; // only the primary button pans and selects
       c.setPointerCapture(e.pointerId);
       drag = { x: e.clientX, y: e.clientY, tx: this.tx, ty: this.ty, moved: false };
     });
@@ -283,6 +294,7 @@ export class Explorer {
       this.showTooltip(h, e.clientX - r.left, e.clientY - r.top);
     });
     c.addEventListener("pointerup", (e) => {
+      if (e.button !== 0) return;
       c.classList.remove("dragging");
       const wasDrag = drag?.moved;
       drag = null;
@@ -291,6 +303,17 @@ export class Explorer {
       const hit = this.hitTest(e.clientX - r.left, e.clientY - r.top);
       this.select(hit);
       this.events.onSelect(hit);
+    });
+    c.addEventListener("contextmenu", (e) => {
+      // Replace the webview's own menu (Reload, Inspect) on the explorer.
+      e.preventDefault();
+      const r = c.getBoundingClientRect();
+      const hit = this.hitTest(e.clientX - r.left, e.clientY - r.top);
+      if (!hit) return;
+      this.showTooltip(null, 0, 0);
+      this.select(hit);
+      this.events.onSelect(hit);
+      this.events.onContextMenu(hit);
     });
     c.addEventListener("pointerleave", () => {
       this.hovered = null;
@@ -498,7 +521,7 @@ export class Explorer {
       const commit = model.commits.get(hash)!;
       const ghost = model.branches[id].kind === "deleted" || model.branches[id].kind === "anonymous";
       const tags = model.tags.get(hash);
-      const isHead = hash === model.headHash;
+      const isHead = this.isHeadCommit(hash);
       const r = isHead ? HEAD_R : NODE_R;
       const hit = this.matches?.commits.has(hash);
       // While searching, changesets that don't match (and aren't on a matching branch) fade back.
@@ -552,9 +575,22 @@ export class Explorer {
       if (span.firstCol !== null) continue;
       const { left, right } = this.bandExtent(span);
       if (right < view.x0 || left > view.x1 || !visibleRow(span.row)) continue;
+      const x = (left + right) / 2;
+      const y = rowMid(span.row);
+      if (span.branch === this.headLane) {
+        // The checked-out branch with nothing committed yet: HEAD sits in its empty slot,
+        // hollow because the changes there are still uncommitted.
+        ctx.beginPath();
+        ctx.arc(x, y, HEAD_R, 0, Math.PI * 2);
+        ctx.fillStyle = t.canvas;
+        ctx.fill();
+        ring(ctx, x, y, HEAD_R, t.accent, 2);
+        houseIcon(ctx, x, y, t.accent);
+        continue;
+      }
       const color = branchColor(model, span.branch);
       ctx.setLineDash([2, 2]);
-      ring(ctx, (left + right) / 2, rowMid(span.row), NODE_R - 1, color, 1.5);
+      ring(ctx, x, y, NODE_R - 1, color, 1.5);
       ctx.setLineDash([]);
     }
   }

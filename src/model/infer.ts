@@ -325,6 +325,15 @@ export function inferModel(raw: RawRepo): Model {
   };
 }
 
+/**
+ * The checked-out branch when it has no changesets of its own yet (just
+ * created, or HEAD detached on another branch's changeset). HEAD is then shown
+ * on that branch's empty lane rather than on the changeset it points at.
+ */
+export function uncommittedHead(model: Model): Branch | undefined {
+  return model.branches.find((b) => b.isHead && b.commits.length === 0);
+}
+
 function compareKey(a: [number, number, string], b: [number, number, string]) {
   return a[0] - b[0] || a[1] - b[1] || (a[2] < b[2] ? -1 : a[2] > b[2] ? 1 : 0);
 }
