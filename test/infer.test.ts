@@ -10,6 +10,7 @@ import { nodeRunner } from "../src/git/nodeRunner.ts";
 import { branchNameFromMerge, inferModel, pendingChangesOn, uncommittedHead, type Model } from "../src/model/infer.ts";
 import { layoutModel } from "../src/model/layout.ts";
 import { compileQuery, searchModel } from "../src/model/search.ts";
+import { branchRows } from "../src/view/branchList.ts";
 
 const dirs: string[] = [];
 afterAll(() => dirs.forEach((d) => rmSync(d, { recursive: true, force: true })));
@@ -436,5 +437,29 @@ describe("changeset files", () => {
       "A gone.txt",
       "A old name.txt",
     ]);
+  });
+});
+
+describe("branchRows", () => {
+  it("nests by parent, sorts, and filters by name with wildcards", async () => {
+    const { git, commit, model } = fixture();
+    commit("m1");
+    git("checkout", "-q", "-b", "feature/login");
+    commit("f1");
+    git("checkout", "-q", "-b", "feature/login-tests");
+    commit("t1");
+    git("checkout", "-q", "main");
+    git("checkout", "-q", "-b", "bugfix/crash");
+    commit("b1");
+    const m = await model();
+    const names = (rows: { id: number; depth: number }[]) => rows.map((r) => `${"  ".repeat(r.depth)}${m.branches[r.id].name}`);
+
+    expect(names(branchRows(m, "tree"))).toEqual(["main", "  bugfix/crash", "  feature/login", "    feature/login-tests"]);
+    expect(names(branchRows(m, "name"))).toEqual(["bugfix/crash", "feature/login", "feature/login-tests", "main"]);
+    // Matches lose the indent their hidden parents gave them.
+    expect(names(branchRows(m, "tree", "LOGIN"))).toEqual(["feature/login", "feature/login-tests"]);
+    expect(names(branchRows(m, "tree", "feat*tests"))).toEqual(["feature/login-tests"]);
+    expect(names(branchRows(m, "name", "?ugfix"))).toEqual(["bugfix/crash"]);
+    expect(branchRows(m, "tree", "nothing-like-this")).toEqual([]);
   });
 });

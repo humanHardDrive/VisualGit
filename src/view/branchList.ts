@@ -5,6 +5,7 @@
  */
 
 import type { Branch, Model } from "../model/infer.ts";
+import { compileQuery } from "../model/search.ts";
 import { branchColor, pushLabel } from "./explorer.ts";
 
 export type BranchSort = "tree" | "name" | "changesets" | "latest";
@@ -12,9 +13,9 @@ export type BranchSort = "tree" | "name" | "changesets" | "latest";
 export interface BranchListOptions {
   /** The branch to highlight: the selected one, or the owner of the selected changeset. */
   selected?: number;
-  /** While searching: only these branches are shown. */
-  only?: Set<number>;
   sort: BranchSort;
+  /** Branch-name search (`*` and `?` wildcards); empty shows every branch. */
+  query: string;
   onSelect(id: number): void;
   onOpen(id: number): void;
   onContextMenu(id: number): void;
@@ -33,19 +34,24 @@ const latestOf = (m: Model, b: Branch) => {
   return hash ? m.commits.get(hash) : undefined;
 };
 
-/** Branches in display order, each with its nesting depth (0 unless sorted as a tree). */
-export function branchRows(m: Model, sort: BranchSort, only?: Set<number>): { id: number; depth: number }[] {
+/**
+ * Branches in display order, each with its nesting depth (0 unless sorted as a
+ * tree). With a `query`, only branches whose name matches.
+ */
+export function branchRows(m: Model, sort: BranchSort, query = ""): { id: number; depth: number }[] {
+  const re = compileQuery(query);
+  const shown = (b: Branch) => !re || re.test(b.name);
   if (sort === "tree") {
     const rows: { id: number; depth: number }[] = [];
     const add = (id: number, depth: number) => {
-      // While filtering, keep a branch's place in the tree but drop the depth that hidden parents implied.
-      if (!only || only.has(id)) rows.push({ id, depth: only ? 0 : depth });
+      // While searching, matches keep their tree order but not the indent their hidden parents gave them.
+      if (shown(m.branches[id])) rows.push({ id, depth: re ? 0 : depth });
       for (const c of m.branches[id].children) add(c, depth + 1);
     };
     for (const b of m.branches) if (b.parent === null) add(b.id, 0);
     return rows;
   }
-  const list = m.branches.filter((b) => !only || only.has(b.id));
+  const list = m.branches.filter(shown);
   const time = (b: Branch) => latestOf(m, b)?.time ?? 0;
   if (sort === "name") list.sort((a, b) => a.name.localeCompare(b.name));
   if (sort === "changesets") list.sort((a, b) => b.commits.length - a.commits.length || a.name.localeCompare(b.name));
@@ -75,7 +81,8 @@ export function renderBranchList(host: HTMLElement, m: Model, opts: BranchListOp
   thead.append(head);
 
   const tbody = el("tbody");
-  for (const { id, depth } of branchRows(m, opts.sort, opts.only)) {
+  const rows = branchRows(m, opts.sort, opts.query);
+  for (const { id, depth } of rows) {
     const b = m.branches[id];
     const tr = el("tr", "branch-row");
     tr.dataset.id = String(id);
@@ -124,13 +131,15 @@ export function renderBranchList(host: HTMLElement, m: Model, opts: BranchListOp
   }
   table.append(thead, tbody);
 
-  const children: Node[] = [table];
-  if (opts.only) {
-    const shown = tbody.children.length;
-    children.unshift(el("div", "branch-table-note", shown ? `${shown} of ${m.branches.length} branches match the search` : "No branches match the search"));
-  }
   const scroll = host.scrollTop;
-  host.replaceChildren(...children);
+  if (rows.length === 0) {
+    const tr = el("tr");
+    const td = el("td", "branch-table-empty", opts.query.trim() ? `No branch names match “${opts.query.trim()}”` : "No branches");
+    td.colSpan = 5;
+    tr.append(td);
+    tbody.append(tr);
+  }
+  host.replaceChildren(table);
   host.scrollTop = scroll;
   host.querySelector(".selected")?.scrollIntoView({ block: "nearest" });
 }

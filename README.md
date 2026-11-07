@@ -38,9 +38,9 @@ The app opens whatever repository you pass as `visualgit /path/to/repo` or in `V
 - **Branch List:** a table of every branch.
   - **What it shows:** each branch's lane colour, its badges (HEAD, empty, remote, deleted, not pushed), how many changesets it has, its latest changeset, and that changeset's author and date.
   - **Sorting:** branches are nested under their parent. Click *Branch* to sort them A–Z instead, or sort by *Changesets*, *Latest changeset* or *Date*.
-  - **Using it:** click a row for details, double-click it (or press Enter) for its changes, and right-click it for the branch menu. ↑/↓ move between rows, and the search box filters them.
+  - **Using it:** click a row for details, double-click it (or press Enter) for its changes, and right-click it for the branch menu. ↑/↓ move between rows. The list has its own search box for branch names (⌘F), with the same `*` / `?` wildcards; ↑/↓ and Enter work from inside the box too.
 
-VisualGit remembers which view you were using.
+The Branch Explorer has its own bar along the top, with *Reload*, the changeset arrows and search. In the Branch List, that bar is replaced by the list's own search. VisualGit remembers which view you were using.
 
 The home symbol marks what's checked out. When you have uncommitted changes, an empty changeset is drawn at the end of the checked-out branch, after its latest changeset, with a hollow, dashed home symbol. A branch you've just created and switched to shows the same hollow home symbol in its empty slot. Right-click either one for *Pending Changes*.
 
@@ -91,16 +91,16 @@ Using it: drag or scroll to pan, ⌘/Ctrl + scroll (or pinch) to zoom, click a c
 
 The window refreshes when it regains focus, and the branch explorer reloads after each commit.
 
-**Search.** The search box in the toolbar (⌘F) looks through branch names, changeset ids and commit messages (the full message, not just the first line), plus release names. Matching ignores case and finds the text anywhere, and two wildcards are supported: `*` matches any run of characters and `?` matches exactly one, so `feat*login` finds `feature/login-page` and `v1.?` finds `v1.2`. A changeset id matches from its start once you've typed four or more hex digits. Matches are highlighted in the explorer and everything else fades back. ↑/↓ steps through the results list, Enter jumps to one, Esc ends the search.
+**Search.** The search box in the Branch Explorer's bar (⌘F) looks through branch names, changeset ids and commit messages (the full message, not just the first line), plus release names. Matching ignores case and finds the text anywhere, and two wildcards are supported: `*` matches any run of characters and `?` matches exactly one, so `feat*login` finds `feature/login-page` and `v1.?` finds `v1.2`. A changeset id matches from its start once you've typed four or more hex digits. Matches are highlighted in the explorer and everything else fades back. ↑/↓ steps through the results list, Enter jumps to one, Esc ends the search.
 
 | Key | Action |
 | --- | --- |
 | `⇧⌘O` / `⌘O` | File › Open Workspace… / Open Repository… |
 | `⌘[` / `⌘]` | Previous / next repository in the workspace |
-| `⌘R` | Reload (also happens when the window regains focus, so terminal commits show up) |
-| `←` / `→` | Previous / next changeset along the selected branch (also the toolbar arrows) |
-| `Home` | Go to the checked-out changeset (HEAD) |
-| `⌘F` | Search branches, changesets and commit messages |
+| `⌘R` | Reload, in either view (it also happens when the window regains focus, so terminal commits show up) |
+| `←` / `→` | Previous / next changeset along the selected branch (Branch Explorer; also its bar's arrows) |
+| `Home` | Go to the checked-out changeset, HEAD (Branch Explorer) |
+| `⌘F` | Search: branches, changesets and messages in the Branch Explorer; branch names in the Branch List |
 | `+` / `-` / `0` / `L` | Zoom in / out / fit / jump to latest |
 
 ### Development

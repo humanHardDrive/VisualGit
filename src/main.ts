@@ -782,7 +782,11 @@ function showView(view: ViewName) {
   const list = view === "list";
   canvas.hidden = list;
   zoomControls.hidden = list;
+  // Reload, changeset browsing and search belong to the Branch Explorer; the list has its own search.
+  $("explorer-bar").hidden = list;
+  $("list-bar").hidden = !list;
   listView.hidden = !list;
+  if (list && searchInput.value) clearSearch();
   if (list) $("tooltip").hidden = true;
   else explorer.select(selection, true); // catch up with what was selected in the list
   renderBranchView();
@@ -797,12 +801,6 @@ function selectedBranchId(m: Model): number | undefined {
   return selection?.kind === "branch" ? selection.id : selection?.kind === "commit" ? m.owner.get(selection.hash) : undefined;
 }
 
-/** While searching: matching branches, plus the branches of matching changesets. */
-function searchedBranches(m: Model): Set<number> | undefined {
-  if (!results) return undefined;
-  return new Set([...results.branches, ...results.commits.map((h) => m.owner.get(h)!)]);
-}
-
 function renderBranchView() {
   if (currentView !== "list") return;
   if (!model) {
@@ -810,10 +808,13 @@ function renderBranchView() {
     return;
   }
   const m = model;
+  const query = branchSearch.value;
+  const shown = branchRows(m, branchSort, query).length;
+  $("branch-count").textContent = query.trim() ? `${shown} of ${m.branches.length} branches` : `${m.branches.length} branches`;
   renderBranchList(listView, m, {
     selected: selectedBranchId(m),
-    only: searchedBranches(m),
     sort: branchSort,
+    query,
     onSelect: (id) => applySelection({ kind: "branch", id }, true),
     onOpen: (id) => openBranchDiff(id),
     onContextMenu: (id) => {
@@ -827,10 +828,28 @@ function renderBranchView() {
   });
 }
 
+const branchSearch = $<HTMLInputElement>("branch-search");
+branchSearch.addEventListener("input", () => renderBranchView());
+branchSearch.addEventListener("keydown", (e) => {
+  // Browse the matches without leaving the search box.
+  if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+    e.preventDefault();
+    stepRow(e.key === "ArrowUp" ? -1 : 1);
+  } else if (e.key === "Enter" && selection?.kind === "branch") {
+    e.preventDefault();
+    openBranchDiff(selection.id);
+  } else if (e.key === "Escape" && branchSearch.value) {
+    e.preventDefault();
+    e.stopPropagation();
+    branchSearch.value = "";
+    renderBranchView();
+  }
+});
+
 /** ↑/↓ in the Branch List: select the row above or below. */
 function stepRow(dir: 1 | -1) {
   if (!model) return;
-  const rows = branchRows(model, branchSort, searchedBranches(model));
+  const rows = branchRows(model, branchSort, branchSearch.value);
   if (rows.length === 0) return;
   const at = rows.findIndex((r) => r.id === selectedBranchId(model!));
   const next = rows[at < 0 ? 0 : Math.max(0, Math.min(rows.length - 1, at + dir))];
@@ -890,8 +909,10 @@ window.addEventListener("keydown", (e) => {
     reload();
   } else if (mod && e.key === "f") {
     e.preventDefault();
-    searchInput.focus();
-    searchInput.select();
+    // Each view has its own search.
+    const box = currentView === "list" ? branchSearch : searchInput;
+    box.focus();
+    box.select();
   } else if (mod && e.key === "[") {
     e.preventDefault();
     switchRepo(-1);
@@ -909,18 +930,21 @@ window.addEventListener("keydown", (e) => {
   else if (currentView === "explorer" && e.key === "-") explorer.zoomBy(0.8);
   else if (currentView === "explorer" && e.key === "0") explorer.fit();
   else if (currentView === "explorer" && (e.key === "l" || e.key === "L")) explorer.latest();
-  else if (e.key === "ArrowLeft") {
+  else if (currentView === "explorer" && e.key === "ArrowLeft") {
     e.preventDefault();
     step(-1);
-  } else if (e.key === "ArrowRight") {
+  } else if (currentView === "explorer" && e.key === "ArrowRight") {
     e.preventDefault();
     step(1);
-  } else if (e.key === "Home") {
+  } else if (currentView === "explorer" && e.key === "Home") {
     e.preventDefault();
     goHome();
   } else if (e.key === "Escape") {
     // First Escape ends a search, the next clears the selection.
-    if (searchInput.value) clearSearch();
+    if (currentView === "list" && branchSearch.value) {
+      branchSearch.value = "";
+      renderBranchView();
+    } else if (searchInput.value) clearSearch();
     else applySelection(null, false);
   }
 });
