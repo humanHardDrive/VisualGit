@@ -180,7 +180,7 @@ fn push_named(root: &Path, branch: &str) -> Result<String, String> {
     Ok(format!("Pushed {branch} to {remote} (new branch)"))
 }
 
-fn git(root: &Path, args: &[&str], paths: &[String], stdin: Option<&str>) -> Result<String, String> {
+pub(crate) fn git(root: &Path, args: &[&str], paths: &[String], stdin: Option<&str>) -> Result<String, String> {
     let mut cmd = Command::new("git");
     cmd.arg("-C")
         .arg(root)
@@ -209,7 +209,7 @@ fn git(root: &Path, args: &[&str], paths: &[String], stdin: Option<&str>) -> Res
 }
 
 /// The repository's top-level folder, canonicalised.
-fn repo_root(repo: &str) -> Result<PathBuf, String> {
+pub(crate) fn repo_root(repo: &str) -> Result<PathBuf, String> {
     let path = Path::new(repo).canonicalize().map_err(|_| format!("not a directory: {repo}"))?;
     if !path.join(".git").exists() {
         return Err(format!("not the top of a Git repository: {repo}"));

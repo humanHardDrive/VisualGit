@@ -202,6 +202,22 @@ button.icon:hover { color: var(--text); }
 .toast.ok { border-left-color: var(--merge); }
 .toast.error { border-left-color: #d1242f; }
 
+/* Dialogs (create branch) */
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
+.dialog { width: min(440px, calc(100vw - 32px)); padding: 18px 20px 16px; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 16px 48px rgb(0 0 0 / 0.3); }
+.dialog::backdrop { background: rgb(0 0 0 / 0.25); }
+.dialog h2 { font-size: 15px; margin: 0 0 4px; }
+.dialog-sub { margin: 0 0 14px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dialog .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.dialog .field { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
+.dialog .field input { padding: 6px 8px; font: inherit; font-size: 13px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
+.dialog .field input:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: -1px; border-color: var(--accent); }
+.dialog-error { min-height: 18px; margin: 4px 0 6px; color: #d1242f; font-size: 12px; }
+.dialog .check { display: flex; align-items: center; gap: 6px; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.dialog-actions button { padding: 5px 14px; }
+
 .tooltip {
   position: absolute;
   z-index: 3;
