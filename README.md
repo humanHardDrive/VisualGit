@@ -46,6 +46,13 @@ The home symbol marks what's checked out. When you have uncommitted changes, an 
 
 The preview comes from `git merge-tree`, which computes the merge without touching your files, the index or any branch.
 
+**Cherry picking.** Right-click a changeset and choose *Cherry Pick This Changeset* to copy its changes onto the checked-out changeset, as a new changeset with the same message.
+
+- **Merge changesets:** these are picked as the change they made to their first parent.
+- **Already included:** a changeset that's already part of what's checked out is refused.
+- **Pending changes:** if you have any, Pending Changes opens first so you can commit them.
+- **Conflicts:** the cherry pick stops and Pending Changes opens. A banner explains what's happening, and git's message is already filled in. Resolve the conflicts and commit, or *Abort* to put everything back. A merge that stops with conflicts works the same way.
+
 **What hasn't been pushed** is shown in orange, as of your last fetch:
 
 - A changeset that no remote-tracking branch contains gets a small up-arrow.

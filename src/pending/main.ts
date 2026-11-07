@@ -287,9 +287,61 @@ async function selectFile(f: PendingFile) {
   await loadDiff(f);
 }
 
+// ---- merge or cherry pick in progress -------------------------------------------------
+
+/** Mirrors `Operation` in src-tauri/src/merge.rs. */
+interface Operation {
+  kind: "merge" | "cherry pick";
+  from: string | null;
+  message: string | null;
+}
+
+let operation: Operation | null = null;
+/** The prepared message we put in the box, so it is only filled in once and can be cleared on abort. */
+let prefilled: string | null = null;
+
+async function refreshOperation() {
+  operation = await invoke<Operation | null>("operation_in_progress", { repo }).catch(() => null);
+  const bar = $("operation");
+  bar.hidden = !operation;
+  if (!operation) return;
+  const what = operation.kind === "merge" ? "Merging" : "Cherry picking";
+  $("operation-text").textContent =
+    `${what} ${operation.from?.slice(0, 8) ?? ""}. Resolve any conflicts, then commit; the commit includes every changed file. Or abort to put everything back as it was.`;
+  if (operation.message && !messageBox.value.trim() && prefilled !== operation.message) {
+    messageBox.value = prefilled = operation.message;
+    updateCommitButton();
+  }
+}
+
+$("abort").addEventListener("click", async () => {
+  if (!operation) return;
+  const ok = await ask(`Abort the ${operation.kind}? Its changes, including any conflict resolutions, are discarded.`, {
+    title: `Abort ${operation.kind}`,
+    kind: "warning",
+    okLabel: "Abort",
+    cancelLabel: "Keep Going",
+  });
+  if (!ok) return;
+  open?.view.destroy();
+  open = null;
+  try {
+    await invoke("abort_operation", { repo });
+    setStatus(`Aborted the ${operation.kind}`, "ok");
+    if (messageBox.value === prefilled) messageBox.value = "";
+    prefilled = null;
+    announce();
+  } catch (err) {
+    setStatus(String(err), "error");
+  }
+  current = null;
+  await refresh();
+});
+
 // ---- refresh and commit --------------------------------------------------------------
 
 async function refresh() {
+  void refreshOperation();
   try {
     pending = await loadPendingChanges(tauriRunner(repo));
   } catch (err) {

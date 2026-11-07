@@ -1,6 +1,7 @@
 //! The merge window: a preview of merging a changeset into what's checked out.
+//! Also cherry picking, and the state of a merge or cherry pick in progress.
 //!
-//! Nothing here touches the working tree, the index or any branch.
+//! The preview touches nothing: not the working tree, the index or any branch.
 //! `git merge-tree --write-tree` computes the merged result in the object
 //! database (as unreachable objects that `git gc` cleans up eventually), and
 //! the window reads file versions from it.
@@ -173,6 +174,117 @@ fn changed_files(root: &Path, to: &str, tree: &str, conflicted: &HashSet<String>
     Ok(files)
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CherryPick {
+    /// The new changeset, when it applied cleanly.
+    committed: Option<String>,
+    /// Files left with conflict markers, when it didn't. The cherry pick is then in progress.
+    conflicts: Vec<String>,
+}
+
+/// Applies changeset `at` on top of HEAD as a new changeset (`git cherry-pick`).
+#[tauri::command]
+pub async fn cherry_pick(repo: String, at: String) -> Result<CherryPick, String> {
+    tauri::async_runtime::spawn_blocking(move || pick(&repo, &at)).await.map_err(|e| e.to_string())?
+}
+
+fn pick(repo: &str, at: &str) -> Result<CherryPick, String> {
+    let root = repo_root(repo)?;
+    let at = commit_id(&root, at)?;
+    let short = &at[..8];
+    let head = git(&root, &["rev-parse", "--verify", "-q", "HEAD"], &[], None)
+        .map_err(|_| "Nothing is checked out yet to cherry pick onto.".to_string())?;
+    if git(&root, &["merge-base", "--is-ancestor", &at, head.trim()], &[], None).is_ok() {
+        return Err(format!("{short} is already part of the checked-out changeset"));
+    }
+    if let Some(op) = in_progress(&root) {
+        return Err(format!("A {op} is already in progress. Finish or abort it first."));
+    }
+    let parents = git(&root, &["rev-list", "--parents", "-n", "1", &at], &[], None)?;
+    let is_merge = parents.split_whitespace().count() > 2;
+    // A merge changeset is picked as the change it made to its first parent.
+    let mut args = vec!["cherry-pick"];
+    if is_merge {
+        args.extend(["-m", "1"]);
+    }
+    args.push(&at);
+    match git(&root, &args, &[], None) {
+        Ok(_) => Ok(CherryPick { committed: Some(git(&root, &["rev-parse", "HEAD"], &[], None)?.trim().to_string()), conflicts: vec![] }),
+        Err(err) => {
+            let conflicts: Vec<String> = git(&root, &["diff", "--name-only", "--diff-filter=U", "-z"], &[], None)
+                .unwrap_or_default()
+                .split('\0')
+                .filter(|p| !p.is_empty())
+                .map(str::to_string)
+                .collect();
+            if !conflicts.is_empty() {
+                return Ok(CherryPick { committed: None, conflicts });
+            }
+            // Nothing to apply (the changes are already here), or another failure: leave no half-done state.
+            if in_progress(&root).is_some() {
+                let _ = git(&root, &["cherry-pick", "--abort"], &[], None);
+            }
+            if err.contains("empty") {
+                Err(format!("The changes in {short} are already in the checked-out changeset"))
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
+/// "merge" or "cherry pick" while one is in progress.
+fn in_progress(root: &Path) -> Option<&'static str> {
+    let has = |r: &str| git(root, &["rev-parse", "-q", "--verify", r], &[], None).is_ok();
+    if has("CHERRY_PICK_HEAD") {
+        Some("cherry pick")
+    } else if has("MERGE_HEAD") {
+        Some("merge")
+    } else {
+        None
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Operation {
+    /// "merge" or "cherry pick".
+    kind: String,
+    /// The changeset being merged or cherry picked.
+    from: Option<String>,
+    /// The commit message git prepared for it.
+    message: Option<String>,
+}
+
+/// A merge or cherry pick waiting for its conflicts to be resolved, if any.
+#[tauri::command]
+pub fn operation_in_progress(repo: String) -> Result<Option<Operation>, String> {
+    let root = repo_root(&repo)?;
+    let Some(kind) = in_progress(&root) else { return Ok(None) };
+    let head_ref = if kind == "merge" { "MERGE_HEAD" } else { "CHERRY_PICK_HEAD" };
+    let from = git(&root, &["rev-parse", "-q", "--verify", head_ref], &[], None).ok().map(|s| s.trim().to_string());
+    let message = git(&root, &["rev-parse", "--git-path", "MERGE_MSG"], &[], None)
+        .ok()
+        .map(|p| root.join(p.trim()))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        // Drop git's comment lines (the conflict list).
+        .map(|m| m.lines().filter(|l| !l.starts_with('#')).collect::<Vec<_>>().join("\n").trim().to_string())
+        .filter(|m| !m.is_empty());
+    Ok(Some(Operation { kind: kind.into(), from, message }))
+}
+
+/// Abandons the merge or cherry pick in progress, putting everything back as it was.
+#[tauri::command]
+pub fn abort_operation(repo: String) -> Result<(), String> {
+    let root = repo_root(&repo)?;
+    match in_progress(&root) {
+        Some("cherry pick") => git(&root, &["cherry-pick", "--abort"], &[], None).map(|_| ()),
+        Some(_) => git(&root, &["merge", "--abort"], &[], None).map(|_| ()),
+        None => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,6 +354,52 @@ mod tests {
         assert_eq!(run(&["rev-parse", "HEAD"]), head);
         assert_eq!(run(&["status", "--porcelain"]), "");
         assert_eq!(std::fs::read_to_string(dir.join("shared.txt")).unwrap(), "1\n2\nmain\n");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn cherry_picks_cleanly_with_conflicts_and_refuses_repeats() {
+        let (dir, run) = repo();
+        let repo = dir.to_string_lossy().into_owned();
+        let write = |p: &str, t: &str| std::fs::write(dir.join(p), t).unwrap();
+        write("f.txt", "1\n");
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "base"]);
+        let base = run(&["rev-parse", "HEAD"]);
+        run(&["checkout", "-q", "-b", "side"]);
+        write("g.txt", "g\n");
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "add g"]);
+        let add_g = run(&["rev-parse", "HEAD"]);
+        write("f.txt", "side\n");
+        run(&["commit", "-q", "-am", "side edits f"]);
+        let edit_f = run(&["rev-parse", "HEAD"]);
+        run(&["checkout", "-q", "main"]);
+        write("f.txt", "main\n");
+        run(&["commit", "-q", "-am", "main edits f"]);
+
+        // Clean pick: a new changeset with the same message.
+        let p = pick(&repo, &add_g).unwrap();
+        let new = p.committed.unwrap();
+        assert_ne!(new, add_g);
+        assert_eq!(run(&["log", "-1", "--format=%s"]), "add g");
+        assert!(dir.join("g.txt").exists());
+
+        // Already included: refused.
+        assert!(pick(&repo, &base).unwrap_err().contains("already part"));
+
+        // Conflicting pick: stops, reports the file, and can be aborted.
+        let p = pick(&repo, &edit_f).unwrap();
+        assert_eq!(p.conflicts, vec!["f.txt".to_string()]);
+        let op = operation_in_progress(repo.clone()).unwrap().unwrap();
+        assert_eq!(op.kind, "cherry pick");
+        assert_eq!(op.from.as_deref(), Some(edit_f.as_str()));
+        assert_eq!(op.message.as_deref(), Some("side edits f"));
+        assert!(pick(&repo, &add_g).is_err()); // one at a time
+        abort_operation(repo.clone()).unwrap();
+        assert!(operation_in_progress(repo.clone()).unwrap().is_none());
+        assert_eq!(std::fs::read_to_string(dir.join("f.txt")).unwrap(), "main\n");
+        assert_eq!(run(&["rev-parse", "HEAD"]), new);
         std::fs::remove_dir_all(&dir).ok();
     }
 

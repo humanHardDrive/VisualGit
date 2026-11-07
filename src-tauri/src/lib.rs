@@ -123,6 +123,9 @@ pub fn run() {
             merge::open_merge_window,
             merge::merge_window_info,
             merge::merge_preview,
+            merge::cherry_pick,
+            merge::operation_in_progress,
+            merge::abort_operation,
         ])
         .run(tauri::generate_context!())
         .expect("error while running VisualGit");
