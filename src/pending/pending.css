@@ -50,10 +50,6 @@
 .pfile .file-dir { color: var(--muted); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .pfile .file-name { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .pfile .dirty { color: var(--accent); flex: none; }
-.st-M, .st-T { color: #d97706; }
-.st-A, .st-C, .st-untracked { color: var(--merge); }
-.st-D, .st-U { color: #d1242f; }
-.st-R { color: var(--accent); }
 
 .diff-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--canvas); }
 .diff-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--panel); border-bottom: 1px solid var(--border); }

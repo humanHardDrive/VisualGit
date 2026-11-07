@@ -1,22 +1,19 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Menu } from "@tauri-apps/api/menu";
-import { open } from "@tauri-apps/plugin-dialog";
+import { ask, message, open } from "@tauri-apps/plugin-dialog";
 import { loadRepo, type GitRunner } from "./git/load.ts";
 import { inTauri, tauriRunner } from "./git/tauriRunner.ts";
 import { inferModel, pendingChangesOn, uncommittedHead, type Model } from "./model/infer.ts";
 import { layoutModel } from "./model/layout.ts";
 import { searchModel, type SearchResults } from "./model/search.ts";
-import { clearDetails, showBranch, showCommit } from "./view/details.ts";
-import { branchColor, Explorer, pushLabel, type Selection, type View } from "./view/explorer.ts";
-
-/** Mirrors `RepoInfo` in src-tauri/src/workspace.rs. */
-interface RepoInfo {
-  path: string;
-  name: string;
-  head: string | null;
-  detached: boolean;
-}
+import { branchRows, renderBranchList, type BranchSort } from "./view/branchList.ts";
+import { clearDetails, showBranch, showCommit, showFile } from "./view/details.ts";
+import { buildTree, loadFiles, loadLastChanges, type FileList, type Folder, type LastChange } from "./git/files.ts";
+import { fileRows, renderFiles, rowKey, type FileRow } from "./view/files.ts";
+import { ignorePatterns } from "./git/ignore.ts";
+import { branchColor, Explorer, type Selection, type View } from "./view/explorer.ts";
+import { filterRepos, renderWorkspaceList, type RepoInfo } from "./view/workspaceList.ts";
 
 /** Selection saved across reloads; branches by name, since ids are reassigned. */
 type SavedSelection = { kind: "commit"; hash: string } | { kind: "branch"; name: string };
@@ -25,13 +22,11 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 
 const canvas = $<HTMLCanvasElement>("explorer");
 const details = $("details");
-const branchList = $("branch-list");
 const searchInput = $<HTMLInputElement>("search");
 const searchPanel = $("search-results");
-const workspaceSection = $("workspace");
 const workspaceName = $("workspace-name");
-const repoList = $("repo-list");
-const repoFilter = $<HTMLInputElement>("repo-filter");
+const workspaceView = $("workspace-view");
+const repoSearch = $<HTMLInputElement>("repo-search");
 const emptyState = $("empty-state");
 const stats = $("stats");
 const repoPathEl = $("repo-path");
@@ -84,11 +79,12 @@ function recall(key: string): string | null {
 
 function applySelection(sel: Selection | null, reveal: boolean) {
   selection = sel;
-  explorer.select(sel, reveal);
+  // The explorer only scrolls to the selection while it's on screen (see showView).
+  explorer.select(sel, reveal && currentView === "explorer");
   if (!model || !git || !sel) clearDetails(details);
   else if (sel.kind === "commit") showCommit(details, model, sel.hash, (s) => applySelection(s, true));
   else showBranch(details, model, sel.id, (s) => applySelection(s, true));
-  renderBranches();
+  renderBranchView();
   updateNav();
 }
 
@@ -370,6 +366,7 @@ function runSearch(open: boolean) {
   activeResult = -1;
   renderResults();
   searchPanel.hidden = !open || !results;
+  renderBranchView();
 }
 
 /** After a reload or repository switch: same query, new history. */
@@ -617,6 +614,7 @@ async function loadRepoAt(path: string, opts: { reload?: boolean; remembered?: b
     searchInput.disabled = false;
     refreshSearch();
     applySelection(restoreSelection(next, keptSelection), false);
+    void showFiles(); // refreshes the Files view's list (and statuses) if it's showing
   } catch (err) {
     if (seq !== loadSeq) return;
     if (opts.remembered) {
@@ -651,10 +649,6 @@ async function openWorkspace(path: string, opts: { remembered?: boolean } = {}) 
     workspace = path;
     repos = found;
     store(WORKSPACE_KEY, path);
-    workspaceSection.hidden = false;
-    workspaceName.textContent = path.split("/").pop() || path;
-    workspaceName.title = path;
-    repoFilter.hidden = repos.length <= 8;
     renderRepos();
     return true;
   } catch (err) {
@@ -685,9 +679,11 @@ function openDefaultRepo() {
     showMessage(
       repos.length ? "Pick a repository" : "No repositories found",
       repos.length
-        ? `${repos.length} repositories in this workspace. Choose one on the left.`
+        ? `${repos.length} repositories in this workspace. Choose one in the Workspace view.`
         : "No Git repositories were found in this folder or the four levels below it.",
     );
+    // Show the list to pick from.
+    showView("workspace");
   }
 }
 
@@ -721,37 +717,33 @@ function listedRepos(): RepoInfo[] {
 }
 
 function renderRepos() {
-  const q = repoFilter.value.trim().toLowerCase();
-  const items = listedRepos()
-    .filter((r) => !q || r.name.toLowerCase().includes(q))
-    .map((r) => {
-      const item = document.createElement("div");
-      item.className = "repo-item";
-      if (r.path === repoPath) item.classList.add("selected");
-      if (r.path === loadingPath) item.classList.add("loading");
-      item.title = r.path;
-      const name = document.createElement("span");
-      name.className = "name";
-      name.textContent = r.name;
-      const head = document.createElement("span");
-      head.className = "head";
-      head.textContent = r.head ?? "";
-      if (r.detached) head.title = "Detached HEAD";
-      item.append(name, head);
-      item.onclick = () => {
-        if (r.path !== repoPath) void loadRepoAt(r.path);
-      };
-      return item;
-    });
-  if (items.length === 0) {
-    const none = document.createElement("div");
-    none.className = "repo-empty";
-    none.textContent = q ? "No matches" : "No repositories found";
-    items.push(none);
-  }
-  repoList.replaceChildren(...items);
-  if (workspace || repoPath) workspaceSection.hidden = false;
-  $("rescan").hidden = !workspace;
+  workspaceName.textContent = workspace ? workspace.split("/").pop() || workspace : "No workspace open";
+  workspaceName.title = workspace ?? "";
+  ($("rescan") as HTMLButtonElement).disabled = !workspace;
+  const list = listedRepos();
+  const shown = filterRepos(list, repoSearch.value).length;
+  $("repo-count").textContent = repoSearch.value.trim()
+    ? `${shown} of ${list.length} repositories`
+    : `${list.length} repositor${list.length === 1 ? "y" : "ies"}`;
+  if (currentView !== "workspace") return;
+  renderWorkspaceList(workspaceView, list, {
+    current: repoPath,
+    loading: loadingPath,
+    query: repoSearch.value,
+    empty: workspace
+      ? "No Git repositories were found in this folder or the four levels below it."
+      : "No workspace is open. Choose Open Workspace… and pick the folder you keep your repositories in.",
+    onOpen: (r) => {
+      if (r.path !== repoPath) void loadRepoAt(r.path);
+    },
+    onActivate: (r) => openRepoInExplorer(r),
+  });
+}
+
+/** Opens a repository (if it isn't already) and shows it in the Branch Explorer. */
+function openRepoInExplorer(r: RepoInfo) {
+  if (r.path !== repoPath) void loadRepoAt(r.path);
+  showView("explorer");
 }
 
 function switchRepo(delta: number) {
@@ -762,54 +754,414 @@ function switchRepo(delta: number) {
   if (next.path !== repoPath) void loadRepoAt(next.path);
 }
 
-function renderBranches() {
+// ---- views ---------------------------------------------------------------------
+
+type ViewName = "workspace" | "explorer" | "list" | "files";
+const VIEW_KEY = "visualgit.view";
+const listView = $("branch-list-view");
+const zoomControls = document.querySelector<HTMLElement>(".zoom")!;
+const remembered = recall(VIEW_KEY);
+let currentView: ViewName = remembered === "list" || remembered === "workspace" || remembered === "files" ? remembered : "explorer";
+let branchSort: BranchSort = "tree";
+
+function showView(view: ViewName) {
+  currentView = view;
+  store(VIEW_KEY, view);
+  for (const item of document.querySelectorAll<HTMLButtonElement>(".view-item")) {
+    item.setAttribute("aria-pressed", String(item.dataset.view === view));
+  }
+  const explorerShown = view === "explorer";
+  $("canvas-wrap").dataset.view = view;
+  canvas.hidden = !explorerShown;
+  zoomControls.hidden = !explorerShown;
+  // Each view has its own bar: the explorer's (reload, changeset browsing, search), the list's and the workspace's searches.
+  $("explorer-bar").hidden = !explorerShown;
+  $("list-bar").hidden = view !== "list";
+  $("workspace-bar").hidden = view !== "workspace";
+  $("files-bar").hidden = view !== "files";
+  listView.hidden = view !== "list";
+  workspaceView.hidden = view !== "workspace";
+  filesView.hidden = view !== "files";
+  if (!explorerShown) {
+    $("tooltip").hidden = true;
+    if (searchInput.value) clearSearch();
+  } else {
+    explorer.select(selection, true); // catch up with what was selected in another view
+  }
+  renderBranchView();
+  renderRepos();
+  if (view === "files") void showFiles();
+  else if (selectedFile) applySelection(selection, false); // the details panel goes back to the selection
+}
+
+for (const item of document.querySelectorAll<HTMLButtonElement>(".view-item")) {
+  item.addEventListener("click", () => showView(item.dataset.view as ViewName));
+}
+
+/** The branch the selection belongs to: the selected branch, or the selected changeset's lane. */
+function selectedBranchId(m: Model): number | undefined {
+  return selection?.kind === "branch" ? selection.id : selection?.kind === "commit" ? m.owner.get(selection.hash) : undefined;
+}
+
+function renderBranchView() {
+  if (currentView !== "list") return;
   if (!model) {
-    branchList.replaceChildren();
+    listView.replaceChildren();
     return;
   }
   const m = model;
-  const selectedBranch =
-    selection?.kind === "branch" ? selection.id : selection?.kind === "commit" ? m.owner.get(selection.hash) : undefined;
-  const items: HTMLElement[] = [];
-  const add = (id: number, depth: number) => {
-    const b = m.branches[id];
-    const item = document.createElement("div");
-    item.className = "branch-item";
-    if (id === selectedBranch) item.classList.add("selected");
-    if (b.kind === "deleted" || b.kind === "anonymous") item.classList.add("dim");
-    item.style.paddingLeft = `${8 + depth * 14}px`;
-    const swatch = document.createElement("span");
-    swatch.className = "swatch";
-    swatch.style.background = branchColor(m, id);
-    const name = document.createElement("span");
-    name.className = "name";
-    name.textContent = b.name;
-    name.title = b.name;
-    item.append(swatch, name);
-    const badge = (text: string, cls = "") => {
-      const s = document.createElement("span");
-      s.className = `badge ${cls}`;
-      s.textContent = text;
-      item.append(s);
-    };
-    if (b.isHead) badge("HEAD", "head");
-    if (b.commits.length === 0 && b.kind !== "trunk") badge("empty");
-    if (b.kind === "remote") badge("remote");
-    const push = pushLabel(m, b);
-    if (push) badge(push.replace("not pushed · ", "local · "), "unpushed");
-    if (b.kind === "deleted") badge("deleted");
-    item.onclick = () => applySelection({ kind: "branch", id }, true);
-    item.ondblclick = () => openBranchDiff(id);
-    item.oncontextmenu = (e) => {
-      e.preventDefault();
+  const query = branchSearch.value;
+  const shown = branchRows(m, branchSort, query).length;
+  $("branch-count").textContent = query.trim() ? `${shown} of ${m.branches.length} branches` : `${m.branches.length} branches`;
+  renderBranchList(listView, m, {
+    selected: selectedBranchId(m),
+    sort: branchSort,
+    query,
+    onSelect: (id) => applySelection({ kind: "branch", id }, true),
+    onOpen: (id) => openBranchDiff(id),
+    onContextMenu: (id) => {
       applySelection({ kind: "branch", id }, true);
       void showContextMenu({ kind: "branch", id });
-    };
-    items.push(item);
-    for (const c of b.children) add(c, depth + 1);
-  };
-  for (const b of m.branches) if (b.parent === null) add(b.id, 0);
-  branchList.replaceChildren(...items);
+    },
+    onSort: (sort) => {
+      branchSort = sort;
+      renderBranchView();
+    },
+  });
+}
+
+const branchSearch = $<HTMLInputElement>("branch-search");
+branchSearch.addEventListener("input", () => renderBranchView());
+branchSearch.addEventListener("keydown", (e) => {
+  // Browse the matches without leaving the search box.
+  if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+    e.preventDefault();
+    stepRow(e.key === "ArrowUp" ? -1 : 1);
+  } else if (e.key === "Enter" && selection?.kind === "branch") {
+    e.preventDefault();
+    openBranchDiff(selection.id);
+  } else if (e.key === "Escape" && branchSearch.value) {
+    e.preventDefault();
+    e.stopPropagation();
+    branchSearch.value = "";
+    renderBranchView();
+  }
+});
+
+// ---- files ---------------------------------------------------------------------------
+
+const filesView = $("files-view");
+const fileSearch = $<HTMLInputElement>("file-search");
+let files: { repo: string; list: FileList; tree: Folder } | null = null;
+/** Expanded folders, per repository. */
+const expandedFolders = new Map<string, Set<string>>();
+/** The selected row in the Files view: a file path, or a folder path ending in "/". */
+let selectedFile: string | null = null;
+let filesSeq = 0;
+/** Last changes per file, for one repository at one HEAD: history only changes when HEAD moves. */
+let lastChanges: { key: string; map: Map<string, LastChange> } | null = null;
+
+const expanded = () => {
+  let set = expandedFolders.get(repoPath ?? "");
+  if (!set) expandedFolders.set(repoPath ?? "", (set = new Set()));
+  return set;
+};
+
+/** Loads (or reloads) the file list when the Files view is showing. */
+async function showFiles() {
+  if (currentView !== "files") return;
+  if (!repoPath || !git) {
+    files = null;
+    filesView.replaceChildren();
+    $("file-count").textContent = "";
+    return;
+  }
+  const seq = ++filesSeq;
+  const path = repoPath;
+  try {
+    const list = await loadFiles(git);
+    if (seq !== filesSeq || repoPath !== path) return;
+    if (files?.repo !== path) selectedFile = null;
+    const key = `${path}\0${model?.headHash ?? ""}`;
+    if (lastChanges?.key === key) list.last = lastChanges.map;
+    files = { repo: path, list, tree: buildTree(list) };
+  } catch (err) {
+    if (seq === filesSeq) filesView.replaceChildren(Object.assign(document.createElement("div"), { className: "tree-empty", textContent: `Could not list files: ${err}` }));
+    return;
+  }
+  renderFileView();
+  showSelectedFile();
+  if (!files.list.last) void fillLastChanges(seq, path);
+}
+
+/** Fills in the date and author columns: one pass over history, after the tree is already showing. */
+async function fillLastChanges(seq: number, path: string) {
+  const runner = git;
+  if (!runner) return;
+  const key = `${path}\0${model?.headHash ?? ""}`;
+  let map: Map<string, LastChange>;
+  try {
+    map = await loadLastChanges(runner);
+  } catch {
+    map = new Map(); // e.g. no changesets yet: every file is "Not committed"
+  }
+  lastChanges = { key, map };
+  if (seq !== filesSeq || files?.repo !== path) return;
+  files.list.last = map;
+  files.tree = buildTree(files.list);
+  renderFileView();
+}
+
+function renderFileView() {
+  if (currentView !== "files" || !files) return;
+  const { list, tree } = files;
+  const changed = list.status.size;
+  $("file-count").textContent =
+    `${list.paths.length.toLocaleString()} file${list.paths.length === 1 ? "" : "s"}` + (changed ? ` · ${changed} with pending changes` : "");
+  renderFiles(filesView, tree, list, {
+    expanded: expanded(),
+    query: fileSearch.value,
+    selected: selectedFile,
+    onSelect: (r) => selectFileRow(r),
+    onOpen: (r) => openFileRow(r),
+    onContextMenu: (r) => {
+      if (rowKey(r) !== selectedFile) {
+        selectedFile = rowKey(r);
+        renderFileView();
+        showSelectedFile();
+      }
+      if (r.kind === "file") void showFileMenu(r.path);
+    },
+  });
+}
+
+// ---- file right-click menu -------------------------------------------------------------
+
+async function showFileMenu(path: string) {
+  if (!files || !repoPath) return;
+  const status = files.list.status.get(path);
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const untracked = status?.letter === "?";
+  const onDisk = status?.letter !== "D";
+  const patterns = ignorePatterns(path);
+  const dot = name.lastIndexOf(".");
+  const ext = patterns.extension ? `*${name.slice(dot)}` : null;
+  const menu = await Menu.new({
+    items: [
+      { id: "open", text: "Open", enabled: onDisk, action: () => void openFile(path) },
+      { id: "open-with", text: "Open With…", enabled: onDisk, action: () => void openFileWith(path) },
+      { item: "Separator" },
+      { id: "history", text: "View History", enabled: !untracked, action: () => openHistory(path) },
+      { item: "Separator" },
+      {
+        text: "Ignore",
+        items: [
+          { id: "ignore-name", text: `Ignore “${name}”`, action: () => void ignoreFile(path, patterns.name, `every file named ${name}`) },
+          {
+            id: "ignore-ext",
+            text: ext ? `Ignore “${ext}”` : "Ignore by Extension",
+            enabled: !!ext,
+            action: () => void ignoreFile(path, patterns.extension!, `every ${ext} file`),
+          },
+          { id: "ignore-path", text: `Ignore “/${path}”`, action: () => void ignoreFile(path, patterns.path, `/${path}`) },
+        ],
+      },
+      { id: "delete", text: "Delete…", action: () => void deleteFile(path, untracked) },
+    ],
+  });
+  await menu.popup();
+}
+
+async function openFile(path: string) {
+  if (!repoPath) return;
+  await invoke("open_file", { repo: repoPath, path }).catch((err) => notify(String(err), "error"));
+}
+
+async function openFileWith(path: string) {
+  if (!repoPath) return;
+  const repo = repoPath;
+  const platform = navigator.userAgent;
+  let app: string | null = null;
+  // Windows has its own "Open with" chooser; elsewhere, pick the application here.
+  if (!platform.includes("Windows")) {
+    const mac = platform.includes("Mac");
+    const chosen = await open({
+      title: `Open “${path.slice(path.lastIndexOf("/") + 1)}” With`,
+      defaultPath: mac ? "/Applications" : "/usr/bin",
+      filters: mac ? [{ name: "Applications", extensions: ["app"] }] : undefined,
+    });
+    if (typeof chosen !== "string") return;
+    app = chosen;
+  }
+  await invoke("open_file_with", { repo, path, app }).catch((err) => notify(String(err), "error"));
+}
+
+/** The file's history in the diff window: every changeset that changed it. */
+function openHistory(path: string) {
+  if (!repoPath || !model?.headHash) return;
+  void invoke("open_diff_window", { repo: repoPath, at: model.headHash, file: path }).catch((err) =>
+    notify(`Could not open the history of ${path}: ${err}`, "error"),
+  );
+}
+
+async function ignoreFile(path: string, pattern: string, what: string) {
+  if (!repoPath) return;
+  try {
+    const added = await invoke<boolean>("add_to_gitignore", { repo: repoPath, pattern });
+    const tracked = files?.list.status.get(path)?.letter !== "?";
+    notify(
+      (added ? `Added ${pattern} to .gitignore, so git ignores ${what}.` : `.gitignore already ignores ${what}.`) +
+        // gitignore only affects files git doesn't track yet.
+        (tracked ? ` ${path} is already in source control, so git keeps tracking it until it's removed (Delete… › Remove from Source Control).` : ""),
+      tracked ? "" : "ok", // the tracked-file note stays until read
+    );
+  } catch (err) {
+    notify(`Could not update .gitignore: ${err}`, "error");
+    return;
+  }
+  reload();
+}
+
+async function deleteFile(path: string, untracked: boolean) {
+  if (!repoPath) return;
+  const repo = repoPath;
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  let fromDisk: boolean;
+  if (untracked) {
+    // Not in source control: the only thing to do is remove it from disk.
+    const ok = await ask(`“${name}” isn't in source control. Move it to the Trash?`, {
+      title: "Delete",
+      kind: "warning",
+      okLabel: "Move to Trash",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
+    fromDisk = true;
+  } else {
+    const KEEP = "Remove from Source Control";
+    const BOTH = "Remove from Source Control and Disk";
+    const choice = await message(
+      `Delete “${path}”?
+
+${KEEP}: git stops tracking it; the file stays on disk as a new, untracked file.
+
+${BOTH}: also moves the file to the Trash.
+
+Either way the removal is a pending change: commit it to record it.`,
+      { title: "Delete", kind: "warning", buttons: { yes: KEEP, no: BOTH, cancel: "Cancel" } },
+    );
+    if (choice === "Yes" || choice === KEEP) fromDisk = false;
+    else if (choice === "No" || choice === BOTH) fromDisk = true;
+    else return;
+  }
+  try {
+    await invoke("remove_file", { repo, path, fromDisk });
+    notify(
+      untracked
+        ? `Moved ${name} to the Trash.`
+        : fromDisk
+          ? `Removed ${path} from source control and moved it to the Trash. Commit to record the removal.`
+          : `Removed ${path} from source control; it's still on disk. Commit to record the removal.`,
+      "ok",
+    );
+  } catch (err) {
+    notify(`Could not delete ${path}: ${err}`, "error");
+    return;
+  }
+  if (repoPath === repo) reload();
+}
+
+function selectFileRow(r: FileRow) {
+  selectedFile = rowKey(r);
+  if (r.kind === "folder") toggleFolder(r.folder.path);
+  else renderFileView();
+  showSelectedFile();
+}
+
+/** Folders open and close; a file with pending changes opens Pending Changes. */
+function openFileRow(r: FileRow) {
+  if (r.kind === "file" && files?.list.status.has(r.path)) openPendingChanges();
+}
+
+function toggleFolder(path: string, open?: boolean) {
+  const set = expanded();
+  if (open ?? !set.has(path)) set.add(path);
+  else set.delete(path);
+  renderFileView();
+}
+
+function showSelectedFile() {
+  if (currentView !== "files" || !files || !model || !git) return;
+  if (!selectedFile || selectedFile.endsWith("/")) return;
+  void showFile(details, model, selectedFile, files.list.status.get(selectedFile), git, (s) => {
+    showView("explorer");
+    applySelection(s, true);
+  });
+}
+
+/** Keyboard in the Files view: ↑/↓ move, ←/→ close/open folders, Enter opens. */
+function fileKey(key: string) {
+  if (!files) return;
+  const rows = fileRows(files.tree, files.list, expanded(), fileSearch.value);
+  if (rows.length === 0) return;
+  const at = rows.findIndex((r) => rowKey(r) === selectedFile);
+  const cur = rows[at];
+  if (key === "ArrowUp" || key === "ArrowDown") {
+    const next = rows[at < 0 ? 0 : Math.max(0, Math.min(rows.length - 1, at + (key === "ArrowUp" ? -1 : 1)))];
+    selectedFile = rowKey(next);
+    renderFileView();
+    showSelectedFile();
+  } else if (key === "ArrowRight" && cur?.kind === "folder") {
+    toggleFolder(cur.folder.path, true);
+  } else if (key === "ArrowLeft" && cur) {
+    if (cur.kind === "folder" && expanded().has(cur.folder.path)) toggleFolder(cur.folder.path, false);
+    else {
+      // Up to the containing folder.
+      const path = cur.kind === "folder" ? cur.folder.path : cur.path;
+      const i = path.lastIndexOf("/");
+      if (i > 0) {
+        selectedFile = `${path.slice(0, i)}/`;
+        renderFileView();
+      }
+    }
+  } else if (key === "Enter" && cur) {
+    if (cur.kind === "folder") toggleFolder(cur.folder.path);
+    else openFileRow(cur);
+  }
+}
+
+fileSearch.addEventListener("input", renderFileView);
+fileSearch.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "Enter") {
+    e.preventDefault();
+    fileKey(e.key);
+  } else if (e.key === "Escape" && fileSearch.value) {
+    e.preventDefault();
+    e.stopPropagation();
+    fileSearch.value = "";
+    renderFileView();
+  }
+});
+$("expand-all").addEventListener("click", () => {
+  if (!files) return;
+  const set = expanded();
+  const all = (f: Folder) => f.folders.forEach((s) => (set.add(s.path), all(s)));
+  all(files.tree);
+  renderFileView();
+});
+$("collapse-all").addEventListener("click", () => {
+  expanded().clear();
+  renderFileView();
+});
+
+/** ↑/↓ in the Branch List: select the row above or below. */
+function stepRow(dir: 1 | -1) {
+  if (!model) return;
+  const rows = branchRows(model, branchSort, branchSearch.value);
+  if (rows.length === 0) return;
+  const at = rows.findIndex((r) => r.id === selectedBranchId(model!));
+  const next = rows[at < 0 ? 0 : Math.max(0, Math.min(rows.length - 1, at + dir))];
+  applySelection({ kind: "branch", id: next.id }, true);
 }
 
 // ---- commands ----------------------------------------------------------------------
@@ -818,6 +1170,7 @@ async function chooseWorkspace() {
   const dir = await open({ directory: true, title: "Open workspace folder", defaultPath: workspace ?? undefined });
   if (typeof dir !== "string") return;
   if (await openWorkspace(dir)) {
+    showView("workspace");
     // Stay on the current repository if it belongs to the new workspace.
     if (!repoPath || !isInside(repoPath, dir)) {
       rememberCurrent();
@@ -854,7 +1207,20 @@ navHome.addEventListener("click", goHome);
 $("zoom-in").addEventListener("click", () => explorer.zoomBy(1.25));
 $("zoom-out").addEventListener("click", () => explorer.zoomBy(0.8));
 $("zoom-fit").addEventListener("click", () => explorer.fit());
-repoFilter.addEventListener("input", renderRepos);
+repoSearch.addEventListener("input", renderRepos);
+repoSearch.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    // Open the first match.
+    const first = filterRepos(listedRepos(), repoSearch.value)[0];
+    if (first) openRepoInExplorer(first);
+  } else if (e.key === "Escape" && repoSearch.value) {
+    e.preventDefault();
+    e.stopPropagation();
+    repoSearch.value = "";
+    renderRepos();
+  }
+});
+$("open-workspace").addEventListener("click", () => void chooseWorkspace());
 
 window.addEventListener("keydown", (e) => {
   if (branchDialog.open) return; // the dialog handles its own keys (Esc closes it)
@@ -865,8 +1231,10 @@ window.addEventListener("keydown", (e) => {
     reload();
   } else if (mod && e.key === "f") {
     e.preventDefault();
-    searchInput.focus();
-    searchInput.select();
+    // Each view has its own search.
+    const box = currentView === "list" ? branchSearch : currentView === "workspace" ? repoSearch : currentView === "files" ? fileSearch : searchInput;
+    box.focus();
+    box.select();
   } else if (mod && e.key === "[") {
     e.preventDefault();
     switchRepo(-1);
@@ -875,22 +1243,39 @@ window.addEventListener("keydown", (e) => {
     switchRepo(1);
   } else if (e.target instanceof HTMLInputElement) {
     if (e.key === "Escape") e.target.blur();
-  } else if (e.key === "+" || e.key === "=") explorer.zoomBy(1.25);
-  else if (e.key === "-") explorer.zoomBy(0.8);
-  else if (e.key === "0") explorer.fit();
-  else if (e.key === "l" || e.key === "L") explorer.latest();
-  else if (e.key === "ArrowLeft") {
+  } else if (currentView === "files" && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter"].includes(e.key)) {
+    e.preventDefault();
+    fileKey(e.key);
+  } else if (currentView === "list" && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+    e.preventDefault();
+    stepRow(e.key === "ArrowUp" ? -1 : 1);
+  } else if (currentView === "list" && e.key === "Enter" && selection?.kind === "branch") {
+    openBranchDiff(selection.id);
+  } else if (currentView === "explorer" && (e.key === "+" || e.key === "=")) explorer.zoomBy(1.25);
+  else if (currentView === "explorer" && e.key === "-") explorer.zoomBy(0.8);
+  else if (currentView === "explorer" && e.key === "0") explorer.fit();
+  else if (currentView === "explorer" && (e.key === "l" || e.key === "L")) explorer.latest();
+  else if (currentView === "explorer" && e.key === "ArrowLeft") {
     e.preventDefault();
     step(-1);
-  } else if (e.key === "ArrowRight") {
+  } else if (currentView === "explorer" && e.key === "ArrowRight") {
     e.preventDefault();
     step(1);
-  } else if (e.key === "Home") {
+  } else if (currentView === "explorer" && e.key === "Home") {
     e.preventDefault();
     goHome();
   } else if (e.key === "Escape") {
     // First Escape ends a search, the next clears the selection.
-    if (searchInput.value) clearSearch();
+    if (currentView === "list" && branchSearch.value) {
+      branchSearch.value = "";
+      renderBranchView();
+    } else if (currentView === "workspace" && repoSearch.value) {
+      repoSearch.value = "";
+      renderRepos();
+    } else if (currentView === "files" && fileSearch.value) {
+      fileSearch.value = "";
+      renderFileView();
+    } else if (searchInput.value) clearSearch();
     else applySelection(null, false);
   }
 });
@@ -923,6 +1308,8 @@ async function start() {
     if (last) void loadRepoAt(last, { remembered: true });
   }
 }
+
+showView(currentView);
 
 if (!inTauri()) {
   showMessage("Run inside the desktop app", "VisualGit reads repositories through its Tauri backend. Start it with `npm run app`.");

@@ -1,5 +1,6 @@
 /** Right-hand panel: details for the selected changeset or branch. */
 
+import type { GitRunner } from "../git/load.ts";
 import type { Model } from "../model/infer.ts";
 import { branchColor, pushLabel, type Selection } from "./explorer.ts";
 
@@ -113,6 +114,42 @@ export function showBranch(panel: HTMLElement, model: Model, id: number, go: Nav
     children.push(el("p", { className: "kind" }, "This branch has no changesets of its own yet. It still gets its own lane, starting at the changeset it was created from."));
   }
   panel.replaceChildren(...children);
+}
+
+let fileRequest = 0;
+
+/** A file in the Files view: its path, pending status and the changeset that last changed it. */
+export async function showFile(
+  panel: HTMLElement,
+  model: Model,
+  path: string,
+  status: { letter: string; title: string } | undefined,
+  git: GitRunner,
+  go: Navigate,
+) {
+  const id = ++fileRequest;
+  const slash = path.lastIndexOf("/");
+  const dl = el("dl");
+  row(dl, "Path", el("span", { className: "mono" }, path));
+  row(dl, "Status", status ? `${status.title} (pending change)` : "No pending changes");
+  const last = el("span", {}, "…");
+  row(dl, "Last changed", last);
+  panel.replaceChildren(el("h2", {}, path.slice(slash + 1)), el("div", { className: "kind" }, "File"), dl);
+  try {
+    const out = (await git.run(["log", "-1", "--format=%H%x00%s%x00%at", "--", path])).trim();
+    if (id !== fileRequest) return;
+    if (!out) {
+      last.textContent = "Never committed";
+      return;
+    }
+    const [hash, subject, time] = out.split("\0");
+    last.replaceChildren(
+      model.commits.has(hash) ? commitLink(model, hash, go) : el("span", { className: "mono" }, hash.slice(0, 8)),
+      ` ${subject} · ${formatDate(Number(time))}`,
+    );
+  } catch {
+    if (id === fileRequest) last.textContent = "Unknown";
+  }
 }
 
 export function clearDetails(panel: HTMLElement) {

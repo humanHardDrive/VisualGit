@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Permissions for the main window and the Pending Changes, merge and diff windows",
   "windows": ["main", "pending-*", "merge-*", "diff-*"],
-  "permissions": ["core:default", "core:window:allow-destroy", "dialog:allow-open", "dialog:allow-ask"]
+  "permissions": ["core:default", "core:window:allow-destroy", "dialog:allow-open", "dialog:allow-ask", "dialog:allow-message"]
 }
