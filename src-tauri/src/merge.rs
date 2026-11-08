@@ -1,5 +1,6 @@
 //! The merge window: a preview of merging a changeset into what's checked out.
-//! Also cherry picking, and the state of a merge or cherry pick in progress.
+//! Also cherry picking, subtractive merges (taking a changeset's changes back
+//! out), and the state of any of these left in progress by conflicts.
 //!
 //! The preview touches nothing: not the working tree, the index or any branch.
 //! `git merge-tree --write-tree` computes the merged result in the object
@@ -186,25 +187,54 @@ pub struct CherryPick {
 /// Applies changeset `at` on top of HEAD as a new changeset (`git cherry-pick`).
 #[tauri::command]
 pub async fn cherry_pick(repo: String, at: String) -> Result<CherryPick, String> {
-    tauri::async_runtime::spawn_blocking(move || pick(&repo, &at)).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || apply(&repo, &at, Apply::Pick)).await.map_err(|e| e.to_string())?
 }
 
+/// Takes changeset `at`'s changes back out of HEAD as a new changeset
+/// (`git revert`): Plastic's subtractive merge.
+#[tauri::command]
+pub async fn subtractive_merge(repo: String, at: String) -> Result<CherryPick, String> {
+    tauri::async_runtime::spawn_blocking(move || apply(&repo, &at, Apply::Subtract)).await.map_err(|e| e.to_string())?
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Apply {
+    /// Add a changeset's changes (cherry pick).
+    Pick,
+    /// Remove them (subtractive merge).
+    Subtract,
+}
+
+#[cfg(test)]
 fn pick(repo: &str, at: &str) -> Result<CherryPick, String> {
+    apply(repo, at, Apply::Pick)
+}
+
+fn apply(repo: &str, at: &str, how: Apply) -> Result<CherryPick, String> {
     let root = repo_root(repo)?;
     let at = commit_id(&root, at)?;
     let short = &at[..8];
     let head = git(&root, &["rev-parse", "--verify", "-q", "HEAD"], &[], None)
-        .map_err(|_| "Nothing is checked out yet to cherry pick onto.".to_string())?;
-    if git(&root, &["merge-base", "--is-ancestor", &at, head.trim()], &[], None).is_ok() {
-        return Err(format!("{short} is already part of the checked-out changeset"));
+        .map_err(|_| "Nothing is checked out yet.".to_string())?;
+    let included = git(&root, &["merge-base", "--is-ancestor", &at, head.trim()], &[], None).is_ok();
+    match how {
+        Apply::Pick if included => return Err(format!("{short} is already part of the checked-out changeset")),
+        Apply::Subtract if !included => {
+            return Err(format!("{short} isn't part of the checked-out changeset, so there's nothing to take out"))
+        }
+        _ => {}
     }
     if let Some(op) = in_progress(&root) {
         return Err(format!("A {op} is already in progress. Finish or abort it first."));
     }
     let parents = git(&root, &["rev-list", "--parents", "-n", "1", &at], &[], None)?;
     let is_merge = parents.split_whitespace().count() > 2;
-    // A merge changeset is picked as the change it made to its first parent.
-    let mut args = vec!["cherry-pick"];
+    let command = if how == Apply::Pick { "cherry-pick" } else { "revert" };
+    let mut args = vec![command];
+    if how == Apply::Subtract {
+        args.push("--no-edit"); // git's own "Revert …" message
+    }
+    // A merge changeset counts as the change it made to its first parent.
     if is_merge {
         args.extend(["-m", "1"]);
     }
@@ -221,12 +251,15 @@ fn pick(repo: &str, at: &str) -> Result<CherryPick, String> {
             if !conflicts.is_empty() {
                 return Ok(CherryPick { committed: None, conflicts });
             }
-            // Nothing to apply (the changes are already here), or another failure: leave no half-done state.
+            // Nothing to apply (or remove), or another failure: leave no half-done state.
             if in_progress(&root).is_some() {
-                let _ = git(&root, &["cherry-pick", "--abort"], &[], None);
+                let _ = git(&root, &[command, "--abort"], &[], None);
             }
-            if err.contains("empty") {
-                Err(format!("The changes in {short} are already in the checked-out changeset"))
+            if err.contains("empty") || err.contains("nothing to commit") {
+                Err(match how {
+                    Apply::Pick => format!("The changes in {short} are already in the checked-out changeset"),
+                    Apply::Subtract => format!("The changes in {short} have already been taken out"),
+                })
             } else {
                 Err(err)
             }
@@ -234,35 +267,38 @@ fn pick(repo: &str, at: &str) -> Result<CherryPick, String> {
     }
 }
 
-/// "merge" or "cherry pick" while one is in progress.
+/// The operations that can stop for conflicts: (name, git's marker ref, how to abort).
+const OPERATIONS: [(&str, &str, &str); 3] = [
+    ("cherry pick", "CHERRY_PICK_HEAD", "cherry-pick"),
+    ("subtractive merge", "REVERT_HEAD", "revert"),
+    ("merge", "MERGE_HEAD", "merge"),
+];
+
+/// "merge", "cherry pick" or "subtractive merge" while one is in progress.
 fn in_progress(root: &Path) -> Option<&'static str> {
-    let has = |r: &str| git(root, &["rev-parse", "-q", "--verify", r], &[], None).is_ok();
-    if has("CHERRY_PICK_HEAD") {
-        Some("cherry pick")
-    } else if has("MERGE_HEAD") {
-        Some("merge")
-    } else {
-        None
-    }
+    OPERATIONS
+        .iter()
+        .find(|(_, marker, _)| git(root, &["rev-parse", "-q", "--verify", marker], &[], None).is_ok())
+        .map(|(name, _, _)| *name)
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Operation {
-    /// "merge" or "cherry pick".
+    /// "merge", "cherry pick" or "subtractive merge".
     kind: String,
-    /// The changeset being merged or cherry picked.
+    /// The changeset being merged, cherry picked or taken out.
     from: Option<String>,
     /// The commit message git prepared for it.
     message: Option<String>,
 }
 
-/// A merge or cherry pick waiting for its conflicts to be resolved, if any.
+/// A merge, cherry pick or subtractive merge waiting for its conflicts to be resolved, if any.
 #[tauri::command]
 pub fn operation_in_progress(repo: String) -> Result<Option<Operation>, String> {
     let root = repo_root(&repo)?;
     let Some(kind) = in_progress(&root) else { return Ok(None) };
-    let head_ref = if kind == "merge" { "MERGE_HEAD" } else { "CHERRY_PICK_HEAD" };
+    let head_ref = OPERATIONS.iter().find(|(name, _, _)| *name == kind).map(|(_, marker, _)| *marker).unwrap_or("MERGE_HEAD");
     let from = git(&root, &["rev-parse", "-q", "--verify", head_ref], &[], None).ok().map(|s| s.trim().to_string());
     let message = git(&root, &["rev-parse", "--git-path", "MERGE_MSG"], &[], None)
         .ok()
@@ -274,15 +310,13 @@ pub fn operation_in_progress(repo: String) -> Result<Option<Operation>, String> 
     Ok(Some(Operation { kind: kind.into(), from, message }))
 }
 
-/// Abandons the merge or cherry pick in progress, putting everything back as it was.
+/// Abandons the operation in progress, putting everything back as it was.
 #[tauri::command]
 pub fn abort_operation(repo: String) -> Result<(), String> {
     let root = repo_root(&repo)?;
-    match in_progress(&root) {
-        Some("cherry pick") => git(&root, &["cherry-pick", "--abort"], &[], None).map(|_| ()),
-        Some(_) => git(&root, &["merge", "--abort"], &[], None).map(|_| ()),
-        None => Ok(()),
-    }
+    let Some(kind) = in_progress(&root) else { return Ok(()) };
+    let command = OPERATIONS.iter().find(|(name, _, _)| *name == kind).map(|(_, _, c)| *c).unwrap_or("merge");
+    git(&root, &[command, "--abort"], &[], None).map(|_| ())
 }
 
 #[cfg(test)]
@@ -400,6 +434,55 @@ mod tests {
         assert!(operation_in_progress(repo.clone()).unwrap().is_none());
         assert_eq!(std::fs::read_to_string(dir.join("f.txt")).unwrap(), "main\n");
         assert_eq!(run(&["rev-parse", "HEAD"]), new);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn subtractive_merge_takes_changes_out() {
+        let (dir, run) = repo();
+        let repo = dir.to_string_lossy().into_owned();
+        let write = |p: &str, t: &str| std::fs::write(dir.join(p), t).unwrap();
+        write("f.txt", "1\n");
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "base"]);
+        write("g.txt", "g\n");
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "add g"]);
+        let add_g = run(&["rev-parse", "HEAD"]);
+        write("f.txt", "2\n");
+        run(&["commit", "-q", "-am", "edit f"]);
+        let edit_f = run(&["rev-parse", "HEAD"]);
+
+        // Clean: g.txt goes away in a new "Revert" changeset.
+        let r = apply(&repo, &add_g, Apply::Subtract).unwrap();
+        assert!(r.committed.is_some());
+        assert!(!dir.join("g.txt").exists());
+        assert_eq!(run(&["log", "-1", "--format=%s"]), "Revert \"add g\"");
+        // Again: nothing left to take out.
+        assert!(apply(&repo, &add_g, Apply::Subtract).unwrap_err().contains("already been taken out"));
+
+        // Not in HEAD: refused.
+        run(&["checkout", "-q", "-b", "side", &edit_f]);
+        write("h.txt", "h\n");
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "side only"]);
+        let side = run(&["rev-parse", "HEAD"]);
+        run(&["checkout", "-q", "main"]);
+        assert!(apply(&repo, &side, Apply::Subtract).unwrap_err().contains("isn't part of"));
+
+        // Conflict: a later change touches the same line; reported, then aborted.
+        write("f.txt", "3\n");
+        run(&["commit", "-q", "-am", "edit f again"]);
+        let head = run(&["rev-parse", "HEAD"]);
+        let r = apply(&repo, &edit_f, Apply::Subtract).unwrap();
+        assert_eq!(r.conflicts, vec!["f.txt".to_string()]);
+        let op = operation_in_progress(repo.clone()).unwrap().unwrap();
+        assert_eq!(op.kind, "subtractive merge");
+        assert_eq!(op.from.as_deref(), Some(edit_f.as_str()));
+        abort_operation(repo.clone()).unwrap();
+        assert!(operation_in_progress(repo.clone()).unwrap().is_none());
+        assert_eq!(run(&["rev-parse", "HEAD"]), head);
+        assert_eq!(std::fs::read_to_string(dir.join("f.txt")).unwrap(), "3\n");
         std::fs::remove_dir_all(&dir).ok();
     }
 

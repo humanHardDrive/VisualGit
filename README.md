@@ -85,6 +85,15 @@ The preview comes from `git merge-tree`, which computes the merge without touchi
 - **Pending changes:** if you have any, Pending Changes opens first so you can commit them.
 - **Conflicts:** the cherry pick stops and Pending Changes opens. A banner explains what's happening, and git's message is already filled in. Resolve the conflicts and commit, or *Abort* to put everything back. A merge that stops with conflicts works the same way.
 
+**Subtractive merge.** Right-click a changeset that's part of what's checked out and choose *Subtractive Merge* to take its changes back out, as a new "Revert …" changeset (`git revert`). It works like cherry picking, in reverse:
+
+- **Merge changesets:** these are undone relative to their first parent.
+- **Pending changes:** if you have any, Pending Changes opens first.
+- **Conflicts:** Pending Changes opens with the banner, git's message filled in, and *Abort*.
+- **Already taken out:** if the changes have already been taken out, it says so.
+
+Cherry Pick is only offered on changesets that *aren't* part of what's checked out, and Subtractive Merge only on those that are.
+
 **What hasn't been pushed** is shown in orange, as of your last fetch:
 
 - A changeset that no remote-tracking branch contains gets a small up-arrow.

@@ -133,6 +133,7 @@ pub fn run() {
             merge::merge_window_info,
             merge::merge_preview,
             merge::cherry_pick,
+            merge::subtractive_merge,
             merge::operation_in_progress,
             merge::abort_operation,
         ])
