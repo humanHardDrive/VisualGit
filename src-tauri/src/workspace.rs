@@ -1,8 +1,9 @@
-//! Finds the Git repositories inside a workspace folder.
+//! Finds the Git repositories inside a workspace folder, and creates new ones there.
 
 use serde::Serialize;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::process::{Command, Stdio};
 
 #[derive(Serialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -90,6 +91,96 @@ fn repo_info(root: &Path, dir: &Path) -> Option<RepoInfo> {
     Some(RepoInfo { path: dir.to_string_lossy().into_owned(), name, head: Some(head), detached })
 }
 
+/// Creates a repository at `name` (a folder path such as `tools/app`)
+/// inside the workspace, and returns it as the Workspace view lists it.
+/// An existing folder that isn't a repository yet is turned into one, its
+/// files left as they are (new, uncommitted). `branch` names the first
+/// branch; without it git's `init.defaultBranch` applies.
+#[tauri::command]
+pub async fn create_repo(workspace: String, name: String, branch: Option<String>) -> Result<RepoInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || create(Path::new(&workspace), &name, branch.as_deref().map(str::trim).filter(|b| !b.is_empty())))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn create(workspace: &Path, name: &str, branch: Option<&str>) -> Result<RepoInfo, String> {
+    let root = workspace.canonicalize().map_err(|_| format!("The workspace folder {} doesn't exist", workspace.display()))?;
+    let parts = folder_parts(name)?;
+    // Repositories inside repositories aren't listed (or wanted): check the workspace and every folder on the way.
+    let mut dir = root.clone();
+    for (i, part) in std::iter::once(None).chain(parts.iter().map(Some)).enumerate() {
+        if let Some(part) = part {
+            dir.push(part);
+        }
+        if !dir.exists() {
+            break;
+        }
+        // A symlinked folder could lead out of the workspace.
+        if !dir.canonicalize().is_ok_and(|d| d.starts_with(&root)) {
+            return Err(format!("{} leads outside the workspace", parts[..i].join("/")));
+        }
+        if dir.join(".git").exists() {
+            let at = if i == 0 { "The workspace folder".to_string() } else { parts[..i].join("/") };
+            return Err(if i == parts.len() {
+                format!("{at} is already a repository")
+            } else {
+                format!("{at} is a repository already; a repository can't go inside another one")
+            });
+        }
+    }
+    let target = root.join(parts.join("/"));
+    if target.exists() && !target.is_dir() {
+        return Err(format!("{name} is a file, not a folder"));
+    }
+    if let Some(b) = branch {
+        let ok = Command::new("git").args(["check-ref-format", "--branch", b]).stdin(Stdio::null()).output().is_ok_and(|o| o.status.success());
+        if !ok {
+            return Err(format!("“{b}” isn't a valid branch name"));
+        }
+    }
+    fs::create_dir_all(&target).map_err(|e| format!("could not create {name}: {e}"))?;
+    let mut cmd = Command::new("git");
+    cmd.arg("init").arg("-q");
+    if let Some(b) = branch {
+        cmd.args(["-b", b]);
+    }
+    let out = cmd.arg("--").arg(&target).stdin(Stdio::null()).env("GIT_TERMINAL_PROMPT", "0").output().map_err(|e| format!("failed to run git: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    // Listed under the workspace path as given, like the scan does.
+    repo_info(workspace, &workspace.join(parts.join("/"))).ok_or_else(|| "git init didn't create a repository".to_string())
+}
+
+/// `name` as folder names, refusing anything the workspace scan wouldn't find.
+fn folder_parts(name: &str) -> Result<Vec<String>, String> {
+    let name = name.trim().trim_end_matches('/');
+    if name.is_empty() {
+        return Err("Enter a name for the repository".into());
+    }
+    if name.contains('\\') || name.contains('\0') {
+        return Err("Use / to separate folders".into());
+    }
+    let mut parts = Vec::new();
+    for c in Path::new(name).components() {
+        let Component::Normal(part) = c else {
+            return Err("The repository must be a folder inside the workspace".into());
+        };
+        let part = part.to_string_lossy().into_owned();
+        if part.starts_with('.') {
+            return Err(format!("“{part}”: folder names starting with . are hidden, so the workspace wouldn't list the repository"));
+        }
+        if SKIP.contains(&part.as_str()) {
+            return Err(format!("“{part}” folders are skipped when looking for repositories; choose another name"));
+        }
+        parts.push(part);
+    }
+    if parts.len() > MAX_DEPTH {
+        return Err(format!("Too deep: the workspace only looks {MAX_DEPTH} folders down for repositories"));
+    }
+    Ok(parts)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,5 +243,39 @@ mod tests {
         let repos = find_repos(&tmp.0, MAX_DEPTH);
         assert_eq!(repos.len(), 1);
         assert_eq!(repos[0].path, tmp.0.to_string_lossy());
+    }
+
+    #[test]
+    fn creates_repositories_only_where_the_scan_finds_them() {
+        let tmp = temp_root();
+        let root = &tmp.0;
+        let made = create(root, "tools/app", Some("trunk")).unwrap();
+        assert_eq!((made.name.as_str(), made.head.as_deref(), made.detached), ("tools/app", Some("trunk"), false));
+        assert_eq!(made.path, root.join("tools/app").to_string_lossy());
+        assert!(find_repos(root, MAX_DEPTH).contains(&made));
+
+        // An existing folder of files becomes a repository; its files stay.
+        fs::create_dir_all(root.join("notes")).unwrap();
+        fs::write(root.join("notes/todo.txt"), "x").unwrap();
+        create(root, "notes/", None).unwrap();
+        assert!(root.join("notes/.git").is_dir() && root.join("notes/todo.txt").exists());
+
+        for (name, why) in [
+            ("tools/app", "already a repository"),
+            ("tools/app/inner", "inside another"),
+            ("../escape", "inside the workspace"),
+            ("/abs", "inside the workspace"),
+            ("a/.hidden", "hidden"),
+            ("node_modules/x", "skipped"),
+            ("a/b/c/d/e", "Too deep"),
+            ("  ", "Enter a name"),
+        ] {
+            let err = create(root, name, None).unwrap_err();
+            assert!(err.contains(why), "{name}: {err}");
+        }
+        assert!(create(root, "bad-branch", Some("no spaces")).unwrap_err().contains("valid branch name"));
+        assert!(!root.join("bad-branch").exists(), "nothing is created for a bad branch name");
+        fs::write(root.join("file"), "").unwrap();
+        assert!(create(root, "file", None).unwrap_err().contains("is a file"));
     }
 }

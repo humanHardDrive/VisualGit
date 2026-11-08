@@ -1,5 +1,5 @@
-//! The merge window: a preview of merging a changeset into what's checked out.
-//! Also cherry picking, subtractive merges (taking a changeset's changes back
+//! The merge window: a preview of merging a changeset into what's checked out,
+//! and the merge itself (never a fast-forward). Also cherry picking, subtractive merges (taking a changeset's changes back
 //! out), and the state of any of these left in progress by conflicts.
 //!
 //! The preview touches nothing: not the working tree, the index or any branch.
@@ -242,12 +242,7 @@ fn apply(repo: &str, at: &str, how: Apply) -> Result<CherryPick, String> {
     match git(&root, &args, &[], None) {
         Ok(_) => Ok(CherryPick { committed: Some(git(&root, &["rev-parse", "HEAD"], &[], None)?.trim().to_string()), conflicts: vec![] }),
         Err(err) => {
-            let conflicts: Vec<String> = git(&root, &["diff", "--name-only", "--diff-filter=U", "-z"], &[], None)
-                .unwrap_or_default()
-                .split('\0')
-                .filter(|p| !p.is_empty())
-                .map(str::to_string)
-                .collect();
+            let conflicts = conflicted_paths(&root);
             if !conflicts.is_empty() {
                 return Ok(CherryPick { committed: None, conflicts });
             }
@@ -265,6 +260,70 @@ fn apply(repo: &str, at: &str, how: Apply) -> Result<CherryPick, String> {
             }
         }
     }
+}
+
+/// Merges changeset `from` into HEAD, always as a merge changeset of its own
+/// (`git merge --no-ff`), even when git could fast-forward. A fast-forward
+/// leaves no trace of the merge, so the branch explorer would credit the merged
+/// branch's changesets to the destination and draw the source as empty.
+///
+/// `branch` names the local branch being merged when `from` is its tip, for
+/// git's usual "Merge branch 'x' into y" message. On conflicts the merge is
+/// left in progress, to finish (or abort) in Pending Changes.
+#[tauri::command]
+pub async fn merge(repo: String, from: String, branch: Option<String>) -> Result<CherryPick, String> {
+    tauri::async_runtime::spawn_blocking(move || merge_into_head(&repo, &from, branch.as_deref())).await.map_err(|e| e.to_string())?
+}
+
+fn merge_into_head(repo: &str, from: &str, branch: Option<&str>) -> Result<CherryPick, String> {
+    let root = repo_root(repo)?;
+    let from = commit_id(&root, from)?;
+    let short = &from[..8];
+    let head = git(&root, &["rev-parse", "--verify", "-q", "HEAD"], &[], None)
+        .map_err(|_| "Nothing is checked out yet, so there's nothing to merge into.".to_string())?
+        .trim()
+        .to_string();
+    if git(&root, &["merge-base", "--is-ancestor", &from, &head], &[], None).is_ok() {
+        return Err(format!("{short} is already merged into the checked-out changeset"));
+    }
+    if let Some(op) = in_progress(&root) {
+        return Err(format!("A {op} is already in progress. Finish or abort it first."));
+    }
+    if !git(&root, &["status", "--porcelain", "--untracked-files=no"], &[], None)?.trim().is_empty() {
+        return Err("There are pending changes. Commit or undo them before merging.".into());
+    }
+    // Only name the branch if it really is the changeset being merged.
+    let branch = branch.filter(|b| {
+        git(&root, &["rev-parse", "--verify", "-q", &format!("refs/heads/{b}^{{commit}}")], &[], None).is_ok_and(|h| h.trim() == from)
+    });
+    let into = git(&root, &["symbolic-ref", "-q", "--short", "HEAD"], &[], None).map(|s| s.trim().to_string()).unwrap_or_else(|_| head[..8].to_string());
+    let message = match branch {
+        Some(b) => format!("Merge branch '{b}' into {into}"),
+        None => format!("Merge changeset {short} into {into}"),
+    };
+    let args = ["merge", "--no-ff", "--no-edit", "--allow-unrelated-histories", "-m", &message, &from];
+    match git(&root, &args, &[], None) {
+        Ok(_) => Ok(CherryPick { committed: Some(git(&root, &["rev-parse", "HEAD"], &[], None)?.trim().to_string()), conflicts: vec![] }),
+        Err(err) => {
+            let conflicts = conflicted_paths(&root);
+            if !conflicts.is_empty() {
+                return Ok(CherryPick { committed: None, conflicts });
+            }
+            if in_progress(&root) == Some("merge") {
+                let _ = git(&root, &["merge", "--abort"], &[], None);
+            }
+            Err(err)
+        }
+    }
+}
+
+fn conflicted_paths(root: &Path) -> Vec<String> {
+    git(root, &["diff", "--name-only", "--diff-filter=U", "-z"], &[], None)
+        .unwrap_or_default()
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// The operations that can stop for conflicts: (name, git's marker ref, how to abort).
@@ -501,6 +560,61 @@ mod tests {
         assert_eq!(p.kind, "fast-forward");
         assert_eq!(p.files.len(), 1);
         assert_eq!(p.files[0].status, "A");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn merges_never_fast_forward() {
+        let (dir, run) = repo();
+        let repo = dir.to_string_lossy().into_owned();
+        run(&["commit", "-q", "--allow-empty", "-m", "one"]);
+        let base = run(&["rev-parse", "HEAD"]);
+        run(&["checkout", "-q", "-b", "feature"]);
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "two"]);
+        let tip = run(&["rev-parse", "HEAD"]);
+        run(&["checkout", "-q", "main"]);
+        // Even with fast-forwards forced on in the config.
+        run(&["config", "merge.ff", "only"]);
+
+        let done = merge_into_head(&repo, &tip, Some("feature")).unwrap();
+        let merged = done.committed.unwrap();
+        assert_eq!(run(&["rev-list", "--parents", "-n", "1", &merged]), format!("{merged} {base} {tip}"));
+        assert_eq!(run(&["log", "-1", "--format=%s"]), "Merge branch 'feature' into main");
+        assert_eq!(run(&["rev-parse", "feature"]), tip, "the merged branch stays where it was");
+        assert!(merge_into_head(&repo, &tip, None).unwrap_err().contains("already merged"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn merge_conflicts_stay_in_progress_and_pending_changes_block() {
+        let (dir, run) = repo();
+        let repo = dir.to_string_lossy().into_owned();
+        std::fs::write(dir.join("f.txt"), "base\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "base"]);
+        run(&["checkout", "-q", "-b", "other"]);
+        std::fs::write(dir.join("f.txt"), "theirs\n").unwrap();
+        run(&["commit", "-q", "-am", "theirs"]);
+        let theirs = run(&["rev-parse", "HEAD"]);
+        run(&["checkout", "-q", "main"]);
+        std::fs::write(dir.join("f.txt"), "ours\n").unwrap();
+        run(&["commit", "-q", "-am", "ours"]);
+
+        // A tracked file with uncommitted changes stops the merge before it starts.
+        std::fs::write(dir.join("f.txt"), "edited\n").unwrap();
+        assert!(merge_into_head(&repo, &theirs, None).unwrap_err().contains("pending changes"));
+        run(&["checkout", "--", "f.txt"]);
+
+        // A changeset that isn't a branch tip gets a message naming it.
+        let done = merge_into_head(&repo, &theirs, Some("main")).unwrap();
+        assert_eq!(done.conflicts, vec!["f.txt".to_string()]);
+        assert_eq!(in_progress(&dir), Some("merge"));
+        let op = operation_in_progress(repo.clone()).unwrap().unwrap();
+        assert_eq!(op.message.as_deref(), Some(format!("Merge changeset {} into main", &theirs[..8]).as_str()));
+        abort_operation(repo.clone()).unwrap();
+        assert_eq!(in_progress(&dir), None);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

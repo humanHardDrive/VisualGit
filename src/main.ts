@@ -637,9 +637,10 @@ async function loadRepoAt(path: string, opts: { reload?: boolean; remembered?: b
     repoPathEl.title = root;
     document.title = `${root.split("/").pop()} · VisualGit`;
     stats.textContent =
-      `${next.order.length.toLocaleString()} changesets · ${next.branches.length} branches` +
+      `${next.order.length.toLocaleString()} changeset${next.order.length === 1 ? "" : "s"} · ${next.branches.length} branch${next.branches.length === 1 ? "" : "es"}` +
       (next.unpushed.size ? ` · ${next.unpushed.size.toLocaleString()} not pushed` : "") +
       (next.truncated ? " · history truncated" : "");
+    // A new repository still has its first branch (an empty lane with HEAD on it), so this is rare: e.g. a bare repository.
     if (next.branches.length === 0) showMessage("Empty repository", "This repository has no commits yet.");
     else emptyState.hidden = true;
 
@@ -772,6 +773,82 @@ function renderRepos() {
     onActivate: (r) => openRepoInExplorer(r),
   });
 }
+
+// ---- create repository -------------------------------------------------------------
+
+const repoDialog = $<HTMLDialogElement>("repo-dialog");
+const repoName = $<HTMLInputElement>("repo-name");
+const repoBranch = $<HTMLInputElement>("repo-branch");
+const repoOpen = $<HTMLInputElement>("repo-open");
+const repoError = $("repo-error");
+const repoCreate = $<HTMLButtonElement>("repo-create");
+
+workspaceView.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  void showWorkspaceMenu();
+});
+
+async function showWorkspaceMenu() {
+  const menu = await Menu.new({
+    items: [
+      {
+        id: "create-repo",
+        text: workspace ? "Create New Repository…" : "Create New Repository… (open a workspace first)",
+        enabled: !!workspace,
+        action: () => openRepoDialog(),
+      },
+    ],
+  });
+  await menu.popup();
+}
+
+function openRepoDialog() {
+  if (!workspace) return;
+  $("repo-workspace").textContent = workspace.split("/").pop() || workspace;
+  $("repo-workspace").title = workspace;
+  repoName.value = "";
+  repoBranch.value = "main";
+  repoError.textContent = "";
+  updateRepoDialog();
+  repoDialog.showModal();
+  repoName.focus();
+}
+
+/** The folder the new repository goes in, and anything wrong with the name that's quick to spot. */
+function updateRepoDialog() {
+  const name = repoName.value.trim().replace(/\/+$/, "");
+  $("repo-location").textContent = workspace ? `${workspace}/${name || "…"}` : "";
+  const taken = repos.some((r) => r.name === name);
+  const inside = repos.find((r) => name.startsWith(`${r.name}/`));
+  repoError.textContent = taken
+    ? `The workspace already has a repository named “${name}”`
+    : inside
+      ? `“${inside.name}” is a repository already; a repository can't go inside another one`
+      : /\s/.test(repoBranch.value.trim())
+        ? "Branch names can't contain spaces"
+        : "";
+  repoCreate.disabled = !name || !!repoError.textContent;
+}
+
+repoName.addEventListener("input", updateRepoDialog);
+repoBranch.addEventListener("input", updateRepoDialog);
+$("repo-cancel").addEventListener("click", () => repoDialog.close());
+
+$("repo-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!workspace) return;
+  repoCreate.disabled = true;
+  try {
+    const made = await invoke<RepoInfo>("create_repo", { workspace, name: repoName.value, branch: repoBranch.value.trim() || null });
+    repoDialog.close();
+    notify(`Created the repository ${made.name}.`, "ok");
+    await rescanWorkspace();
+    if (repoOpen.checked) void loadRepoAt(made.path);
+  } catch (err) {
+    repoError.textContent = String(err);
+    repoCreate.disabled = false;
+  }
+});
 
 /** Opens a repository (if it isn't already) and shows it in the Branch Explorer. */
 function openRepoInExplorer(r: RepoInfo) {

@@ -111,6 +111,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             git,
             find_repos,
+            workspace::create_repo,
             initial_repo,
             pending::open_pending_window,
             pending::window_repo,
@@ -132,6 +133,7 @@ pub fn run() {
             merge::open_merge_window,
             merge::merge_window_info,
             merge::merge_preview,
+            merge::merge,
             merge::cherry_pick,
             merge::subtractive_merge,
             merge::operation_in_progress,

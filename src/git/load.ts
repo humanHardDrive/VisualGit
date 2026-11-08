@@ -39,7 +39,7 @@ export interface RawRepo {
   /** Newest first, parents always after their children (`git log --date-order`). */
   commits: RawCommit[];
   refs: RawRef[];
-  /** Branch name HEAD points at (`main`), or undefined when detached or unborn. */
+  /** Branch name HEAD points at (`main`), or undefined when detached. Set even before the branch's first commit. */
   headBranch?: string;
   headHash?: string;
   /** Default branch name from `refs/remotes/origin/HEAD`, if known. */
