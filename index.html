@@ -7,10 +7,9 @@
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
-    <header class="toolbar">
+    <header class="toolbar main-toolbar">
       <div class="brand">VisualGit</div>
-      <div id="repo-path" class="repo-path"></div>
-      <div class="spacer"></div>
+      <div id="repo-name" class="repo-name"></div>
       <div id="stats" class="stats"></div>
     </header>
     <main class="layout">
@@ -119,6 +118,25 @@
         <div class="dialog-actions">
           <button type="button" id="branch-cancel">Cancel</button>
           <button type="submit" id="branch-create" class="primary">Create</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="repo-dialog" class="dialog" aria-labelledby="repo-dialog-title">
+      <form id="repo-form" method="dialog">
+        <h2 id="repo-dialog-title">Create repository</h2>
+        <p class="dialog-sub">In the workspace <span id="repo-workspace"></span></p>
+        <label class="field">Name
+          <input id="repo-name" type="text" spellcheck="false" autocomplete="off" placeholder="my-project, or group/my-project" required />
+        </label>
+        <p id="repo-location" class="dialog-note mono"></p>
+        <label class="field">First branch
+          <input id="repo-branch" type="text" spellcheck="false" autocomplete="off" value="main" />
+        </label>
+        <div id="repo-error" class="dialog-error" role="alert"></div>
+        <label class="check"><input id="repo-open" type="checkbox" checked /> Open it after creating</label>
+        <div class="dialog-actions">
+          <button type="button" id="repo-cancel">Cancel</button>
+          <button type="submit" id="repo-create" class="primary">Create</button>
         </div>
       </form>
     </dialog>

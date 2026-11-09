@@ -201,8 +201,9 @@ describe("inferModel", () => {
   it("loads an empty repository", async () => {
     const { model } = fixture();
     const m = await model();
-    expect(m.branches).toEqual([]);
-    expect(layoutModel(m).rows).toBe(0);
+    // Just the first branch, waiting for its first changeset (see uncommittedHead).
+    expect(m.branches.map((b) => b.name)).toEqual(["main"]);
+    expect(layoutModel(m).rows).toBe(1);
   });
 });
 
@@ -341,6 +342,31 @@ describe("uncommittedHead", () => {
     expect(uncommittedHead(m)?.name).toBe("fresh");
     commit("f1");
     expect(uncommittedHead(await model())).toBeUndefined();
+  });
+
+  it("gives a new repository's first branch an empty lane with HEAD on it", async () => {
+    const { dir, git, commit, model } = fixture();
+    let m = await model();
+    expect(m.headHash).toBeUndefined();
+    expect(m.branches.map((b) => [b.name, b.kind, b.isHead, b.commits.length, b.base])).toEqual([["main", "trunk", true, 0, null]]);
+    expect(uncommittedHead(m)?.name).toBe("main");
+    const l = layoutModel(m);
+    expect(l.spans[0]).toMatchObject({ row: 0, firstCol: null, pendingCol: null });
+    expect(l.cols).toBeGreaterThan(0);
+
+    // New files are still pending on that empty lane, not a separate bubble.
+    writeFileSync(join(dir, "a.txt"), "a\n");
+    m = await model();
+    expect(uncommittedHead(m)?.name).toBe("main");
+    expect(pendingChangesOn(m)).toBeUndefined();
+
+    // An orphan branch in a repository with history works the same way.
+    commit("m1");
+    git("switch", "-q", "--orphan", "fresh");
+    m = await model();
+    expect(uncommittedHead(m)?.name).toBe("fresh");
+    expect(branch(m, "fresh").parent).toBeNull();
+    expect(branch(m, "main").isHead).toBe(false);
   });
 });
 

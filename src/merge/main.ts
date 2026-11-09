@@ -1,14 +1,17 @@
 /**
  * Merge window: previews merging a changeset ("from") into the checked-out
  * changeset ("into"). Lists the files the merge changes, flags conflicts, and
- * shows each file's merge result next to either side. Read-only: nothing in
- * the repository changes.
+ * shows each file's merge result next to either side. Nothing in the
+ * repository changes until Merge is clicked, which always makes a merge
+ * changeset (never a fast-forward), so the branch explorer keeps showing
+ * where the merged changesets came from.
  */
 
 import { goToNextChunk, goToPreviousChunk, MergeView } from "@codemirror/merge";
 import { Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
 import { basicSetup } from "codemirror";
 import { loadRepo } from "../git/load.ts";
 import { tauriRunner } from "../git/tauriRunner.ts";
@@ -44,6 +47,7 @@ const prevBtn = $<HTMLButtonElement>("prev-change");
 const nextBtn = $<HTMLButtonElement>("next-change");
 const cmpTo = $<HTMLButtonElement>("cmp-to");
 const cmpFrom = $<HTMLButtonElement>("cmp-from");
+const mergeBtn = $<HTMLButtonElement>("merge");
 
 let repo = "";
 let from = "";
@@ -53,6 +57,11 @@ let current: MergeFile | null = null;
 /** Which side the result is compared with. */
 let compareWith: "to" | "from" = "to";
 let view: MergeView | null = null;
+/** A merge, cherry pick or subtractive merge stopped for conflicts, if any. */
+let operation: { kind: string; from: string | null } | null = null;
+/** The merge changeset this window made, once it has. */
+let mergedAs: string | null = null;
+let merging = false;
 
 const span = (cls: string, text: string) => Object.assign(document.createElement("span"), { className: cls, textContent: text });
 const git = () => tauriRunner(repo);
@@ -105,15 +114,25 @@ function renderHeader(p: MergePreview) {
   const conflicts = p.files.filter((f) => f.conflict).length;
   const files = `${p.files.length} file${p.files.length === 1 ? "" : "s"}`;
   if (p.kind === "up-to-date") {
-    summary.textContent = "Already merged: everything in this changeset is already in the checked-out changeset.";
+    summary.textContent = mergedAs
+      ? `Merged as ${mergedAs.slice(0, 8)}.`
+      : "Already merged: everything in this changeset is already in the checked-out changeset.";
     summary.className = "clean";
+  } else if (operation) {
+    summary.textContent =
+      operation.kind === "merge" && operation.from === p.from
+        ? "This merge is in progress. Resolve its conflicts in Pending Changes and commit, or abort it there."
+        : `A ${operation.kind} is in progress. Finish or abort it in Pending Changes before merging.`;
+    summary.className = "conflicts";
   } else if (conflicts) {
     summary.textContent = `${files} change · ${conflicts} conflict${conflicts === 1 ? "" : "s"} to resolve`;
     summary.className = "conflicts";
   } else {
-    summary.textContent = `${files} change · merges cleanly${p.kind === "fast-forward" ? " (a fast-forward: nothing new in the destination)" : ""}`;
+    // git would fast-forward here; the merge still gets a changeset of its own.
+    summary.textContent = `${files} change · merges cleanly${p.kind === "fast-forward" ? " (nothing new in the destination; still recorded as a merge)" : ""}`;
     summary.className = "clean";
   }
+  updateMergeButton(p, conflicts);
 
   const messages = $<HTMLDetailsElement>("messages");
   messages.hidden = p.messages.length === 0;
@@ -122,6 +141,60 @@ function renderHeader(p: MergePreview) {
   $("base-info").textContent = p.base ? `Common ancestor ${p.base.slice(0, 8)}` : "No common history";
   $("file-count").textContent = p.kind === "up-to-date" ? "Nothing to merge" : files;
 }
+
+// ---- merging -------------------------------------------------------------------------
+
+/** The local branch being merged, when `from` is its tip: for "Merge branch 'x' into y". */
+function mergedBranch(hash: string): string | undefined {
+  const lane = laneOf(hash);
+  const local = lane?.refs.find((r) => r.startsWith("refs/heads/"));
+  return lane && local && lane.tips[0] === hash ? local.slice("refs/heads/".length) : undefined;
+}
+
+function updateMergeButton(p: MergePreview, conflicts: number) {
+  mergeBtn.disabled = merging || p.kind === "up-to-date" || !!operation;
+  mergeBtn.textContent = merging ? "Merging…" : "Merge";
+  const into = p.toBranch ?? p.to.slice(0, 8);
+  mergeBtn.title = conflicts
+    ? `Merge into ${into}, then resolve the ${conflicts} conflict${conflicts === 1 ? "" : "s"} in Pending Changes`
+    : `Merge into ${into} as a new merge changeset`;
+}
+
+async function runMerge() {
+  const p = preview;
+  if (!p || merging) return;
+  const summary = $("summary");
+  // Pending changes would be mixed into the merge (or block it): commit or undo them first.
+  const status = await git().run(["status", "--porcelain", "-z", "--untracked-files=no"]).catch(() => "");
+  if (status) {
+    summary.textContent = "There are pending changes. Commit or undo them in Pending Changes, then merge.";
+    summary.className = "conflicts";
+    void invoke("open_pending_window", { repo });
+    return;
+  }
+  merging = true;
+  updateMergeButton(p, p.files.filter((f) => f.conflict).length);
+  try {
+    const result = await invoke<{ committed: string | null; conflicts: string[] }>("merge", { repo, from: p.from, branch: mergedBranch(p.from) ?? null });
+    void emit("repo-changed", { repo });
+    if (result.committed) {
+      mergedAs = result.committed;
+    } else {
+      // The merge is in progress: Pending Changes shows it, with the conflicts to resolve.
+      void invoke("open_pending_window", { repo });
+    }
+  } catch (err) {
+    merging = false;
+    summary.textContent = `Could not merge: ${err}`;
+    summary.className = "conflicts";
+    updateMergeButton(p, 0);
+    return;
+  }
+  merging = false;
+  await refresh();
+}
+
+mergeBtn.addEventListener("click", () => void runMerge());
 
 // ---- file list ------------------------------------------------------------------------
 
@@ -266,12 +339,18 @@ window.addEventListener("keydown", (e) => {
 
 async function refresh() {
   try {
-    const [p, raw] = await Promise.all([invoke<MergePreview>("merge_preview", { repo, from }), loadRepo(git())]);
+    const [p, raw, op] = await Promise.all([
+      invoke<MergePreview>("merge_preview", { repo, from }),
+      loadRepo(git()),
+      invoke<{ kind: string; from: string | null } | null>("operation_in_progress", { repo }).catch(() => null),
+    ]);
     model = inferModel(raw);
     preview = p;
+    operation = op;
   } catch (err) {
     $("summary").textContent = `Could not preview the merge: ${err}`;
     $("summary").className = "conflicts";
+    mergeBtn.disabled = true;
     return;
   }
   renderHeader(preview);
