@@ -86,7 +86,7 @@ pub async fn commit_changes(repo: String, message: String, paths: Vec<String>) -
         .map_err(|e| e.to_string())?
 }
 
-fn commit(repo: &str, message: &str, paths: &[String]) -> Result<String, String> {
+pub(crate) fn commit(repo: &str, message: &str, paths: &[String]) -> Result<String, String> {
     let root = repo_root(repo)?;
     if message.trim().is_empty() {
         return Err("Enter a commit message".into());

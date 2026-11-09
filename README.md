@@ -79,7 +79,20 @@ The home symbol marks what's checked out. When you have uncommitted changes, an 
 
 - **The window:** shows *From* → *Into*, how many files change, and whether it merges cleanly or has conflicts. Git's own messages are there too, if you want them.
 - **The file list:** every file the merge changes, with conflicts listed first.
-- **The diff:** each file's merge result next to either *Into* (what you have now) or *From* (what's coming in). The result of a conflicted file shows git's conflict markers. ↑/↓ or F7 / ⇧F7 step through the changes.
+- **The diff:** each file's merge result next to either *Into* (what you have now) or *From* (what's coming in). ↑/↓ or F7 / ⇧F7 step through the changes.
+- **Conflicts:** a conflicted file shows three panes side by side instead.
+  - **Source:** what's coming in. **Destination:** what's checked out. Each is coloured where it differs from the other.
+  - **Result:** the file as the merge would leave it, without git's conflict markers. Each conflict shows its Destination lines, then its Source lines, in each side's colour. A faint *← Destination* / *← Source* after a side's first line says where it came from, and *nothing from Source* (or Destination) marks a side with no lines. VisualGit keeps track of where each conflict is as you edit.
+  - **Resolving:** every conflicted file has to be resolved before *Merge* is allowed. The split button in the diff bar works like *Commit*'s: its main part is *Use Source*, and its ▾ offers:
+    - *Use Source:* takes the Source's changes over the Destination's for the conflict at the cursor: the Destination's lines go.
+    - *Use Destination:* takes the Destination's changes over the Source's.
+    - *Mark as Resolved:* keeps the conflict's lines as they stand, for when you've edited them into what you want.
+    - *Reset to Git's Result:* starts the file over.
+
+    A file is resolved once every conflict in it is settled one of those ways. For a conflict where one side deleted the file, there's nothing to choose line by line: take a side's whole file, or mark it resolved to keep the Result. ↑/↓ or F7 / ⇧F7 step from conflict to conflict.
+  - **Tracking it:** the file list marks each conflicted file *conflict*, *conflict · edited* or *resolved*, and the summary counts what's left.
+  - **Merging:** *Merge* runs `git merge --no-ff`, writes your results over git's, and commits the merge with git's message (`Merge branch 'x' into y`), all in one go. A binary file in conflict can't be resolved here. It doesn't block the merge, but the merge then stops in Pending Changes so you can choose its version there.
+  - **Closing:** edits only live in this window until you merge, so closing it asks first.
 
 The preview comes from `git merge-tree`, which computes the merge without touching your files, the index or any branch.
 
