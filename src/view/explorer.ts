@@ -91,6 +91,8 @@ export class Explorer {
   private tx = 0;
   private ty = 0;
   private selection: Selection | null = null;
+  /** A second changeset, Ctrl/⌘-clicked alongside the selected one, to compare them. */
+  private second: string | null = null;
   private hovered: string | null = null;
   /** The arrow under the pointer, drawn thicker so it's clear it can be right-clicked. */
   private hoveredEdge: Edge | null = null;
@@ -133,6 +135,7 @@ export class Explorer {
     this.pendingLane = pendingChangesOn(model)?.id ?? null;
     if (this.selection?.kind === "commit" && !model.commits.has(this.selection.hash)) this.selection = null;
     if (this.selection?.kind === "branch" && !model.branches[this.selection.id]) this.selection = null;
+    if (this.selection?.kind !== "commit" || (this.second && !model.commits.has(this.second))) this.second = null;
     if (view === "latest") this.latest();
     else if (view !== "keep") {
       ({ scale: this.scale, tx: this.tx, ty: this.ty } = view);
@@ -154,6 +157,7 @@ export class Explorer {
     this.model = undefined;
     this.layout = undefined;
     this.selection = null;
+    this.second = null;
     this.matches = null;
     this.pendingPlacement = null;
     this.redraw();
@@ -169,7 +173,19 @@ export class Explorer {
     return { scale: this.scale, tx: this.tx, ty: this.ty };
   }
 
+  /** The two selected changesets, the selected one first, when a second has been Ctrl/⌘-clicked. */
+  selectedPair(): [string, string] | null {
+    return this.selection?.kind === "commit" && this.second ? [this.selection.hash, this.second] : null;
+  }
+
+  /**
+   * Selecting one of the two selected changesets keeps both (it becomes the
+   * first); selecting anything else drops the second.
+   */
   select(sel: Selection | null, reveal = false) {
+    const prev = this.selection?.kind === "commit" ? this.selection.hash : null;
+    if (sel?.kind === "commit" && this.second && sel.hash === this.second && prev) this.second = prev;
+    else if (sel?.kind !== "commit" || sel.hash !== prev) this.second = null;
     this.selection = sel;
     if (reveal) this.settle(); // place the view before scrolling to the selection
     if (reveal && sel && this.model && this.layout) {
@@ -371,9 +387,13 @@ export class Explorer {
   private bindInput() {
     const c = this.canvas;
     let drag: { x: number; y: number; tx: number; ty: number; moved: boolean } | null = null;
+    // On macOS, Ctrl+click arrives as a context menu, during the press; this
+    // stops the release from toggling the changeset a second time.
+    let toggledThisPress = false;
 
     c.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return; // only the primary button pans and selects
+      toggledThisPress = false;
       c.setPointerCapture(e.pointerId);
       drag = { x: e.clientX, y: e.clientY, tx: this.tx, ty: this.ty, moved: false };
     });
@@ -413,6 +433,11 @@ export class Explorer {
       if (wasDrag) return;
       const r = c.getBoundingClientRect();
       const hit = this.hitTest(e.clientX - r.left, e.clientY - r.top);
+      if (e.ctrlKey || e.metaKey) {
+        if (!toggledThisPress) this.toggleSecond(hit);
+        return;
+      }
+      this.second = null;
       this.select(hit);
       this.events.onSelect(hit);
     });
@@ -430,6 +455,12 @@ export class Explorer {
       e.preventDefault();
       const r = c.getBoundingClientRect();
       const hit = this.hitTest(e.clientX - r.left, e.clientY - r.top);
+      // Ctrl+click with the primary button (macOS turns it into this event): add or remove a changeset.
+      if (e.ctrlKey && e.button === 0) {
+        toggledThisPress = true;
+        this.toggleSecond(hit);
+        return;
+      }
       if (!hit) {
         const edge = this.edgeAt(e.clientX - r.left, e.clientY - r.top);
         if (edge) {
@@ -464,6 +495,34 @@ export class Explorer {
       },
       { passive: false },
     );
+  }
+
+  /**
+   * Ctrl/⌘+click: with a changeset selected, another one becomes the second
+   * selected changeset (replacing any earlier second). Clicking either of the
+   * two again leaves just the other. With nothing (or a branch) selected,
+   * it selects the changeset as a plain click would.
+   */
+  private toggleSecond(hit: Selection | null) {
+    if (hit?.kind !== "commit") return;
+    const first = this.selection?.kind === "commit" ? this.selection.hash : null;
+    let next: Selection = hit;
+    if (first && hit.hash === first) {
+      if (!this.second) return;
+      next = { kind: "commit", hash: this.second };
+      this.second = null;
+    } else if (first && hit.hash === this.second) {
+      next = { kind: "commit", hash: first };
+      this.second = null;
+    } else if (first) {
+      this.second = hit.hash;
+      next = { kind: "commit", hash: first };
+    } else {
+      this.second = null;
+    }
+    this.selection = next;
+    this.redraw();
+    this.events.onSelect(next);
   }
 
   private showTooltip(hash: string | null, sx: number, sy: number) {
@@ -686,7 +745,7 @@ export class Explorer {
         ctx.fillStyle = withAlpha(t.match, 0.55);
         ctx.fill();
       }
-      if (hash === selectedHash) {
+      if (hash === selectedHash || hash === this.second) {
         // Selection is a halo, so rings stay reserved for releases.
         ctx.beginPath();
         ctx.arc(x, y, r + 6, 0, Math.PI * 2);
@@ -708,7 +767,7 @@ export class Explorer {
         ctx.fillStyle = t.nodeStroke;
         ctx.fill();
       }
-      if (hash === this.hovered && hash !== selectedHash) ring(ctx, x, y, r + 3, withAlpha(t.text, 0.5), 1.5);
+      if (hash === this.hovered && hash !== selectedHash && hash !== this.second) ring(ctx, x, y, r + 3, withAlpha(t.text, 0.5), 1.5);
       // Not pushed: a small up-arrow above the changeset.
       if (model.unpushed.has(hash) && s > 0.35) upArrow(ctx, x, y - r - 2, t.unpushed);
 

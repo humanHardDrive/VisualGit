@@ -132,6 +132,8 @@ A repository with no remote-tracking branches shows none of this. To push a bran
 
 **Branch changes.** Double-click a branch, on its lane or its row in the Branch List, or right-click it and choose *View Changes*, to see everything it changed in one diff. That's from the changeset it was created from to its latest changeset. A root branch such as `main` is compared with nothing, so every file shows as added.
 
+**Comparing two changesets.** Select a changeset, then Ctrl+click (or ⌘+click) another, so both have a halo. Right-click either one and choose *Diff Selected Changesets* to see everything that differs between them, the older one as *before*. Ctrl+click either of the two again to drop it, and a plain click goes back to a single selection.
+
 Using it: drag or scroll to pan, ⌘/Ctrl + scroll (or pinch) to zoom, click a changeset or branch for details.
 
 **Merge arrows.** Right-click a merge arrow (it thickens under the pointer) and choose *Source* to jump to the changeset that was merged, or *Destination* for the merge changeset it went into. The other links between lanes work the same way.
@@ -154,6 +156,7 @@ The view refreshes when the window regains focus (or on ⌘R), and the other vie
 | `⌘R` | Reload, in either view (it also happens when the window regains focus, so terminal commits show up) |
 | `←` / `→` | Previous / next changeset along the selected branch (Branch Explorer; also its bar's arrows) |
 | `Home` | Go to the checked-out changeset, HEAD (Branch Explorer) |
+| Ctrl / ⌘ + click | Select a second changeset, to compare the two (Branch Explorer) |
 | `⌘F` | Search: branches, changesets and messages in the Branch Explorer; branch names in the Branch List |
 | `+` / `-` / `0` / `L` | Zoom in / out / fit / jump to latest |
 

@@ -1,6 +1,6 @@
 //! The diff window: what one committed changeset changed, everything a branch
-//! changed (from the changeset it was created from to its latest), or the
-//! history of one file.
+//! changed (from the changeset it was created from to its latest), the
+//! differences between any two changesets, or the history of one file.
 //! Read-only; the window reads everything through the read-only `git` command.
 
 use std::collections::hash_map::DefaultHasher;
@@ -21,6 +21,7 @@ pub struct DiffWindowInfo {
     changeset: String,
     /// For a branch: its name, and the changeset it started from (none for a root branch).
     branch: Option<String>,
+    /// For a branch, where it started; without a branch, the changeset `changeset` is compared with.
     base: Option<String>,
     /// For a file's history: its repository-relative path.
     file: Option<String>,
@@ -32,6 +33,7 @@ pub struct DiffWindows(Mutex<HashMap<String, DiffWindowInfo>>);
 
 /// Opens the diff window for changeset `at`, or brings it forward if it is already open.
 /// With `branch`, it shows all of that branch's changes: from `base` (or from nothing) to `at`.
+/// With `base` and no `branch`, it shows the differences between changesets `base` and `at`.
 #[tauri::command]
 pub async fn open_diff_window(
     app: AppHandle,
@@ -57,7 +59,10 @@ pub async fn open_diff_window(
     let title = match (&file, &branch) {
         (Some(path), _) => format!("History of {path}"),
         (None, Some(name)) => format!("Changes on {name}"),
-        (None, None) => format!("Changeset {}", &changeset[..8]),
+        (None, None) => match &base {
+            Some(b) => format!("Changesets {} → {}", &b[..8], &changeset[..8]),
+            None => format!("Changeset {}", &changeset[..8]),
+        },
     };
     let info = DiffWindowInfo { repo: root.to_string_lossy().into_owned(), changeset, branch, base, file };
     windows.0.lock().unwrap().insert(label.clone(), info);
