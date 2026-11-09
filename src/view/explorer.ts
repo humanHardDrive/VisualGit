@@ -4,7 +4,7 @@
  */
 
 import { pendingChangesOn, uncommittedHead, type Branch, type Model } from "../model/infer.ts";
-import type { Layout, Span } from "../model/layout.ts";
+import type { Edge, Layout, Span } from "../model/layout.ts";
 
 export const COL = 30;
 export const ROW = 64;
@@ -76,6 +76,8 @@ export interface ExplorerEvents {
   onOpenChangeset(hash: string): void;
   /** Double-click on a branch's lane (not on one of its changesets). */
   onOpenBranch(id: number): void;
+  /** Right-click on a merge arrow (or another cross-lane link): `from` is its source, `to` its destination. */
+  onArrowMenu(edge: Edge): void;
 }
 
 export class Explorer {
@@ -90,6 +92,8 @@ export class Explorer {
   private ty = 0;
   private selection: Selection | null = null;
   private hovered: string | null = null;
+  /** The arrow under the pointer, drawn thicker so it's clear it can be right-clicked. */
+  private hoveredEdge: Edge | null = null;
   /** Branch whose empty lane carries the HEAD marker, if HEAD's branch has no changesets yet. */
   private headLane: number | null = null;
   /** Branch with an empty "pending changes" changeset after its latest one (which then carries the HEAD marker). */
@@ -289,6 +293,48 @@ export class Explorer {
     return null;
   }
 
+  /** The arrow's curve in world coordinates: from its source changeset to just before its destination. */
+  private edgeCurve(e: Edge) {
+    const a = this.commitPos(e.from);
+    const z = this.commitPos(e.to);
+    const dx = Math.max(COL, (z.x - a.x) * 0.5);
+    return { a, c1: { x: a.x + dx, y: a.y }, c2: { x: z.x - dx, y: z.y }, end: { x: z.x - NODE_R - 1, y: z.y } };
+  }
+
+  /** The arrow nearest a screen point, if one passes within a few pixels of it. */
+  private edgeAt(sx: number, sy: number): Edge | null {
+    if (!this.model || !this.layout) return null;
+    const wx = (sx - this.tx) / this.scale;
+    const wy = (sy - this.ty) / this.scale;
+    const reach = 5 / this.scale + 1;
+    let best: Edge | null = null;
+    let bestD = reach;
+    for (const e of this.layout.edges) {
+      const { a, c1, c2, end } = this.edgeCurve(e);
+      // Skip arrows whose box is nowhere near the point.
+      if (wx < Math.min(a.x, end.x) - reach || wx > Math.max(a.x, c1.x, end.x) + reach) continue;
+      if (wy < Math.min(a.y, end.y) - reach || wy > Math.max(a.y, end.y) + reach) continue;
+      // Distance to the curve, as a chain of short segments.
+      const STEPS = 32;
+      let px = a.x;
+      let py = a.y;
+      for (let i = 1; i <= STEPS; i++) {
+        const t = i / STEPS;
+        const u = 1 - t;
+        const x = u * u * u * a.x + 3 * u * u * t * c1.x + 3 * u * t * t * c2.x + t * t * t * end.x;
+        const y = u * u * u * a.y + 3 * u * u * t * c1.y + 3 * u * t * t * c2.y + t * t * t * end.y;
+        const d = segmentDistance(wx, wy, px, py, x, y);
+        if (d < bestD) {
+          bestD = d;
+          best = e;
+        }
+        px = x;
+        py = y;
+      }
+    }
+    return best;
+  }
+
   /** Whether a screen point is on the hollow HEAD marker (an empty branch's slot or the pending-changes changeset). */
   private onHollowHead(sx: number, sy: number) {
     const layout = this.layout;
@@ -350,9 +396,11 @@ export class Explorer {
       }
       const hit = this.hitTest(e.clientX - r.left, e.clientY - r.top);
       const h = hit?.kind === "commit" ? hit.hash : null;
-      c.style.cursor = hit ? "pointer" : "";
-      if (h !== this.hovered) {
+      const edge = hit ? null : this.edgeAt(e.clientX - r.left, e.clientY - r.top);
+      c.style.cursor = hit || edge ? "pointer" : "";
+      if (h !== this.hovered || edge !== this.hoveredEdge) {
         this.hovered = h;
+        this.hoveredEdge = edge;
         this.redraw();
       }
       this.showTooltip(h, e.clientX - r.left, e.clientY - r.top);
@@ -382,7 +430,14 @@ export class Explorer {
       e.preventDefault();
       const r = c.getBoundingClientRect();
       const hit = this.hitTest(e.clientX - r.left, e.clientY - r.top);
-      if (!hit) return;
+      if (!hit) {
+        const edge = this.edgeAt(e.clientX - r.left, e.clientY - r.top);
+        if (edge) {
+          this.showTooltip(null, 0, 0);
+          this.events.onArrowMenu(edge);
+        }
+        return;
+      }
       this.showTooltip(null, 0, 0);
       this.select(hit);
       this.events.onSelect(hit);
@@ -390,6 +445,7 @@ export class Explorer {
     });
     c.addEventListener("pointerleave", () => {
       this.hovered = null;
+      this.hoveredEdge = null;
       this.showTooltip(null, 0, 0);
       this.redraw();
     });
@@ -589,23 +645,20 @@ export class Explorer {
 
     // Merges (green arrows) and other cross-lane parent links.
     for (const e of layout.edges) {
-      const a = this.commitPos(e.from);
-      const z = this.commitPos(e.to);
-      if (Math.max(a.x, z.x) < view.x0 || Math.min(a.x, z.x) > view.x1) continue;
-      if (Math.max(a.y, z.y) < view.y0 || Math.min(a.y, z.y) > view.y1) continue;
+      const { a, c1, c2, end } = this.edgeCurve(e);
+      if (Math.max(a.x, end.x) < view.x0 || Math.min(a.x, end.x) > view.x1) continue;
+      if (Math.max(a.y, end.y) < view.y0 || Math.min(a.y, end.y) > view.y1) continue;
       const color = e.kind === "merge" ? t.merge : t.fork;
-      const dx = Math.max(COL, (z.x - a.x) * 0.5);
-      const c1x = a.x + dx;
-      const c2x = z.x - dx;
+      const hovered = e === this.hoveredEdge;
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
-      ctx.bezierCurveTo(c1x, a.y, c2x, z.y, z.x - NODE_R - 1, z.y);
+      ctx.bezierCurveTo(c1.x, c1.y, c2.x, c2.y, end.x, end.y);
       ctx.strokeStyle = color;
-      ctx.lineWidth = e.kind === "merge" ? 1.8 : 1.2;
+      ctx.lineWidth = (e.kind === "merge" ? 1.8 : 1.2) + (hovered ? 1.4 : 0);
       ctx.setLineDash(e.kind === "merge" ? [] : [3, 3]);
       ctx.stroke();
       ctx.setLineDash([]);
-      arrowHead(ctx, c2x, z.y, z.x - NODE_R - 1, z.y, color);
+      arrowHead(ctx, c2.x, c2.y, end.x, end.y, color);
     }
 
     // Changesets.
@@ -785,6 +838,15 @@ function ring(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, co
   ctx.strokeStyle = color;
   ctx.lineWidth = width;
   ctx.stroke();
+}
+
+/** Distance from (x, y) to the segment from (x1, y1) to (x2, y2). */
+function segmentDistance(x: number, y: number, x1: number, y1: number, x2: number, y2: number) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len = dx * dx + dy * dy;
+  const t = len === 0 ? 0 : clamp(((x - x1) * dx + (y - y1) * dy) / len, 0, 1);
+  return Math.hypot(x - (x1 + t * dx), y - (y1 + t * dy));
 }
 
 function arrowHead(ctx: CanvasRenderingContext2D, fromX: number, fromY: number, x: number, y: number, color: string) {

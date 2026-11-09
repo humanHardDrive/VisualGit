@@ -51,12 +51,11 @@ The app opens whatever repository you pass as `visualgit /path/to/repo` or in `V
 - **Branch List:** a table of every branch.
   - **What it shows:** each branch's lane colour, its badges (HEAD, empty, remote, deleted, not pushed), how many changesets it has, its latest changeset, and that changeset's author and date.
   - **Sorting:** branches are nested under their parent. Click *Branch* to sort them A–Z instead, or sort by *Changesets*, *Latest changeset* or *Date*.
-  - **Using it:** click a row for details, double-click it (or press Enter) for its changes, and right-click it for the branch menu. ↑/↓ move between rows. The list has its own search box for branch names (⌘F), with the same `*` / `?` wildcards; ↑/↓ and Enter work from inside the box too.
+  - **Using it:** click a row to select the branch (the Branch Explorer shows it when you go back), double-click it (or press Enter) for its changes, and right-click it for the branch menu. ↑/↓ move between rows. The list has its own search box for branch names (⌘F), with the same `*` / `?` wildcards; ↑/↓ and Enter work from inside the box too.
 
 - **Files:** the repository's working copy as a folder tree. That's every tracked file, plus new files git isn't ignoring.
   - **Pending changes:** files with pending changes show their status letter (M, A, D, ?, U), and each folder shows how many changed files it holds.
   - **Last modified / Modified by:** when and by whom each file was last changed in a changeset. A folder shows its most recently changed file, and new files show *Not committed*. This takes one pass over the history, made after the tree appears and redone only when HEAD moves.
-  - **Selecting a file:** select one to see its status and the changeset that last changed it. Click that changeset to go to it in the Branch Explorer.
   - **Opening:** double-click a changed file, or press Enter on it, to open Pending Changes.
   - **Keys:** ↑/↓ move, ←/→ close and open folders, and ⌘F searches file paths (with `*` / `?`) as a flat list.
   - *Expand All* and *Collapse All* do what they say. The list refreshes along with everything else.
@@ -67,7 +66,7 @@ The app opens whatever repository you pass as `visualgit /path/to/repo` or in `V
     - *Delete…* asks whether to *Remove from Source Control*, which keeps the file on disk as a new, untracked file, or *Remove from Source Control and Disk*, which also moves it to the Trash. Either way it's a pending change for you to commit. A file that isn't in source control is just moved to the Trash, after asking.
 - **Pending Changes:** what you'd commit, and the commit box (see *Pending Changes* below). A dot next to it in the *View* pane means there are uncommitted changes.
 
-The Branch Explorer has its own bar along the top, with *Reload*, the changeset arrows and search. In the Branch List, that bar is replaced by the list's own search. VisualGit remembers which view you were using.
+The details panel on the right, for the selected changeset or branch, belongs to the Branch Explorer and only shows there. The Branch Explorer also has its own bar along the top, with *Reload*, the changeset arrows and search. In the Branch List, that bar is replaced by the list's own search. VisualGit remembers which view you were using.
 
 The home symbol marks what's checked out. When you have uncommitted changes, an empty changeset is drawn at the end of the checked-out branch, after its latest changeset, with a hollow, dashed home symbol. A branch you've just created and switched to shows the same hollow home symbol in its empty slot. So does the first branch of a new repository, before its first commit (Git has no ref for it until then). Right-click either one for *Pending Changes*.
 
@@ -135,7 +134,9 @@ A repository with no remote-tracking branches shows none of this. To push a bran
 
 Using it: drag or scroll to pan, ⌘/Ctrl + scroll (or pinch) to zoom, click a changeset or branch for details.
 
-**Pending Changes.** Choose *Pending Changes* in the *View* pane, double-click the hollow home symbol (uncommitted work), or right-click the checked-out changeset or its branch and choose *Pending Changes*. It's a view in the main window, for the open repository, and the details panel steps aside while it's showing to give the diff room:
+**Merge arrows.** Right-click a merge arrow (it thickens under the pointer) and choose *Source* to jump to the changeset that was merged, or *Destination* for the merge changeset it went into. The other links between lanes work the same way.
+
+**Pending Changes.** Choose *Pending Changes* in the *View* pane, double-click the hollow home symbol (uncommitted work), or right-click the checked-out changeset or its branch and choose *Pending Changes*. It's a view in the main window, for the open repository:
 
 - **Files** on the left: every changed, new, deleted, renamed or conflicted file, each with a checkbox and labelled *Added*, *Removed*, *Modified*, *Renamed* or *Conflict*. Ticked files go into the next commit.
 - **Diff** on the right: the checked-out changeset next to your working copy. An added file has nothing to compare with, so it gets a single pane with its contents (still editable). ↑/↓ in the diff bar (or F7 / ⇧F7) move from change to change, and the arrows between the sides put the committed text back over a change.
