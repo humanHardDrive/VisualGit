@@ -29,7 +29,7 @@ const workspaceView = $("workspace-view");
 const repoSearch = $<HTMLInputElement>("repo-search");
 const emptyState = $("empty-state");
 const stats = $("stats");
-const repoPathEl = $("repo-path");
+const repoNameEl = $("repo-name");
 const reloadBtn = $<HTMLButtonElement>("reload");
 
 const LAST_REPO_KEY = "visualgit.lastRepo";
@@ -633,9 +633,11 @@ async function loadRepoAt(path: string, opts: { reload?: boolean; remembered?: b
     model = next;
     store(LAST_REPO_KEY, root);
 
-    repoPathEl.textContent = root;
-    repoPathEl.title = root;
-    document.title = `${root.split("/").pop()} · VisualGit`;
+    // The name the Workspace view lists it under (`group/app`), else its folder name; the path is in the tooltip.
+    const name = repos.find((r) => r.path === root)?.name ?? (root.split("/").pop() || root);
+    repoNameEl.textContent = name;
+    repoNameEl.title = root;
+    document.title = `${name} · VisualGit`;
     stats.textContent =
       `${next.order.length.toLocaleString()} changeset${next.order.length === 1 ? "" : "s"} · ${next.branches.length} branch${next.branches.length === 1 ? "" : "es"}` +
       (next.unpushed.size ? ` · ${next.unpushed.size.toLocaleString()} not pushed` : "") +
@@ -664,7 +666,8 @@ async function loadRepoAt(path: string, opts: { reload?: boolean; remembered?: b
       searchInput.disabled = true;
       refreshSearch();
       applySelection(null, false);
-      repoPathEl.textContent = "";
+      repoNameEl.textContent = "";
+      repoNameEl.title = "";
       stats.textContent = "";
       showMessage("Could not open repository", String(err));
     }
@@ -1291,7 +1294,8 @@ async function chooseWorkspace() {
       searchInput.disabled = true;
       refreshSearch();
       applySelection(null, false);
-      repoPathEl.textContent = "";
+      repoNameEl.textContent = "";
+      repoNameEl.title = "";
       stats.textContent = "";
       openDefaultRepo();
     }

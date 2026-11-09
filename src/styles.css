@@ -68,7 +68,11 @@ button.link:hover { text-decoration: underline; background: none; }
   border-bottom: 1px solid var(--border);
 }
 .brand { font-weight: 700; letter-spacing: 0.2px; margin-right: 8px; }
-.repo-path { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+/* Brand left, repository name centred in the window, stats right. The side columns are
+   equal (so the name stays centred) but never narrower than their content. */
+.main-toolbar { display: grid; grid-template-columns: minmax(max-content, 1fr) minmax(0, auto) minmax(max-content, 1fr); }
+.main-toolbar .stats { justify-self: end; }
+.repo-name { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; text-align: center; }
 .spacer { flex: 1; }
 .stats { color: var(--muted); white-space: nowrap; }
 .nav { display: flex; gap: 2px; }
