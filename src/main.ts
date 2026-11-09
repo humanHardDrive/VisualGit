@@ -792,25 +792,59 @@ const repoDialog = $<HTMLDialogElement>("repo-dialog");
 const repoName = $<HTMLInputElement>("repo-name");
 const repoBranch = $<HTMLInputElement>("repo-branch");
 const repoOpen = $<HTMLInputElement>("repo-open");
+const repoRemote = $<HTMLInputElement>("repo-remote");
+const repoRemoteNote = $("repo-remote-note");
+const REMOTE_HINT = repoRemoteNote.textContent ?? "";
 const repoError = $("repo-error");
 const repoCreate = $<HTMLButtonElement>("repo-create");
 
 workspaceView.addEventListener("contextmenu", (e) => {
   e.preventDefault();
-  void showWorkspaceMenu();
+  // On a repository's row: that repository's items first. Anywhere else: just Create.
+  const path = (e.target as HTMLElement).closest<HTMLElement>("tr[data-path]")?.dataset.path;
+  void showWorkspaceMenu(listedRepos().find((r) => r.path === path));
 });
 
-async function showWorkspaceMenu() {
-  const menu = await Menu.new({
-    items: [
-      {
-        id: "create-repo",
-        text: workspace ? "Create New Repository…" : "Create New Repository… (open a workspace first)",
-        enabled: !!workspace,
-        action: () => openRepoDialog(),
-      },
-    ],
-  });
+/** Mirrors `WebPage` in src-tauri/src/hosting.rs. */
+interface WebPage {
+  host: string;
+  url: string;
+  remote: string;
+}
+
+async function showWorkspaceMenu(repo?: RepoInfo) {
+  const items: ({ id: string; text: string; enabled?: boolean; action?: () => void } | { item: "Separator" })[] = [];
+  if (repo) {
+    // Where the repository is hosted, from its remote's URL; not knowing just leaves the item disabled.
+    const page = await invoke<WebPage | null>("repo_web_page", { repo: repo.path }).catch(() => null);
+    items.push(
+      // The same as double-clicking the row.
+      { id: "switch-repo", text: "Switch Active Repo", action: () => openRepoInExplorer(repo) },
+      page
+        ? {
+            id: "open-web",
+            text: `Open on ${page.host}`,
+            action: () => void invoke("open_repo_web_page", { repo: repo.path }).catch((err) => notify(`Could not open ${page.url}: ${err}`, "error")),
+          }
+        : { id: "open-web", text: "Open on Hosting Site (no remote)", enabled: false },
+      { item: "Separator" },
+    );
+  }
+  items.push(
+    {
+      id: "create-repo",
+      text: workspace ? "Create New Repository…" : "Create New Repository… (open a workspace first)",
+      enabled: !!workspace,
+      action: () => openRepoDialog(),
+    },
+    {
+      id: "clone-repo",
+      text: workspace ? "Clone Repository…" : "Clone Repository… (open a workspace first)",
+      enabled: !!workspace && !cloning,
+      action: () => openCloneDialog(),
+    },
+  );
+  const menu = await Menu.new({ items });
   await menu.popup();
 }
 
@@ -820,6 +854,8 @@ function openRepoDialog() {
   $("repo-workspace").title = workspace;
   repoName.value = "";
   repoBranch.value = "main";
+  repoRemote.value = "";
+  repoRemoteNote.textContent = REMOTE_HINT;
   repoError.textContent = "";
   updateRepoDialog();
   repoDialog.showModal();
@@ -842,8 +878,22 @@ function updateRepoDialog() {
   repoCreate.disabled = !name || !!repoError.textContent;
 }
 
+let remoteSeq = 0;
+/** Says where the typed remote points ("Pushes to GitHub · https://github.com/you/app"). */
+async function describeRemote() {
+  const url = repoRemote.value.trim();
+  const seq = ++remoteSeq;
+  const page = url ? await invoke<WebPage | null>("describe_remote", { url }).catch(() => null) : null;
+  if (seq !== remoteSeq) return; // typed on meanwhile
+  repoRemoteNote.textContent = page ? `Pushes to ${page.host} · ${page.url}` : REMOTE_HINT;
+}
+
 repoName.addEventListener("input", updateRepoDialog);
 repoBranch.addEventListener("input", updateRepoDialog);
+repoRemote.addEventListener("input", () => {
+  updateRepoDialog();
+  void describeRemote();
+});
 $("repo-cancel").addEventListener("click", () => repoDialog.close());
 
 $("repo-form").addEventListener("submit", async (e) => {
@@ -851,14 +901,96 @@ $("repo-form").addEventListener("submit", async (e) => {
   if (!workspace) return;
   repoCreate.disabled = true;
   try {
-    const made = await invoke<RepoInfo>("create_repo", { workspace, name: repoName.value, branch: repoBranch.value.trim() || null });
+    const made = await invoke<RepoInfo>("create_repo", {
+      workspace,
+      name: repoName.value,
+      branch: repoBranch.value.trim() || null,
+      remote: repoRemote.value.trim() || null,
+    });
     repoDialog.close();
-    notify(`Created the repository ${made.name}.`, "ok");
+    notify(made.remote ? `Created the repository ${made.name}. Its first Commit & Push publishes it to ${made.remote.host ?? "the remote"}.` : `Created the repository ${made.name}.`, "ok");
     await rescanWorkspace();
     if (repoOpen.checked) void loadRepoAt(made.path);
   } catch (err) {
     repoError.textContent = String(err);
     repoCreate.disabled = false;
+  }
+});
+
+// ---- clone repository -------------------------------------------------------------
+
+const cloneDialog = $<HTMLDialogElement>("clone-dialog");
+const cloneUrl = $<HTMLInputElement>("clone-url");
+const cloneName = $<HTMLInputElement>("clone-name");
+const cloneOpen = $<HTMLInputElement>("clone-open");
+const cloneError = $("clone-error");
+const cloneStart = $<HTMLButtonElement>("clone-start");
+/** The folder name was typed, not suggested from the URL: leave it alone. */
+let cloneNameTyped = false;
+/** A clone is running (one at a time). */
+let cloning = false;
+
+/** The folder a URL suggests: its last path segment, minus `.git`. */
+function folderFromUrl(url: string): string {
+  const path = url.trim().replace(/[/\\]+$/, "").replace(/\.git$/i, "");
+  return path.split(/[/:\\]/).pop() ?? "";
+}
+
+function openCloneDialog() {
+  if (!workspace || cloning) return;
+  $("clone-workspace").textContent = workspace.split("/").pop() || workspace;
+  $("clone-workspace").title = workspace;
+  cloneUrl.value = "";
+  cloneName.value = "";
+  cloneNameTyped = false;
+  cloneError.textContent = "";
+  updateCloneDialog();
+  cloneDialog.showModal();
+  cloneUrl.focus();
+}
+
+function updateCloneDialog() {
+  if (!cloneNameTyped) cloneName.value = folderFromUrl(cloneUrl.value);
+  const name = cloneName.value.trim().replace(/\/+$/, "");
+  $("clone-location").textContent = workspace ? `${workspace}/${name || "…"}` : "";
+  const taken = repos.some((r) => r.name === name);
+  const inside = repos.find((r) => name.startsWith(`${r.name}/`));
+  cloneError.textContent = taken
+    ? `The workspace already has a repository named “${name}”`
+    : inside
+      ? `“${inside.name}” is a repository already; a repository can't go inside another one`
+      : "";
+  cloneStart.disabled = !cloneUrl.value.trim() || !name || !!cloneError.textContent;
+}
+
+cloneUrl.addEventListener("input", updateCloneDialog);
+cloneName.addEventListener("input", () => {
+  cloneNameTyped = cloneName.value.trim() !== "";
+  updateCloneDialog();
+});
+$("clone-cancel").addEventListener("click", () => cloneDialog.close());
+
+$("clone-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!workspace || cloning) return;
+  const url = cloneUrl.value.trim();
+  const name = cloneName.value.trim();
+  const at = workspace;
+  // The dialog closes; git's progress shows in the corner while it runs.
+  cloneDialog.close();
+  cloning = true;
+  notify(`Cloning ${name}…`);
+  const stop = inTauri() ? await listen<string>("clone-progress", (ev) => notify(`Cloning ${name}: ${ev.payload}`)) : () => {};
+  try {
+    const made = await invoke<RepoInfo>("clone_repo", { workspace: at, url, name });
+    notify(`Cloned ${made.name}.`, "ok");
+    if (workspace === at) await rescanWorkspace();
+    if (cloneOpen.checked) void loadRepoAt(made.path);
+  } catch (err) {
+    notify(`Could not clone ${url}: ${err}`, "error");
+  } finally {
+    stop();
+    cloning = false;
   }
 });
 
@@ -1358,7 +1490,7 @@ repoSearch.addEventListener("keydown", (e) => {
 $("open-workspace").addEventListener("click", () => void chooseWorkspace());
 
 window.addEventListener("keydown", (e) => {
-  if (branchDialog.open) return; // the dialog handles its own keys (Esc closes it)
+  if (branchDialog.open || repoDialog.open || cloneDialog.open) return; // dialogs handle their own keys (Esc closes them)
   const mod = e.metaKey || e.ctrlKey;
   // ⌘O and ⇧⌘O are File menu accelerators (src-tauri/src/menu.rs).
   if (mod && e.key === "r") {

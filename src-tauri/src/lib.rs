@@ -1,6 +1,7 @@
 mod branch;
 mod diff;
 mod files;
+mod hosting;
 mod menu;
 mod merge;
 mod pending;
@@ -111,6 +112,10 @@ pub fn run() {
             git,
             find_repos,
             workspace::create_repo,
+            workspace::clone_repo,
+            hosting::repo_web_page,
+            hosting::describe_remote,
+            hosting::open_repo_web_page,
             initial_repo,
             pending::show_pending_changes,
             pending::read_worktree_file,
