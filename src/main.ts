@@ -107,6 +107,11 @@ async function showContextMenu(sel: Selection) {
     const target = switchTarget(model, hash);
     // The double-click action, so it comes first.
     items.unshift({ id: "view-changes", text: "View Changes", enabled: true, action: () => openDiffWindow(hash) });
+    // With a second changeset Ctrl/⌘-clicked, on either of the two.
+    const pair = explorer.selectedPair();
+    if (pair?.includes(hash)) {
+      items.splice(1, 0, { id: "diff-selected", text: "Diff Selected Changesets", enabled: true, action: () => openCompareWindow(pair[0], pair[1]) });
+    }
     items.push(
       { item: "Separator" },
       {
@@ -375,6 +380,13 @@ function openBranchDiff(id: number) {
   void invoke("open_diff_window", { repo: repoPath, at: tip, branch: b.name, base: b.base }).catch((err) =>
     notify(`Could not open the changes on ${b.name}: ${err}`, "error"),
   );
+}
+
+/** Opens the diff window comparing two changesets, the older one (further left) as "before". */
+function openCompareWindow(a: string, b: string) {
+  if (!repoPath || !model) return;
+  const [before, after] = (model.index.get(a) ?? 0) <= (model.index.get(b) ?? 0) ? [a, b] : [b, a];
+  void invoke("open_diff_window", { repo: repoPath, at: after, base: before }).catch((err) => notify(`Could not compare the changesets: ${err}`, "error"));
 }
 
 /** Opens the merge window previewing `hash` merged into the checked-out changeset. */
