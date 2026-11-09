@@ -5,7 +5,7 @@ import { ask, message, open } from "@tauri-apps/plugin-dialog";
 import { loadRepo, type GitRunner } from "./git/load.ts";
 import { inTauri, tauriRunner } from "./git/tauriRunner.ts";
 import { inferModel, pendingChangesOn, uncommittedHead, type Model } from "./model/infer.ts";
-import { layoutModel } from "./model/layout.ts";
+import { layoutModel, type Edge } from "./model/layout.ts";
 import { searchModel, type SearchResults } from "./model/search.ts";
 import { branchRows, renderBranchList, type BranchSort } from "./view/branchList.ts";
 import { clearDetails, showBranch, showCommit } from "./view/details.ts";
@@ -59,6 +59,7 @@ const explorer = new Explorer(canvas, $("tooltip"), {
   onOpenPending: () => openPendingChanges(),
   onOpenChangeset: (hash) => openDiffWindow(hash),
   onOpenBranch: (id) => openBranchDiff(id),
+  onArrowMenu: (edge) => void showArrowMenu(edge),
 });
 
 // ---- storage ---------------------------------------------------------------
@@ -94,6 +95,18 @@ function applySelection(sel: Selection | null, reveal: boolean) {
 }
 
 // ---- context menu and pending changes ---------------------------------------------
+
+/** Right-click on a merge arrow: jump to the changeset it comes from, or the one it merges into. */
+async function showArrowMenu(edge: Edge) {
+  const go = (hash: string) => applySelection({ kind: "commit", hash }, true);
+  const menu = await Menu.new({
+    items: [
+      { id: "arrow-source", text: "Source", action: () => go(edge.from) },
+      { id: "arrow-destination", text: "Destination", action: () => go(edge.to) },
+    ],
+  });
+  await menu.popup();
+}
 
 async function showContextMenu(sel: Selection) {
   if (!model) return;

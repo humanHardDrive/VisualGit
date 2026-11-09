@@ -134,6 +134,8 @@ A repository with no remote-tracking branches shows none of this. To push a bran
 
 Using it: drag or scroll to pan, ⌘/Ctrl + scroll (or pinch) to zoom, click a changeset or branch for details.
 
+**Merge arrows.** Right-click a merge arrow (it thickens under the pointer) and choose *Source* to jump to the changeset that was merged, or *Destination* for the merge changeset it went into. The other links between lanes work the same way.
+
 **Pending Changes.** Choose *Pending Changes* in the *View* pane, double-click the hollow home symbol (uncommitted work), or right-click the checked-out changeset or its branch and choose *Pending Changes*. It's a view in the main window, for the open repository:
 
 - **Files** on the left: every changed, new, deleted, renamed or conflicted file, each with a checkbox and labelled *Added*, *Removed*, *Modified*, *Renamed* or *Conflict*. Ticked files go into the next commit.
