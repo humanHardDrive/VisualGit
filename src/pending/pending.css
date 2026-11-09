@@ -1,4 +1,8 @@
-/* Pending Changes window. Shares colours, buttons and the nav buttons with styles.css. */
+/* The Pending Changes view, plus the file list and diff layout the merge and diff windows reuse.
+   Shares colours, buttons and the nav buttons with styles.css. */
+
+/* Fills the main pane, in place of the explorer canvas. */
+.pending-view { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--panel); }
 
 
 .commit-bar { display: flex; gap: 10px; padding: 10px 12px; background: var(--panel); border-bottom: 1px solid var(--border); }
@@ -19,7 +23,7 @@
 /* Split button: the main action, plus a caret for the alternatives. */
 .split { display: flex; }
 .split button { padding: 6px 12px; }
-.split #commit { flex: 1; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.split .commit-main { flex: 1; border-top-right-radius: 0; border-bottom-right-radius: 0; }
 .split .caret { display: flex; align-items: center; padding: 0 8px; border-top-left-radius: 0; border-bottom-left-radius: 0; border-left: 1px solid color-mix(in srgb, #000 22%, var(--accent)); }
 .split .caret svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .commit-status { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; max-height: 5.5em; overflow: auto; }
@@ -50,6 +54,8 @@
 .pfile .file-dir { color: var(--muted); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .pfile .file-name { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .pfile .dirty { color: var(--accent); flex: none; }
+/* Added, Removed, Modified, Renamed or Conflict, at the end of the row. */
+.pfile .file-kind { flex: none; margin-left: auto; padding: 0 6px; font-size: 10px; font-weight: 600; line-height: 16px; border: 1px solid currentColor; border-radius: 8px; }
 
 .diff-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--canvas); }
 .diff-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--panel); border-bottom: 1px solid var(--border); }
@@ -59,6 +65,11 @@
 .diff-sides { display: grid; grid-template-columns: 1fr 1fr; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); border-bottom: 1px solid var(--border); background: var(--panel); }
 .diff-sides span { padding: 4px 10px; }
 .diff-sides span + span { border-left: 1px solid var(--border); }
+/* An added file: one pane, no diff. */
+.diff-sides.single { grid-template-columns: 1fr; }
+.diff-sides.single span { border-left: none; }
+.diff > .cm-editor { position: absolute; inset: 0; }
+.diff > .cm-editor .cm-scroller { overflow: auto; }
 .diff { flex: 1; min-height: 0; position: relative; }
 .diff .cm-mergeView { position: absolute; inset: 0; overflow: auto; }
 .diff .cm-mergeViewEditors { min-height: 100%; }

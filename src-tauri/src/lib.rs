@@ -105,7 +105,6 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .menu(menu::build)
         .on_menu_event(menu::handle)
-        .manage(pending::PendingWindows::default())
         .manage(merge::MergeWindows::default())
         .manage(diff::DiffWindows::default())
         .invoke_handler(tauri::generate_handler![
@@ -113,8 +112,7 @@ pub fn run() {
             find_repos,
             workspace::create_repo,
             initial_repo,
-            pending::open_pending_window,
-            pending::window_repo,
+            pending::show_pending_changes,
             pending::read_worktree_file,
             pending::write_worktree_file,
             pending::commit_changes,

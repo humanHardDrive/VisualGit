@@ -1,4 +1,4 @@
-//! The Pending Changes window and the commands that change a repository:
+//! The commands behind the Pending Changes view, which change a repository:
 //! reading and saving working-tree files, committing selected files, undoing
 //! changes, and pushing branches.
 //!
@@ -6,52 +6,32 @@
 //! does a single, narrow thing, with its paths checked to stay inside the
 //! repository.
 
-use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder, Window};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// Files larger than this are not loaded into the diff editor.
 const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
-/// Which repository each Pending Changes window belongs to, by window label.
-#[derive(Default)]
-pub struct PendingWindows(Mutex<HashMap<String, String>>);
-
-/// Opens the Pending Changes window for `repo`, or focuses it if it is already open.
-#[tauri::command]
-pub async fn open_pending_window(app: AppHandle, windows: State<'_, PendingWindows>, repo: String) -> Result<(), String> {
-    let root = repo_root(&repo)?;
-    let mut hasher = DefaultHasher::new();
-    root.hash(&mut hasher);
-    let label = format!("pending-{:016x}", hasher.finish());
-
-    if let Some(existing) = app.get_webview_window(&label) {
-        existing.unminimize().ok();
-        existing.show().map_err(|e| e.to_string())?;
-        return existing.set_focus().map_err(|e| e.to_string());
-    }
-    windows.0.lock().unwrap().insert(label.clone(), root.to_string_lossy().into_owned());
-    let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("pending.html".into()))
-        .title(format!("Pending Changes · {name}"))
-        .inner_size(1280.0, 820.0)
-        .min_inner_size(760.0, 480.0)
-        .build()
-        .map_err(|e| e.to_string())?;
-    Ok(())
+#[derive(Clone, Serialize)]
+struct ShowPending {
+    repo: String,
 }
 
-/// The repository the calling Pending Changes window was opened for.
+/// Brings the main window forward on its Pending Changes view for `repo`
+/// (opening that repository there if another one is open). Used by the merge
+/// window when a merge stops for conflicts or finds pending changes.
 #[tauri::command]
-pub fn window_repo(window: Window, windows: State<'_, PendingWindows>) -> Option<String> {
-    windows.0.lock().unwrap().get(window.label()).cloned()
+pub fn show_pending_changes(app: AppHandle, repo: String) -> Result<(), String> {
+    let root = repo_root(&repo)?;
+    let main = app.get_webview_window("main").ok_or("The main window is closed")?;
+    main.unminimize().ok();
+    main.show().map_err(|e| e.to_string())?;
+    main.set_focus().map_err(|e| e.to_string())?;
+    main.emit("show-pending", ShowPending { repo: root.to_string_lossy().into_owned() }).map_err(|e| e.to_string())
 }
 
 #[derive(Serialize)]

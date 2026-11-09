@@ -167,9 +167,9 @@ async function runMerge() {
   // Pending changes would be mixed into the merge (or block it): commit or undo them first.
   const status = await git().run(["status", "--porcelain", "-z", "--untracked-files=no"]).catch(() => "");
   if (status) {
-    summary.textContent = "There are pending changes. Commit or undo them in Pending Changes, then merge.";
+    summary.textContent = "There are pending changes. Commit or undo them in Pending Changes (in the main window), then merge.";
     summary.className = "conflicts";
-    void invoke("open_pending_window", { repo });
+    void invoke("show_pending_changes", { repo });
     return;
   }
   merging = true;
@@ -181,7 +181,7 @@ async function runMerge() {
       mergedAs = result.committed;
     } else {
       // The merge is in progress: Pending Changes shows it, with the conflicts to resolve.
-      void invoke("open_pending_window", { repo });
+      void invoke("show_pending_changes", { repo });
     }
   } catch (err) {
     merging = false;

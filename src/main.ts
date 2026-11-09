@@ -14,6 +14,7 @@ import { fileRows, renderFiles, rowKey, type FileRow } from "./view/files.ts";
 import { ignorePatterns } from "./git/ignore.ts";
 import { branchColor, Explorer, type Selection, type View } from "./view/explorer.ts";
 import { filterRepos, renderWorkspaceList, type RepoInfo } from "./view/workspaceList.ts";
+import { createPendingView } from "./pending/view.ts";
 
 /** Selection saved across reloads; branches by name, since ids are reassigned. */
 type SavedSelection = { kind: "commit"; hash: string } | { kind: "branch"; name: string };
@@ -48,10 +49,14 @@ let loadingPath: string | null = null;
 /** Per-repository pan/zoom and selection, restored when switching back. */
 const saved = new Map<string, { view: View; selection: SavedSelection | null }>();
 
+const pendingDot = $("pending-dot");
+// A commit, save or undo there changes what every other view shows.
+const pendingView = createPendingView({ onChanged: () => reload() });
+
 const explorer = new Explorer(canvas, $("tooltip"), {
   onSelect: (sel) => applySelection(sel, false),
   onContextMenu: (sel) => void showContextMenu(sel),
-  onOpenPending: openPendingChanges,
+  onOpenPending: () => openPendingChanges(),
   onOpenChangeset: (hash) => openDiffWindow(hash),
   onOpenBranch: (id) => openBranchDiff(id),
 });
@@ -95,7 +100,7 @@ async function showContextMenu(sel: Selection) {
   // Pending changes are relative to the checked-out changeset: offered on it and on the checked-out branch.
   const isHead = sel.kind === "commit" ? sel.hash === model.headHash : model.branches[sel.id].isHead;
   const items: ({ id: string; text: string; enabled: boolean; action: () => void } | { item: "Separator" })[] = [
-    { id: "pending-changes", text: "Pending Changes", enabled: isHead, action: openPendingChanges },
+    { id: "pending-changes", text: "Pending Changes", enabled: isHead, action: () => openPendingChanges() },
   ];
   if (sel.kind === "commit") {
     const hash = sel.hash;
@@ -377,9 +382,9 @@ function openMergeWindow(hash: string) {
   if (repoPath) void invoke("open_merge_window", { repo: repoPath, from: hash }).catch((err) => notify(`Could not open the merge window: ${err}`, "error"));
 }
 
-/** Opens (or brings forward) the Pending Changes window for the open repository. */
-function openPendingChanges() {
-  if (repoPath) void invoke("open_pending_window", { repo: repoPath }).catch((err) => showMessage("Could not open Pending Changes", String(err)));
+/** Switches to the Pending Changes view, showing `path` first if it has pending changes. */
+function openPendingChanges(path?: string) {
+  showView("pending", { pendingPath: path });
 }
 
 // ---- search ---------------------------------------------------------------------
@@ -638,6 +643,8 @@ async function loadRepoAt(path: string, opts: { reload?: boolean; remembered?: b
     repoNameEl.textContent = name;
     repoNameEl.title = root;
     document.title = `${name} · VisualGit`;
+    pendingDot.hidden = !next.pendingChanges;
+    void pendingView.setRepo(root);
     stats.textContent =
       `${next.order.length.toLocaleString()} changeset${next.order.length === 1 ? "" : "s"} · ${next.branches.length} branch${next.branches.length === 1 ? "" : "es"}` +
       (next.unpushed.size ? ` · ${next.unpushed.size.toLocaleString()} not pushed` : "") +
@@ -669,6 +676,8 @@ async function loadRepoAt(path: string, opts: { reload?: boolean; remembered?: b
       repoNameEl.textContent = "";
       repoNameEl.title = "";
       stats.textContent = "";
+      pendingDot.hidden = true;
+      void pendingView.setRepo(null);
       showMessage("Could not open repository", String(err));
     }
   } finally {
@@ -869,17 +878,26 @@ function switchRepo(delta: number) {
 
 // ---- views ---------------------------------------------------------------------
 
-type ViewName = "workspace" | "explorer" | "list" | "files";
+type ViewName = "workspace" | "explorer" | "list" | "files" | "pending";
 const VIEW_KEY = "visualgit.view";
 const listView = $("branch-list-view");
 const zoomControls = document.querySelector<HTMLElement>(".zoom")!;
 const remembered = recall(VIEW_KEY);
-let currentView: ViewName = remembered === "list" || remembered === "workspace" || remembered === "files" ? remembered : "explorer";
+let currentView: ViewName = (["list", "workspace", "files", "pending"] as const).find((v) => v === remembered) ?? "explorer";
 let branchSort: BranchSort = "tree";
 
-function showView(view: ViewName) {
+/** `pendingPath`: with the Pending Changes view, the file to show first. */
+function showView(view: ViewName, opts: { pendingPath?: string } = {}) {
+  const leaving = currentView;
   currentView = view;
   store(VIEW_KEY, view);
+  // Leaving Pending Changes saves any edits there; if that fails they stay in its editor.
+  if (leaving === "pending" && view !== "pending") {
+    void pendingView.hide().then((ok) => ok || notify("Your edits in Pending Changes could not be saved. They're still there.", "error"));
+  }
+  $("pc-view").hidden = view !== "pending";
+  document.querySelector(".layout")!.classList.toggle("no-details", view === "pending");
+  if (view === "pending") void pendingView.show(opts.pendingPath);
   for (const item of document.querySelectorAll<HTMLButtonElement>(".view-item")) {
     item.setAttribute("aria-pressed", String(item.dataset.view === view));
   }
@@ -1193,7 +1211,7 @@ function selectFileRow(r: FileRow) {
 
 /** Folders open and close; a file with pending changes opens Pending Changes. */
 function openFileRow(r: FileRow) {
-  if (r.kind === "file" && files?.list.status.has(r.path)) openPendingChanges();
+  if (r.kind === "file" && files?.list.status.has(r.path)) openPendingChanges(r.path);
 }
 
 function toggleFolder(path: string, open?: boolean) {
@@ -1297,6 +1315,8 @@ async function chooseWorkspace() {
       repoNameEl.textContent = "";
       repoNameEl.title = "";
       stats.textContent = "";
+      pendingDot.hidden = true;
+      void pendingView.setRepo(null);
       openDefaultRepo();
     }
     renderRepos();
@@ -1311,6 +1331,7 @@ async function chooseRepo() {
 function reload() {
   if (repoPath && loadingPath === null) void loadRepoAt(repoPath, { reload: true });
   void rescanWorkspace();
+  void pendingView.refresh();
 }
 
 $("rescan").addEventListener("click", () => void rescanWorkspace());
@@ -1345,16 +1366,18 @@ window.addEventListener("keydown", (e) => {
     reload();
   } else if (mod && e.key === "f") {
     e.preventDefault();
-    // Each view has its own search.
-    const box = currentView === "list" ? branchSearch : currentView === "workspace" ? repoSearch : currentView === "files" ? fileSearch : searchInput;
-    box.focus();
-    box.select();
+    // Each view has its own search (Pending Changes has none).
+    const box = { list: branchSearch, workspace: repoSearch, files: fileSearch, explorer: searchInput, pending: null }[currentView];
+    box?.focus();
+    box?.select();
   } else if (mod && e.key === "[") {
     e.preventDefault();
     switchRepo(-1);
   } else if (mod && e.key === "]") {
     e.preventDefault();
     switchRepo(1);
+  } else if (currentView === "pending") {
+    // The view, its editor and its message box handle their own keys.
   } else if (e.target instanceof HTMLInputElement) {
     if (e.key === "Escape") e.target.blur();
   } else if (currentView === "files" && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter"].includes(e.key)) {
@@ -1400,9 +1423,14 @@ if (inTauri()) {
     if (e.payload === "open-workspace") void chooseWorkspace();
     else if (e.payload === "open-repository") void chooseRepo();
   });
-  // A commit or save in a Pending Changes window.
+  // A merge made in a merge window.
   void listen<{ repo: string }>("repo-changed", (e) => {
     if (e.payload.repo === repoPath) reload();
+  });
+  // A merge window that stopped for conflicts (or found pending changes) hands over to Pending Changes.
+  void listen<{ repo: string }>("show-pending", async (e) => {
+    if (e.payload.repo !== repoPath) await loadRepoAt(e.payload.repo);
+    openPendingChanges();
   });
 }
 
