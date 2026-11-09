@@ -8,7 +8,7 @@ import { inferModel, pendingChangesOn, uncommittedHead, type Model } from "./mod
 import { layoutModel } from "./model/layout.ts";
 import { searchModel, type SearchResults } from "./model/search.ts";
 import { branchRows, renderBranchList, type BranchSort } from "./view/branchList.ts";
-import { clearDetails, showBranch, showCommit, showFile } from "./view/details.ts";
+import { clearDetails, showBranch, showCommit } from "./view/details.ts";
 import { buildTree, loadFiles, loadLastChanges, type FileList, type Folder, type LastChange } from "./git/files.ts";
 import { fileRows, renderFiles, rowKey, type FileRow } from "./view/files.ts";
 import { ignorePatterns } from "./git/ignore.ts";
@@ -1028,7 +1028,8 @@ function showView(view: ViewName, opts: { pendingPath?: string } = {}) {
     void pendingView.hide().then((ok) => ok || notify("Your edits in Pending Changes could not be saved. They're still there.", "error"));
   }
   $("pc-view").hidden = view !== "pending";
-  document.querySelector(".layout")!.classList.toggle("no-details", view === "pending");
+  // The details panel is the Branch Explorer's: what's selected in it.
+  document.querySelector(".layout")!.classList.toggle("no-details", view !== "explorer");
   if (view === "pending") void pendingView.show(opts.pendingPath);
   for (const item of document.querySelectorAll<HTMLButtonElement>(".view-item")) {
     item.setAttribute("aria-pressed", String(item.dataset.view === view));
@@ -1054,7 +1055,6 @@ function showView(view: ViewName, opts: { pendingPath?: string } = {}) {
   renderBranchView();
   renderRepos();
   if (view === "files") void showFiles();
-  else if (selectedFile) applySelection(selection, false); // the details panel goes back to the selection
 }
 
 for (const item of document.querySelectorAll<HTMLButtonElement>(".view-item")) {
@@ -1153,7 +1153,6 @@ async function showFiles() {
     return;
   }
   renderFileView();
-  showSelectedFile();
   if (!files.list.last) void fillLastChanges(seq, path);
 }
 
@@ -1191,7 +1190,6 @@ function renderFileView() {
       if (rowKey(r) !== selectedFile) {
         selectedFile = rowKey(r);
         renderFileView();
-        showSelectedFile();
       }
       if (r.kind === "file") void showFileMenu(r.path);
     },
@@ -1338,7 +1336,6 @@ function selectFileRow(r: FileRow) {
   selectedFile = rowKey(r);
   if (r.kind === "folder") toggleFolder(r.folder.path);
   else renderFileView();
-  showSelectedFile();
 }
 
 /** Folders open and close; a file with pending changes opens Pending Changes. */
@@ -1353,15 +1350,6 @@ function toggleFolder(path: string, open?: boolean) {
   renderFileView();
 }
 
-function showSelectedFile() {
-  if (currentView !== "files" || !files || !model || !git) return;
-  if (!selectedFile || selectedFile.endsWith("/")) return;
-  void showFile(details, model, selectedFile, files.list.status.get(selectedFile), git, (s) => {
-    showView("explorer");
-    applySelection(s, true);
-  });
-}
-
 /** Keyboard in the Files view: ↑/↓ move, ←/→ close/open folders, Enter opens. */
 function fileKey(key: string) {
   if (!files) return;
@@ -1373,7 +1361,6 @@ function fileKey(key: string) {
     const next = rows[at < 0 ? 0 : Math.max(0, Math.min(rows.length - 1, at + (key === "ArrowUp" ? -1 : 1)))];
     selectedFile = rowKey(next);
     renderFileView();
-    showSelectedFile();
   } else if (key === "ArrowRight" && cur?.kind === "folder") {
     toggleFolder(cur.folder.path, true);
   } else if (key === "ArrowLeft" && cur) {
