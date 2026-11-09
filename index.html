@@ -132,15 +132,34 @@
         <label class="field">First branch
           <input id="repo-branch" type="text" spellcheck="false" autocomplete="off" value="main" />
         </label>
-        <label class="field field-gap">Remote (origin)
-          <input id="repo-remote" type="text" spellcheck="false" autocomplete="off" placeholder="https://github.com/you/my-project.git" required />
+        <label class="field field-gap">Remote (origin), optional
+          <input id="repo-remote" type="text" spellcheck="false" autocomplete="off" placeholder="https://host/you/my-project.git or git@host:you/my-project.git" />
         </label>
-        <p id="repo-remote-note" class="dialog-note">Where the repository is pushed to. Create an empty repository there first (on GitHub, GitLab, …) and paste its URL.</p>
+        <p id="repo-remote-note" class="dialog-note">Where the repository is pushed to. The repository must already exist there. Leave it empty to keep this one local.</p>
         <div id="repo-error" class="dialog-error" role="alert"></div>
         <label class="check"><input id="repo-open" type="checkbox" checked /> Open it after creating</label>
         <div class="dialog-actions">
           <button type="button" id="repo-cancel">Cancel</button>
           <button type="submit" id="repo-create" class="primary">Create</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="clone-dialog" class="dialog" aria-labelledby="clone-dialog-title">
+      <form id="clone-form" method="dialog">
+        <h2 id="clone-dialog-title">Clone repository</h2>
+        <p class="dialog-sub">Into the workspace <span id="clone-workspace"></span></p>
+        <label class="field">URL
+          <input id="clone-url" type="text" spellcheck="false" autocomplete="off" placeholder="https://host/owner/project.git or git@host:owner/project.git" required />
+        </label>
+        <label class="field field-gap">Folder
+          <input id="clone-name" type="text" spellcheck="false" autocomplete="off" placeholder="project, or group/project" required />
+        </label>
+        <p id="clone-location" class="dialog-note mono"></p>
+        <div id="clone-error" class="dialog-error" role="alert"></div>
+        <label class="check"><input id="clone-open" type="checkbox" checked /> Open it after cloning</label>
+        <div class="dialog-actions">
+          <button type="button" id="clone-cancel">Cancel</button>
+          <button type="submit" id="clone-start" class="primary">Clone</button>
         </div>
       </form>
     </dialog>

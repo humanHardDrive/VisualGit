@@ -6,6 +6,7 @@
 //! in a remote URL (`https://user:token@host/…`) never make it into the
 //! address.
 
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use serde::Serialize;
@@ -20,6 +21,64 @@ pub struct WebPage {
     pub url: String,
     /// The remote the page was worked out from.
     pub remote: String,
+}
+
+/// A repository's remote, as the Workspace view shows it.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Remote {
+    /// The remote's name (`origin`).
+    pub name: String,
+    /// Its URL, minus any user name or password.
+    pub url: String,
+    /// The hosting service ("GitHub", …) and the repository's page there, when known.
+    pub host: Option<String>,
+    pub page: Option<String>,
+}
+
+/// The repository's remotes as (name, URL), `origin` first, then `upstream`,
+/// then the rest in git's order. `git remote -v` applies `url.<base>.insteadOf`
+/// rewrites, so these are the addresses git really uses.
+fn remotes(root: &Path) -> Vec<(String, String)> {
+    let Ok(out) = git(root, &["remote", "-v"], &[], None) else { return vec![] };
+    let mut list: Vec<(String, String)> = Vec::new();
+    for line in out.lines() {
+        // "origin\thttps://… (fetch)"
+        let Some((name, rest)) = line.split_once('\t') else { continue };
+        let url = rest.rsplit_once(' ').map_or(rest, |(u, _)| u).trim();
+        if !list.iter().any(|(n, _)| n == name) {
+            list.push((name.to_string(), url.to_string()));
+        }
+    }
+    let preferred = |n: &str| ["origin", "upstream"].iter().position(|p| *p == n).unwrap_or(usize::MAX);
+    list.sort_by_key(|(n, _)| preferred(n)); // stable: the rest keep git's order
+    list
+}
+
+/// The remote to show for a repository: the first that's on a hosting
+/// service, else simply the first. None for a repository with no remotes.
+pub(crate) fn remote_of(root: &Path) -> Option<Remote> {
+    let list = remotes(root);
+    let hosted = list.iter().find_map(|(name, url)| web_page(url, &ssh_hostname).map(|(host, page)| (name, url, host, page)));
+    if let Some((name, url, host, page)) = hosted {
+        return Some(Remote { name: name.clone(), url: without_credentials(url), host: Some(host), page: Some(page) });
+    }
+    list.first().map(|(name, url)| Remote { name: name.clone(), url: without_credentials(url), host: None, page: None })
+}
+
+/// `https://user:token@host/x` → `https://host/x`. Other URLs are unchanged:
+/// an SSH user name (`git@`) isn't a secret.
+fn without_credentials(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else { return url.to_string() };
+    if !scheme.eq_ignore_ascii_case("https") && !scheme.eq_ignore_ascii_case("http") {
+        return url.to_string();
+    }
+    let (authority, path) = rest.split_once('/').map_or((rest, None), |(a, p)| (a, Some(p)));
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    match path {
+        Some(p) => format!("{scheme}://{host}/{p}"),
+        None => format!("{scheme}://{host}"),
+    }
 }
 
 /// The repository's page on its hosting service, if it has a remote that points at one.
@@ -63,20 +122,7 @@ pub async fn open_repo_web_page(repo: String) -> Result<(), String> {
 
 fn find(repo: &str) -> Result<Option<WebPage>, String> {
     let root = repo_root(repo)?;
-    let remotes = git(&root, &["remote"], &[], None)?;
-    let names: Vec<&str> = remotes.lines().map(str::trim).filter(|n| !n.is_empty()).collect();
-    // origin, else upstream, else whichever comes first.
-    let preferred = |n: &str| ["origin", "upstream"].iter().position(|p| *p == n).unwrap_or(usize::MAX);
-    let mut order = names.clone();
-    order.sort_by_key(|n| preferred(n)); // stable: the rest keep git's order
-    for name in order {
-        // `get-url` applies `url.<base>.insteadOf` rewrites, so this is the address git really uses.
-        let Ok(url) = git(&root, &["remote", "get-url", "--", name], &[], None) else { continue };
-        if let Some((host, url)) = web_page(url.trim(), &ssh_hostname) {
-            return Ok(Some(WebPage { host, url, remote: name.to_string() }));
-        }
-    }
-    Ok(None)
+    Ok(remote_of(&root).and_then(|r| Some(WebPage { host: r.host?, url: r.page?, remote: r.name })))
 }
 
 /// The real host behind an SSH host name, which may be an alias from
@@ -241,9 +287,19 @@ mod tests {
         assert_eq!(find(&repo).unwrap(), None);
         run(&["remote", "add", "mirror", "https://gitlab.com/me/app.git"]);
         assert_eq!(find(&repo).unwrap().unwrap().host, "GitLab");
-        run(&["remote", "add", "origin", "https://github.com/me/app.git"]);
+        run(&["remote", "add", "origin", "https://me:secret@github.com/me/app.git"]);
         let page = find(&repo).unwrap().unwrap();
         assert_eq!((page.host.as_str(), page.url.as_str(), page.remote.as_str()), ("GitHub", "https://github.com/me/app", "origin"));
+        let shown = remote_of(&dir.canonicalize().unwrap()).unwrap();
+        assert_eq!(shown.url, "https://github.com/me/app.git", "no credentials in what's shown");
+
+        // A remote that isn't on a hosting service is still shown, just without a page.
+        run(&["remote", "remove", "origin"]);
+        run(&["remote", "remove", "mirror"]);
+        run(&["remote", "add", "backup", "/Volumes/Backup/app.git"]);
+        assert_eq!(find(&repo).unwrap(), None);
+        let shown = remote_of(&dir.canonicalize().unwrap()).unwrap();
+        assert_eq!((shown.name.as_str(), shown.url.as_str(), shown.host.is_none()), ("backup", "/Volumes/Backup/app.git", true));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -2,12 +2,24 @@
 
 import { compileQuery } from "../model/search.ts";
 
+/** Mirrors `Remote` in src-tauri/src/hosting.rs. */
+export interface Remote {
+  name: string;
+  /** Without any user name or password. */
+  url: string;
+  /** The hosting service ("GitHub", …) and the repository's page there, when known. */
+  host: string | null;
+  page: string | null;
+}
+
 /** Mirrors `RepoInfo` in src-tauri/src/workspace.rs. */
 export interface RepoInfo {
   path: string;
   name: string;
   head: string | null;
   detached: boolean;
+  /** null: no remotes. Undefined: not looked up (a repository opened from outside the workspace). */
+  remote?: Remote | null;
 }
 
 export interface WorkspaceListOptions {
@@ -36,12 +48,30 @@ export function filterRepos(repos: RepoInfo[], query: string): RepoInfo[] {
   return re ? repos.filter((r) => re.test(r.name)) : repos;
 }
 
+/** Just where the remote is: the hosting service ("GitHub") or server; the full URL is in the tooltip. */
+function remoteCell(remote: Remote | null | undefined): HTMLElement {
+  const td = el("td", "col-remote");
+  if (remote === undefined) return td;
+  if (remote === null) {
+    td.append(el("span", "muted", "Local only"));
+    td.title = "No remote: nowhere to push to";
+    return td;
+  }
+  // A remote other than origin is named, since that's not where pushes go by default.
+  if (remote.name !== "origin") td.append(el("span", "muted", `${remote.name}: `));
+  // No host for a remote that's a folder (a path or file:// URL).
+  td.append(remote.host ? el("span", "badge host", remote.host) : el("span", "muted", "Local folder"));
+  td.title = `${remote.name}: ${remote.url}`;
+  return td;
+}
+
 export function renderWorkspaceList(host: HTMLElement, repos: RepoInfo[], opts: WorkspaceListOptions) {
   const table = el("table", "branch-table workspace-table");
   const head = el("tr");
   for (const [label, cls] of [
     ["Repository", "col-repo"],
     ["Checked out", "col-head"],
+    ["Remote", "col-remote"],
     ["Path", "col-path"],
   ]) {
     head.append(el("th", cls, label));
@@ -62,7 +92,7 @@ export function renderWorkspaceList(host: HTMLElement, repos: RepoInfo[], opts: 
     if (r.head) headCell.append(el("span", r.detached ? "mono muted" : "mono", r.detached ? `detached at ${r.head}` : r.head));
     const path = el("td", "col-path muted", r.path);
     path.title = r.path;
-    tr.append(name, headCell, path);
+    tr.append(name, headCell, remoteCell(r.remote), path);
     tr.onclick = () => opts.onOpen(r);
     tr.ondblclick = () => opts.onActivate(r);
     tbody.append(tr);
@@ -70,7 +100,7 @@ export function renderWorkspaceList(host: HTMLElement, repos: RepoInfo[], opts: 
   if (shown.length === 0) {
     const tr = el("tr");
     const td = el("td", "branch-table-empty", opts.query.trim() ? `No repositories match “${opts.query.trim()}”` : opts.empty);
-    td.colSpan = 3;
+    td.colSpan = 4;
     tr.append(td);
     tbody.append(tr);
   }

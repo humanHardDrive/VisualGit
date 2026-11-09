@@ -113,6 +113,7 @@ pub fn run() {
             git,
             find_repos,
             workspace::create_repo,
+            workspace::clone_repo,
             hosting::repo_web_page,
             hosting::describe_remote,
             hosting::open_repo_web_page,
