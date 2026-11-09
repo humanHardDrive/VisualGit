@@ -1,57 +1,37 @@
-//! The Pending Changes window and the commands that change a repository:
-//! reading and saving working-tree files, committing selected files, and
-//! pushing branches.
+//! The commands behind the Pending Changes view, which change a repository:
+//! reading and saving working-tree files, committing selected files, undoing
+//! changes, and pushing branches.
 //!
 //! These are deliberately separate from the read-only `git` command: each one
 //! does a single, narrow thing, with its paths checked to stay inside the
 //! repository.
 
-use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder, Window};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// Files larger than this are not loaded into the diff editor.
 const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
-/// Which repository each Pending Changes window belongs to, by window label.
-#[derive(Default)]
-pub struct PendingWindows(Mutex<HashMap<String, String>>);
-
-/// Opens the Pending Changes window for `repo`, or focuses it if it is already open.
-#[tauri::command]
-pub async fn open_pending_window(app: AppHandle, windows: State<'_, PendingWindows>, repo: String) -> Result<(), String> {
-    let root = repo_root(&repo)?;
-    let mut hasher = DefaultHasher::new();
-    root.hash(&mut hasher);
-    let label = format!("pending-{:016x}", hasher.finish());
-
-    if let Some(existing) = app.get_webview_window(&label) {
-        existing.unminimize().ok();
-        existing.show().map_err(|e| e.to_string())?;
-        return existing.set_focus().map_err(|e| e.to_string());
-    }
-    windows.0.lock().unwrap().insert(label.clone(), root.to_string_lossy().into_owned());
-    let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("pending.html".into()))
-        .title(format!("Pending Changes · {name}"))
-        .inner_size(1280.0, 820.0)
-        .min_inner_size(760.0, 480.0)
-        .build()
-        .map_err(|e| e.to_string())?;
-    Ok(())
+#[derive(Clone, Serialize)]
+struct ShowPending {
+    repo: String,
 }
 
-/// The repository the calling Pending Changes window was opened for.
+/// Brings the main window forward on its Pending Changes view for `repo`
+/// (opening that repository there if another one is open). Used by the merge
+/// window when a merge stops for conflicts or finds pending changes.
 #[tauri::command]
-pub fn window_repo(window: Window, windows: State<'_, PendingWindows>) -> Option<String> {
-    windows.0.lock().unwrap().get(window.label()).cloned()
+pub fn show_pending_changes(app: AppHandle, repo: String) -> Result<(), String> {
+    let root = repo_root(&repo)?;
+    let main = app.get_webview_window("main").ok_or("The main window is closed")?;
+    main.unminimize().ok();
+    main.show().map_err(|e| e.to_string())?;
+    main.set_focus().map_err(|e| e.to_string())?;
+    main.emit("show-pending", ShowPending { repo: root.to_string_lossy().into_owned() }).map_err(|e| e.to_string())
 }
 
 #[derive(Serialize)]
@@ -106,7 +86,7 @@ pub async fn commit_changes(repo: String, message: String, paths: Vec<String>) -
         .map_err(|e| e.to_string())?
 }
 
-fn commit(repo: &str, message: &str, paths: &[String]) -> Result<String, String> {
+pub(crate) fn commit(repo: &str, message: &str, paths: &[String]) -> Result<String, String> {
     let root = repo_root(repo)?;
     if message.trim().is_empty() {
         return Err("Enter a commit message".into());
@@ -119,12 +99,49 @@ fn commit(repo: &str, message: &str, paths: &[String]) -> Result<String, String>
     }
     // Stage the selected files exactly as they are on disk, including deletions.
     git(&root, &["add", "-A", "--"], paths, None)?;
-    // A merge must be committed whole; otherwise commit only the selection.
-    let merging = git(&root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"], &[], None).is_ok();
+    // A merge or cherry pick in progress must be committed whole; otherwise commit only the selection.
+    let merging = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"]
+        .iter()
+        .any(|r| git(&root, &["rev-parse", "-q", "--verify", r], &[], None).is_ok());
     let selection: &[String] = if merging { &[] } else { paths };
     let only: &[&str] = if merging { &["commit", "-F", "-"] } else { &["commit", "-F", "-", "--"] };
     git(&root, only, selection, Some(message))?;
     Ok(git(&root, &["rev-parse", "HEAD"], &[], None)?.trim().to_string())
+}
+
+/// Undoes pending changes. `tracked` paths (in the checked-out changeset) get
+/// their committed content back, in the working tree and the index. `created`
+/// paths (new files) are unstaged and moved to the Trash, so they can still be
+/// recovered.
+#[tauri::command]
+pub async fn undo_changes(repo: String, tracked: Vec<String>, created: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || undo(&repo, &tracked, &created, &to_trash))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn to_trash(files: &[&PathBuf]) -> Result<(), String> {
+    trash::delete_all(files).map_err(|e| format!("could not move new files to the Trash: {e}"))
+}
+
+/// `discard` gets rid of the new files (the Trash in the app; tests delete them).
+fn undo(repo: &str, tracked: &[String], created: &[String], discard: &dyn Fn(&[&PathBuf]) -> Result<(), String>) -> Result<(), String> {
+    let root = repo_root(repo)?;
+    for p in tracked.iter().chain(created) {
+        check_relative(p)?;
+    }
+    let files: Vec<PathBuf> = created.iter().map(|p| resolve(repo, p)).collect::<Result<_, _>>()?;
+    if !created.is_empty() {
+        git(&root, &["rm", "--cached", "--quiet", "--ignore-unmatch", "-r", "--"], created, None)?;
+    }
+    if !tracked.is_empty() {
+        git(&root, &["restore", "--source=HEAD", "--staged", "--worktree", "--"], tracked, None)?;
+    }
+    let existing: Vec<&PathBuf> = files.iter().filter(|f| f.symlink_metadata().is_ok()).collect();
+    if !existing.is_empty() {
+        discard(&existing)?;
+    }
+    Ok(())
 }
 
 /// Pushes the checked-out branch and returns a summary like "Pushed main to origin".
@@ -236,7 +253,7 @@ fn check_relative(path: &str) -> Result<(), String> {
 
 /// Resolves a repository-relative path, refusing anything that leads outside
 /// the repository, including through symbolic links.
-fn resolve(repo: &str, path: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve(repo: &str, path: &str) -> Result<PathBuf, String> {
     let root = repo_root(repo)?;
     check_relative(path)?;
     let file = root.join(path);
@@ -337,6 +354,32 @@ mod tests {
         assert!(push_named(&dir, "--force").is_err());
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&remote).ok();
+    }
+
+    #[test]
+    fn undoes_changes_and_trashes_new_files() {
+        let dir = scratch_repo();
+        let repo = dir.to_string_lossy().into_owned();
+        std::fs::write(dir.join("keep.txt"), "original\n").unwrap();
+        std::fs::write(dir.join("gone.txt"), "g\n").unwrap();
+        commit(&repo, "base", &["keep.txt".into(), "gone.txt".into()]).unwrap();
+
+        std::fs::write(dir.join("keep.txt"), "edited\n").unwrap();
+        git(&dir, &["add", "keep.txt"], &[], None).unwrap(); // staged too
+        std::fs::remove_file(dir.join("gone.txt")).unwrap();
+        std::fs::write(dir.join("added.txt"), "a\n").unwrap();
+        git(&dir, &["add", "added.txt"], &[], None).unwrap();
+
+        let delete = |files: &[&PathBuf]| {
+            files.iter().try_for_each(|f| std::fs::remove_file(f)).map_err(|e| e.to_string())
+        };
+        undo(&repo, &["keep.txt".into(), "gone.txt".into()], &["added.txt".into()], &delete).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("keep.txt")).unwrap(), "original\n");
+        assert_eq!(std::fs::read_to_string(dir.join("gone.txt")).unwrap(), "g\n");
+        assert!(!dir.join("added.txt").exists());
+        assert_eq!(git(&dir, &["status", "--porcelain"], &[], None).unwrap(), "");
+        assert!(undo(&repo, &["../x".into()], &[], &delete).is_err());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -70,8 +70,12 @@ export interface ExplorerEvents {
   onSelect(sel: Selection | null): void;
   /** Right-click on a changeset or branch, after it has been selected. */
   onContextMenu(sel: Selection): void;
-  /** Double-click on the checked-out changeset or the hollow HEAD marker over uncommitted work. */
+  /** Double-click on the hollow HEAD marker over uncommitted work. */
   onOpenPending(): void;
+  /** Double-click on a committed changeset. */
+  onOpenChangeset(hash: string): void;
+  /** Double-click on a branch's lane (not on one of its changesets). */
+  onOpenBranch(id: number): void;
 }
 
 export class Explorer {
@@ -91,6 +95,12 @@ export class Explorer {
   /** Branch with an empty "pending changes" changeset after its latest one (which then carries the HEAD marker). */
   private pendingLane: number | null = null;
   private matches: Matches | null = null;
+  /**
+   * A "fit" or "latest" asked for while the canvas was hidden (zero size, e.g.
+   * a repository opened from the Workspace view). Placement needs the real
+   * size, so it waits until the canvas is shown.
+   */
+  private pendingPlacement: "fit" | "latest" | null = null;
   private frame = 0;
   private theme!: Theme;
 
@@ -120,8 +130,20 @@ export class Explorer {
     if (this.selection?.kind === "commit" && !model.commits.has(this.selection.hash)) this.selection = null;
     if (this.selection?.kind === "branch" && !model.branches[this.selection.id]) this.selection = null;
     if (view === "latest") this.latest();
-    else if (view !== "keep") ({ scale: this.scale, tx: this.tx, ty: this.ty } = view);
+    else if (view !== "keep") {
+      ({ scale: this.scale, tx: this.tx, ty: this.ty } = view);
+      this.pendingPlacement = null;
+    }
     this.redraw();
+  }
+
+  /** Carries out a placement that was waiting for the canvas to be shown. */
+  private settle() {
+    const p = this.pendingPlacement;
+    if (!p || this.canvas.clientWidth === 0 || this.canvas.clientHeight === 0) return;
+    this.pendingPlacement = null;
+    if (p === "fit") this.fit();
+    else this.latest();
   }
 
   clear() {
@@ -129,6 +151,7 @@ export class Explorer {
     this.layout = undefined;
     this.selection = null;
     this.matches = null;
+    this.pendingPlacement = null;
     this.redraw();
   }
 
@@ -144,6 +167,7 @@ export class Explorer {
 
   select(sel: Selection | null, reveal = false) {
     this.selection = sel;
+    if (reveal) this.settle(); // place the view before scrolling to the selection
     if (reveal && sel && this.model && this.layout) {
       if (sel.kind === "commit") {
         // Only scroll when the changeset is off screen, so stepping through history doesn't jump around.
@@ -172,6 +196,11 @@ export class Explorer {
     if (!this.layout) return;
     const w = this.canvas.clientWidth;
     const h = this.canvas.clientHeight;
+    if (w === 0 || h === 0) {
+      this.pendingPlacement = "fit";
+      return;
+    }
+    this.pendingPlacement = null;
     const worldW = colX(this.layout.cols) + PAD;
     const worldH = rowTop(this.layout.rows) + PAD;
     this.scale = clamp(Math.min(w / worldW, h / worldH, 1.5), 0.04, 3);
@@ -184,6 +213,11 @@ export class Explorer {
   latest() {
     if (!this.layout) return;
     const w = this.canvas.clientWidth;
+    if (w === 0) {
+      this.pendingPlacement = "latest";
+      return;
+    }
+    this.pendingPlacement = null;
     this.scale = this.scale < 0.5 ? 1 : this.scale;
     const worldRight = colX(Math.max(0, this.layout.cols - 1)) + 220;
     this.tx = Math.min(0, w - worldRight * this.scale);
@@ -338,8 +372,10 @@ export class Explorer {
       const r = c.getBoundingClientRect();
       const sx = e.clientX - r.left;
       const sy = e.clientY - r.top;
+      if (this.onHollowHead(sx, sy)) return this.events.onOpenPending();
       const hit = this.hitTest(sx, sy);
-      if ((hit?.kind === "commit" && hit.hash === this.model?.headHash) || this.onHollowHead(sx, sy)) this.events.onOpenPending();
+      if (hit?.kind === "commit") this.events.onOpenChangeset(hit.hash);
+      else if (hit?.kind === "branch") this.events.onOpenBranch(hit.id);
     });
     c.addEventListener("contextmenu", (e) => {
       // Replace the webview's own menu (Reload, Inspect) on the explorer.
@@ -427,6 +463,7 @@ export class Explorer {
   }
 
   private draw() {
+    this.settle();
     const { canvas, ctx } = this;
     const dpr = window.devicePixelRatio || 1;
     const w = canvas.clientWidth;

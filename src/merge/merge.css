@@ -1,0 +1,51 @@
+/* Merge window. Reuses the file list and diff layout from pending.css. */
+
+.merge-head { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.merge-route { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.merge-end { display: flex; align-items: baseline; gap: 8px; min-width: 0; flex: 1; }
+.merge-label { flex: none; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
+.merge-branch { flex: none; font-weight: 600; }
+.merge-subject { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.merge-head .mono { flex: none; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); }
+.merge-arrow { flex: none; width: 24px; height: 16px; fill: none; stroke: var(--merge); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.merge-summary { display: flex; align-items: center; gap: 8px; }
+#summary.clean { color: var(--merge); }
+#summary.conflicts { color: #d1242f; }
+.merge-messages summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.merge-messages pre { margin: 6px 0 0; max-height: 120px; overflow: auto; font-size: 11px; color: var(--muted); white-space: pre-wrap; }
+
+.pfile .conflict-badge { flex: none; margin-left: auto; font-size: 10px; padding: 0 5px; border-radius: 8px; border: 1px solid #d1242f; color: #d1242f; }
+
+/* A conflicted file: Source, Destination and Result side by side. */
+.three-way { --tw-source: #8250df; --tw-dest: var(--merge); position: absolute; inset: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.tw-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.tw-pane + .tw-pane { border-left: 1px solid var(--border); }
+.tw-result { border-left-width: 2px !important; }
+.tw-label { padding: 4px 10px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); background: var(--panel); border-bottom: 1px solid var(--border); border-left: 3px solid transparent; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tw-source .tw-label { border-left-color: var(--tw-source); }
+.tw-dest .tw-label { border-left-color: var(--tw-dest); }
+.tw-result .tw-label { border-left-color: var(--accent); }
+.tw-editor { flex: 1; min-height: 0; position: relative; }
+.tw-editor .cm-editor { position: absolute; inset: 0; }
+.tw-editor .cm-scroller { overflow: auto; }
+/* Each side's lines in its colour, in its own pane and inside the Result's conflict blocks. */
+.cm-tw-source { background: color-mix(in srgb, var(--tw-source) 15%, transparent); }
+.cm-tw-dest { background: color-mix(in srgb, var(--tw-dest) 15%, transparent); }
+/* The Result: a thin rule where each conflict starts, and a faint tag naming where each side's lines came from. */
+.cm-tw-start { box-shadow: inset 0 1px 0 color-mix(in srgb, var(--muted) 45%, transparent); }
+.tw-tag { margin-left: 2em; font-family: -apple-system, system-ui, sans-serif; font-size: 11px; font-style: italic; opacity: 0.8; pointer-events: none; user-select: none; }
+.tw-tag-dest { color: var(--tw-dest); }
+.tw-tag-source { color: var(--tw-source); }
+.tw-tag-empty { display: block; margin-left: 0; padding: 1px 6px; }
+/* The Resolve split button (see .split in pending.css). */
+.split.take button { padding: 3px 10px; font-size: 12px; }
+.split.take #take-main { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.split.take .caret { padding: 0 6px; }
+.pfile .conflict-badge.resolved { border-color: var(--merge); color: var(--merge); }
+
+.segmented { display: flex; align-items: center; gap: 0; }
+.segmented-label { color: var(--muted); font-size: 12px; margin-right: 6px; white-space: nowrap; }
+.segmented button { border-radius: 0; padding: 2px 10px; font-size: 12px; }
+.segmented button:first-of-type { border-radius: 6px 0 0 6px; }
+.segmented button:last-of-type { border-radius: 0 6px 6px 0; border-left: none; }
+.segmented button.on { background: color-mix(in srgb, var(--accent) 18%, var(--panel)); border-color: var(--accent); color: var(--accent); }
