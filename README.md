@@ -31,10 +31,13 @@ VISUALGIT_REPO=/path/to/repo npm run app  # open a repository straight away
 **Workspaces.** Choose *File › Open Workspace…* (or *Open Workspace…* in the Workspace view) and pick the folder you keep your repositories in, e.g. `~/Documents/GitHub`.
 
 - **Finding repositories:** VisualGit looks up to four levels down, skipping hidden folders and build folders such as `node_modules` and `target`.
-- **The Workspace view:** one of the entries under *View*. It lists every repository with what it has checked out and its path, and you can search their names with ⌘F.
+- **The Workspace view:** one of the entries under *View*. It lists every repository with what it has checked out, its remote and its path, and you can search their names with ⌘F.
   - Click a repository to open it. Double-click it, or press Enter in the search box, to open it and go straight to the Branch Explorer.
   - *Rescan* looks for new repositories.
-  - Right-click anywhere in the view and choose *Create New Repository…* to make one in the workspace. A name like `group/my-project` creates the folders too. You also choose the first branch (`main` unless you change it). A folder that already exists but isn't a repository yet becomes one, and its files are left as they are. VisualGit won't create a repository inside another one, or anywhere the workspace scan wouldn't find it: in a hidden or build folder, or more than four levels down.
+  - **Remote:** where the repository pushes to: the hosting service (*GitHub*, *GitLab*, …), or the server's name if it's self-hosted, or *Local folder* for a remote that's a path on disk. *Local only* means it has no remote. It's `origin` when there is one, otherwise the remote is named. Hover for the full URL (never including a password or token).
+  - Right-click a repository for *Switch Active Repo* (the same as double-clicking it) and *Open on GitHub* (or GitLab, Bitbucket, Azure DevOps, Codeberg, SourceHut, or the server's name if it's self-hosted). The page comes from the repository's remote URL: `origin` first, then `upstream`, then any other. SSH host aliases from `~/.ssh/config` are followed to the real host, and any user name or token in the URL is left out of the address.
+  - Right-click anywhere in the view and choose *Create New Repository…* to make one in the workspace. A name like `group/my-project` creates the folders too. You also choose the first branch (`main` unless you change it) and, optionally, a remote to push to, which becomes `origin`. Git can't create the repository on the server, so it must already exist there. The first *Commit & Push* publishes the branch to it and tracks it. Without a remote, the repository is local only. Only https://, http://, ssh://, git://, file:// and `git@host:path` remotes are accepted.
+  - Right-click anywhere in the view and choose *Clone Repository…* to `git clone` a URL into the workspace. The folder name comes from the URL (you can change it, `group/name` works too). The dialog closes and git's progress shows in the corner; the clone is listed, and opened if you asked, when it's done. There's no terminal to type a password into, so private repositories need credentials Git already has: a credential helper (such as the macOS Keychain) for https://, or an SSH key in your agent. A folder that already exists but isn't a repository yet becomes one, and its files are left as they are. VisualGit won't create a repository inside another one, or anywhere the workspace scan wouldn't find it: in a hidden or build folder, or more than four levels down.
 - **Remembered settings:** each repository keeps its own zoom, scroll position and selection while you switch. The workspace and the last repository reopen at the next launch.
 
 *File › Open Repository…* opens a single repository from anywhere.
@@ -165,6 +168,7 @@ cd src-tauri && cargo test              # backend tests: command validation, wor
 | [src/pending/main.ts](src/pending/main.ts) | Pending Changes window: file list, diff editor ([CodeMirror](https://codemirror.net) merge view), commit box |
 | [src/merge/main.ts](src/merge/main.ts), [src-tauri/src/merge.rs](src-tauri/src/merge.rs) | Merge window: previews merging a changeset into the checked-out one (`git merge-tree`), then merges it (`--no-ff`) |
 | [src-tauri/src/workspace.rs](src-tauri/src/workspace.rs) | Finds the repositories inside a workspace folder, and creates new ones there |
+| [src-tauri/src/hosting.rs](src-tauri/src/hosting.rs) | Where a repository is hosted, from its remote URL, and opening its page there |
 | [src-tauri/src/menu.rs](src-tauri/src/menu.rs) | Native menu bar (File › Open Workspace…, Open Repository…) |
 
 The About panel shows the version, author, copyright and the changeset the app was built from. The build stamps in the current `HEAD` ([src-tauri/build.rs](src-tauri/build.rs)). When building without a `.git` folder, set `VISUALGIT_CHANGESET` to provide it.
@@ -179,6 +183,15 @@ The model code is plain TypeScript with no Tauri dependency, so it runs under No
 - Diff viewer for changesets and for "what does this branch change".
 - Filters: hide merged/deleted branches, date range, author.
 - Performance for very large histories (incremental loading, a WebGL renderer).
+
+### After 1.0
+
+- **Action system:** user-defined actions that run at points in VisualGit's operations, so it can do things Git itself can't while staying independent of any hosting service. The motivating case: creating a repository runs a custom action that creates the repository on the remote (for example a script calling `gh repo create`, `glab`, or a self-hosted server's API), then sets it as `origin`. To work out:
+  - **Hooks:** where actions can run, such as after creating, cloning, committing, pushing or creating a branch.
+  - **Inputs:** what an action gets, e.g. the repository path, its name, the branch and the remote URL, as environment variables or arguments.
+  - **Results:** what it can hand back, e.g. a remote URL to add.
+  - **Configuration:** where actions are defined, per workspace or per user, and how they appear in menus.
+  - **Trust:** since an action runs a command, VisualGit should show what will run and ask before running a newly added action.
 
 ## License
 

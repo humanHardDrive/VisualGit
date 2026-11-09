@@ -196,6 +196,7 @@ button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(
 .dialog .field { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
 .dialog .field input { padding: 6px 8px; font: inherit; font-size: 13px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
 .dialog .field input:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: -1px; border-color: var(--accent); }
+.dialog .field-gap { margin-top: 10px; }
 .dialog-note { margin: 4px 0 10px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
 .dialog-error { min-height: 18px; margin: 4px 0 6px; color: #d1242f; font-size: 12px; }
 .dialog .check { display: flex; align-items: center; gap: 6px; }
@@ -238,8 +239,9 @@ button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(
 .branch-table .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); }
 .branch-table .muted { color: var(--muted); }
 .workspace-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.workspace-table .col-repo { width: 30%; }
-.workspace-table .col-head { width: 22%; }
+.workspace-table .col-repo { width: 24%; }
+.workspace-table .col-head { width: 16%; }
+.workspace-table .col-remote { width: 30%; }
 .workspace-table .col-path { width: auto; }
 .workspace-table .branch-row { cursor: pointer; }
 .workspace-table .loading .name::after { content: " …"; color: var(--muted); }
