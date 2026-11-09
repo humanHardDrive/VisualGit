@@ -119,8 +119,10 @@ fn commit(repo: &str, message: &str, paths: &[String]) -> Result<String, String>
     }
     // Stage the selected files exactly as they are on disk, including deletions.
     git(&root, &["add", "-A", "--"], paths, None)?;
-    // A merge must be committed whole; otherwise commit only the selection.
-    let merging = git(&root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"], &[], None).is_ok();
+    // A merge or cherry pick in progress must be committed whole; otherwise commit only the selection.
+    let merging = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"]
+        .iter()
+        .any(|r| git(&root, &["rev-parse", "-q", "--verify", r], &[], None).is_ok());
     let selection: &[String] = if merging { &[] } else { paths };
     let only: &[&str] = if merging { &["commit", "-F", "-"] } else { &["commit", "-F", "-", "--"] };
     git(&root, only, selection, Some(message))?;
@@ -271,7 +273,7 @@ fn check_relative(path: &str) -> Result<(), String> {
 
 /// Resolves a repository-relative path, refusing anything that leads outside
 /// the repository, including through symbolic links.
-fn resolve(repo: &str, path: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve(repo: &str, path: &str) -> Result<PathBuf, String> {
     let root = repo_root(repo)?;
     check_relative(path)?;
     let file = root.join(path);

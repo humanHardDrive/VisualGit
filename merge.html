@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Merge</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <link rel="stylesheet" href="/src/pending/pending.css" />
+    <link rel="stylesheet" href="/src/merge/merge.css" />
+  </head>
+  <body class="merge-window">
+    <header class="merge-head">
+      <div class="merge-route">
+        <div class="merge-end">
+          <span class="merge-label">From</span>
+          <span id="from-branch" class="merge-branch"></span>
+          <span id="from-id" class="mono"></span>
+          <span id="from-subject" class="merge-subject"></span>
+        </div>
+        <svg class="merge-arrow" viewBox="0 0 24 16" aria-hidden="true"><path d="M2 8h18m-5-5 5 5-5 5" /></svg>
+        <div class="merge-end">
+          <span class="merge-label">Into</span>
+          <span id="to-branch" class="merge-branch"></span>
+          <span id="to-id" class="mono"></span>
+          <span id="to-subject" class="merge-subject"></span>
+        </div>
+      </div>
+      <div class="merge-summary">
+        <span id="summary"></span>
+        <button id="refresh" class="icon" title="Refresh">↻</button>
+        <span class="spacer"></span>
+        <button id="merge" class="primary" disabled>Merge</button>
+      </div>
+      <details id="messages" class="merge-messages" hidden>
+        <summary>Messages from git</summary>
+        <pre id="messages-text"></pre>
+      </details>
+    </header>
+    <main class="pending-layout">
+      <aside class="file-pane">
+        <div class="file-head"><span id="file-count" class="check-all">Files</span></div>
+        <div id="base-info" class="branch-info"></div>
+        <div id="file-list" class="file-list" role="listbox" aria-label="Files the merge changes"></div>
+      </aside>
+      <section class="diff-pane">
+        <div class="diff-bar">
+          <div id="diff-title" class="diff-title"></div>
+          <div class="spacer"></div>
+          <div class="segmented" role="radiogroup" aria-label="Compare the merge result with">
+            <span class="segmented-label">Compare result with</span>
+            <button id="cmp-to" role="radio" aria-checked="true" class="on">Into</button>
+            <button id="cmp-from" role="radio" aria-checked="false">From</button>
+          </div>
+          <span id="change-count" class="change-count"></span>
+          <div class="nav" role="group" aria-label="Change navigation">
+            <button id="prev-change" class="nav-btn" title="Previous change (⇧F7)" aria-label="Previous change" disabled>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 10 5-5 5 5" /></svg>
+            </button>
+            <button id="next-change" class="nav-btn" title="Next change (F7)" aria-label="Next change" disabled>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 6 5 5 5-5" /></svg>
+            </button>
+          </div>
+        </div>
+        <div class="diff-sides"><span id="side-a">Into</span><span>Merge result</span></div>
+        <div id="diff" class="diff"></div>
+        <div id="diff-message" class="diff-message" hidden></div>
+      </section>
+    </main>
+    <script type="module" src="/src/merge/main.ts"></script>
+  </body>
+</html>
