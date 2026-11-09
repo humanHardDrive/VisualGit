@@ -34,6 +34,7 @@ VISUALGIT_REPO=/path/to/repo npm run app  # open a repository straight away
 - **The Workspace view:** one of the entries under *View*. It lists every repository with what it has checked out and its path, and you can search their names with ⌘F.
   - Click a repository to open it. Double-click it, or press Enter in the search box, to open it and go straight to the Branch Explorer.
   - *Rescan* looks for new repositories.
+  - Right-click a repository for *Switch Active Repo* (the same as double-clicking it) and *Open on GitHub* (or GitLab, Bitbucket, Azure DevOps, Codeberg, SourceHut, or the server's name if it's self-hosted). The page comes from the repository's remote URL: `origin` first, then `upstream`, then any other. SSH host aliases from `~/.ssh/config` are followed to the real host, and any user name or token in the URL is left out of the address.
   - Right-click anywhere in the view and choose *Create New Repository…* to make one in the workspace. A name like `group/my-project` creates the folders too. You also choose the first branch (`main` unless you change it). A folder that already exists but isn't a repository yet becomes one, and its files are left as they are. VisualGit won't create a repository inside another one, or anywhere the workspace scan wouldn't find it: in a hidden or build folder, or more than four levels down.
 - **Remembered settings:** each repository keeps its own zoom, scroll position and selection while you switch. The workspace and the last repository reopen at the next launch.
 
@@ -165,6 +166,7 @@ cd src-tauri && cargo test              # backend tests: command validation, wor
 | [src/pending/main.ts](src/pending/main.ts) | Pending Changes window: file list, diff editor ([CodeMirror](https://codemirror.net) merge view), commit box |
 | [src/merge/main.ts](src/merge/main.ts), [src-tauri/src/merge.rs](src-tauri/src/merge.rs) | Merge window: previews merging a changeset into the checked-out one (`git merge-tree`), then merges it (`--no-ff`) |
 | [src-tauri/src/workspace.rs](src-tauri/src/workspace.rs) | Finds the repositories inside a workspace folder, and creates new ones there |
+| [src-tauri/src/hosting.rs](src-tauri/src/hosting.rs) | Where a repository is hosted, from its remote URL, and opening its page there |
 | [src-tauri/src/menu.rs](src-tauri/src/menu.rs) | Native menu bar (File › Open Workspace…, Open Repository…) |
 
 The About panel shows the version, author, copyright and the changeset the app was built from. The build stamps in the current `HEAD` ([src-tauri/build.rs](src-tauri/build.rs)). When building without a `.git` folder, set `VISUALGIT_CHANGESET` to provide it.

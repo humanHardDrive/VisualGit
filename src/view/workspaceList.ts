@@ -53,6 +53,7 @@ export function renderWorkspaceList(host: HTMLElement, repos: RepoInfo[], opts: 
   const shown = filterRepos(repos, opts.query);
   for (const r of shown) {
     const tr = el("tr", "branch-row");
+    tr.dataset.path = r.path; // for the right-click menu
     if (r.path === opts.current) tr.classList.add("selected");
     if (r.path === opts.loading) tr.classList.add("loading");
     const name = el("td", "col-repo");

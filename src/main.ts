@@ -788,20 +788,43 @@ const repoCreate = $<HTMLButtonElement>("repo-create");
 
 workspaceView.addEventListener("contextmenu", (e) => {
   e.preventDefault();
-  void showWorkspaceMenu();
+  // On a repository's row: that repository's items first. Anywhere else: just Create.
+  const path = (e.target as HTMLElement).closest<HTMLElement>("tr[data-path]")?.dataset.path;
+  void showWorkspaceMenu(listedRepos().find((r) => r.path === path));
 });
 
-async function showWorkspaceMenu() {
-  const menu = await Menu.new({
-    items: [
-      {
-        id: "create-repo",
-        text: workspace ? "Create New Repository…" : "Create New Repository… (open a workspace first)",
-        enabled: !!workspace,
-        action: () => openRepoDialog(),
-      },
-    ],
+/** Mirrors `WebPage` in src-tauri/src/hosting.rs. */
+interface WebPage {
+  host: string;
+  url: string;
+  remote: string;
+}
+
+async function showWorkspaceMenu(repo?: RepoInfo) {
+  const items: ({ id: string; text: string; enabled?: boolean; action?: () => void } | { item: "Separator" })[] = [];
+  if (repo) {
+    // Where the repository is hosted, from its remote's URL; not knowing just leaves the item disabled.
+    const page = await invoke<WebPage | null>("repo_web_page", { repo: repo.path }).catch(() => null);
+    items.push(
+      // The same as double-clicking the row.
+      { id: "switch-repo", text: "Switch Active Repo", action: () => openRepoInExplorer(repo) },
+      page
+        ? {
+            id: "open-web",
+            text: `Open on ${page.host}`,
+            action: () => void invoke("open_repo_web_page", { repo: repo.path }).catch((err) => notify(`Could not open ${page.url}: ${err}`, "error")),
+          }
+        : { id: "open-web", text: "Open on Hosting Site (no remote)", enabled: false },
+      { item: "Separator" },
+    );
+  }
+  items.push({
+    id: "create-repo",
+    text: workspace ? "Create New Repository…" : "Create New Repository… (open a workspace first)",
+    enabled: !!workspace,
+    action: () => openRepoDialog(),
   });
+  const menu = await Menu.new({ items });
   await menu.popup();
 }
 
