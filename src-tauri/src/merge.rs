@@ -617,4 +617,38 @@ mod tests {
         assert_eq!(in_progress(&dir), None);
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    #[test]
+    fn a_merge_resolved_in_the_merge_window_commits_with_both_parents() {
+        // What the merge window does: merge, write the resolved file over git's, commit with git's message.
+        let (dir, run) = repo();
+        let repo = dir.to_string_lossy().into_owned();
+        std::fs::write(dir.join("f.txt"), "base\n").unwrap();
+        std::fs::write(dir.join("clean.txt"), "one\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "base"]);
+        run(&["checkout", "-q", "-b", "feature"]);
+        std::fs::write(dir.join("f.txt"), "theirs\n").unwrap();
+        std::fs::write(dir.join("clean.txt"), "one\ntwo\n").unwrap();
+        run(&["commit", "-q", "-am", "theirs"]);
+        let theirs = run(&["rev-parse", "HEAD"]);
+        run(&["checkout", "-q", "main"]);
+        std::fs::write(dir.join("f.txt"), "ours\n").unwrap();
+        run(&["commit", "-q", "-am", "ours"]);
+        let ours = run(&["rev-parse", "HEAD"]);
+
+        let done = merge_into_head(&repo, &theirs, Some("feature")).unwrap();
+        assert_eq!(done.conflicts, vec!["f.txt".to_string()]);
+        std::fs::write(dir.join("f.txt"), "resolved\n").unwrap();
+        let message = operation_in_progress(repo.clone()).unwrap().unwrap().message.unwrap();
+        let merged = crate::pending::commit(&repo, &message, &done.conflicts).unwrap();
+
+        assert_eq!(run(&["rev-list", "--parents", "-n", "1", &merged]), format!("{merged} {ours} {theirs}"));
+        assert_eq!(run(&["log", "-1", "--format=%s"]), "Merge branch 'feature' into main");
+        assert_eq!(run(&["show", &format!("{merged}:f.txt")]), "resolved");
+        assert_eq!(run(&["show", &format!("{merged}:clean.txt")]), "one\ntwo", "the cleanly merged file comes along");
+        assert_eq!(in_progress(&dir), None);
+        assert_eq!(run(&["status", "--porcelain"]), "");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

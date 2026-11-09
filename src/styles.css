@@ -119,6 +119,9 @@ button.link:hover { text-decoration: underline; background: none; }
 .result-hint { margin-top: 4px; padding: 6px 10px 2px; border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; }
 
 .layout { flex: 1; display: grid; grid-template-columns: 240px 1fr 320px; min-height: 0; }
+/* Pending Changes needs the width for its side-by-side diff, so the details panel steps aside. */
+.layout.no-details { grid-template-columns: 240px 1fr; }
+.layout.no-details .details { display: none; }
 
 .sidebar { display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--panel); min-height: 0; }
 .sidebar input {
@@ -213,6 +216,7 @@ button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(
 .view-list { display: flex; flex-direction: column; padding: 6px 0; }
 .view-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 10px; text-align: left; border: none; border-left: 2px solid transparent; border-radius: 0; background: none; }
 .view-item svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.view-item .view-dot { width: 7px; height: 7px; margin-left: auto; border-radius: 50%; background: var(--accent); flex: none; }
 .view-item[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 18%, transparent); border-left-color: var(--accent); }
 
 /* Branch List view, in place of the explorer canvas. */
@@ -246,7 +250,7 @@ button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(
 .workspace-table .branch-row { cursor: pointer; }
 .workspace-table .loading .name::after { content: " …"; color: var(--muted); }
 /* The welcome / "pick a repository" message would sit on top of the table. */
-.canvas-wrap[data-view="workspace"] .empty-state, .canvas-wrap[data-view="files"] .empty-state { display: none !important; }
+.canvas-wrap[data-view="workspace"] .empty-state, .canvas-wrap[data-view="files"] .empty-state, .canvas-wrap[data-view="pending"] .empty-state { display: none !important; }
 /* Files view */
 .file-tree { padding: 0 0 4px; }
 /* Name (with the tree indent), last modified, modified by. */

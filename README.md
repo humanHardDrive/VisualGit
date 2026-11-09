@@ -2,7 +2,7 @@
 
 A free, open-source Git client built around a **Plastic SCM–style Branch Explorer**: every branch is its own horizontal lane, changesets sit on the lane they were made on, you can see where each branch was created and how branches merge back. Even a brand-new branch with no commits shows up as its own lane.
 
-> Status: 1.0 is the branch explorer. Work in progress: committing from the Pending Changes window. Creating branches and merging come next.
+> Status: 1.0 is the branch explorer. Work in progress: committing from the Pending Changes view. Creating branches and merging come next.
 
 ## Why this is hard in Git
 
@@ -44,7 +44,7 @@ VISUALGIT_REPO=/path/to/repo npm run app  # open a repository straight away
 
 The app opens whatever repository you pass as `visualgit /path/to/repo` or in `VISUALGIT_REPO`, otherwise the last one you opened.
 
-**Views.** The *View* pane in the sidebar switches between four views:
+**Views.** The *View* pane in the sidebar switches between five views:
 
 - **Workspace:** the repositories in the open workspace (see above).
 - **Branch Explorer:** the lanes.
@@ -65,6 +65,7 @@ The app opens whatever repository you pass as `visualgit /path/to/repo` or in `V
     - *View History* opens every changeset that changed the file, newest first and following renames, with the file's diff at each one. ↑/↓ step through them, and double-clicking one shows everything else that changeset changed.
     - *Ignore* adds the file's name (any folder), its extension (`*.ext`) or its exact path (`/path/to/file`) to the repository's `.gitignore`. Git keeps tracking a file that's already in source control until it's removed.
     - *Delete…* asks whether to *Remove from Source Control*, which keeps the file on disk as a new, untracked file, or *Remove from Source Control and Disk*, which also moves it to the Trash. Either way it's a pending change for you to commit. A file that isn't in source control is just moved to the Trash, after asking.
+- **Pending Changes:** what you'd commit, and the commit box (see *Pending Changes* below). A dot next to it in the *View* pane means there are uncommitted changes.
 
 The Branch Explorer has its own bar along the top, with *Reload*, the changeset arrows and search. In the Branch List, that bar is replaced by the list's own search. VisualGit remembers which view you were using.
 
@@ -72,13 +73,26 @@ The home symbol marks what's checked out. When you have uncommitted changes, an 
 
 **Creating branches.** Right-click any changeset and choose *Create Branch from This Changeset…*. Type a name and choose whether to switch to the new branch. Switching is ticked by default when you start from the checked-out changeset, so any work in progress comes along. The new branch shows up straight away as its own empty lane, starting at that changeset.
 
-**Switching.** Right-click a branch and choose *Switch to This Branch* to move HEAD to its latest changeset. For a remote-only branch, this first creates a local branch that tracks it. For a deleted or unnamed lane, it checks out the lane's last changeset as a detached HEAD. You can also right-click a changeset and choose *Switch to This Changeset*. If it's the tip of a local branch, you switch to that branch (the menu names it). Otherwise the changeset is checked out on its own, as a detached HEAD: create a branch there before committing. If you have pending changes to tracked files, the switch waits: the Pending Changes window opens so you can commit them first. New, untracked files don't block a switch and stay where they are.
+**Switching.** Right-click a branch and choose *Switch to This Branch* to move HEAD to its latest changeset. For a remote-only branch, this first creates a local branch that tracks it. For a deleted or unnamed lane, it checks out the lane's last changeset as a detached HEAD. You can also right-click a changeset and choose *Switch to This Changeset*. If it's the tip of a local branch, you switch to that branch (the menu names it). Otherwise the changeset is checked out on its own, as a detached HEAD: create a branch there before committing. If you have pending changes to tracked files, the switch waits: the Pending Changes view opens so you can commit them first. New, untracked files don't block a switch and stay where they are.
 
 **Merging.** Right-click a changeset and choose *Merge from This Changeset…* to see what merging it into the checked-out changeset would do. Nothing changes until you press *Merge*.
 
 - **The window:** shows *From* → *Into*, how many files change, and whether it merges cleanly or has conflicts. Git's own messages are there too, if you want them.
 - **The file list:** every file the merge changes, with conflicts listed first.
-- **The diff:** each file's merge result next to either *Into* (what you have now) or *From* (what's coming in). The result of a conflicted file shows git's conflict markers. ↑/↓ or F7 / ⇧F7 step through the changes.
+- **The diff:** each file's merge result next to either *Into* (what you have now) or *From* (what's coming in). ↑/↓ or F7 / ⇧F7 step through the changes.
+- **Conflicts:** a conflicted file shows three panes side by side instead.
+  - **Source:** what's coming in. **Destination:** what's checked out. Each is coloured where it differs from the other.
+  - **Result:** the file as the merge would leave it, without git's conflict markers. Each conflict shows its Destination lines, then its Source lines, in each side's colour. A faint *← Destination* / *← Source* after a side's first line says where it came from, and *nothing from Source* (or Destination) marks a side with no lines. VisualGit keeps track of where each conflict is as you edit.
+  - **Resolving:** every conflicted file has to be resolved before *Merge* is allowed. The split button in the diff bar works like *Commit*'s: its main part is *Use Source*, and its ▾ offers:
+    - *Use Source:* takes the Source's changes over the Destination's for the conflict at the cursor: the Destination's lines go.
+    - *Use Destination:* takes the Destination's changes over the Source's.
+    - *Mark as Resolved:* keeps the conflict's lines as they stand, for when you've edited them into what you want.
+    - *Reset to Git's Result:* starts the file over.
+
+    A file is resolved once every conflict in it is settled one of those ways. For a conflict where one side deleted the file, there's nothing to choose line by line: take a side's whole file, or mark it resolved to keep the Result. ↑/↓ or F7 / ⇧F7 step from conflict to conflict.
+  - **Tracking it:** the file list marks each conflicted file *conflict*, *conflict · edited* or *resolved*, and the summary counts what's left.
+  - **Merging:** *Merge* runs `git merge --no-ff`, writes your results over git's, and commits the merge with git's message (`Merge branch 'x' into y`), all in one go. A binary file in conflict can't be resolved here. It doesn't block the merge, but the merge then stops in Pending Changes so you can choose its version there.
+  - **Closing:** edits only live in this window until you merge, so closing it asks first.
 
 The preview comes from `git merge-tree`, which computes the merge without touching your files, the index or any branch.
 
@@ -121,14 +135,14 @@ A repository with no remote-tracking branches shows none of this. To push a bran
 
 Using it: drag or scroll to pan, ⌘/Ctrl + scroll (or pinch) to zoom, click a changeset or branch for details.
 
-**Pending Changes.** Double-click the hollow home symbol (uncommitted work), or right-click the checked-out changeset or its branch and choose *Pending Changes*. This opens a window for that repository:
+**Pending Changes.** Choose *Pending Changes* in the *View* pane, double-click the hollow home symbol (uncommitted work), or right-click the checked-out changeset or its branch and choose *Pending Changes*. It's a view in the main window, for the open repository, and the details panel steps aside while it's showing to give the diff room:
 
-- **Files** on the left: every changed, new, deleted, renamed or conflicted file, each with a checkbox. Ticked files go into the next commit.
-- **Diff** on the right: the checked-out changeset next to your working copy. ↑/↓ in the diff bar (or F7 / ⇧F7) move from change to change, and the arrows between the sides put the committed text back over a change.
-- **Editing**: the working-copy side is an editor. ⌘S saves. Edits are also saved when you switch files, commit or close the window. Line endings (LF or CRLF) are kept as they were.
+- **Files** on the left: every changed, new, deleted, renamed or conflicted file, each with a checkbox and labelled *Added*, *Removed*, *Modified*, *Renamed* or *Conflict*. Ticked files go into the next commit.
+- **Diff** on the right: the checked-out changeset next to your working copy. An added file has nothing to compare with, so it gets a single pane with its contents (still editable). ↑/↓ in the diff bar (or F7 / ⇧F7) move from change to change, and the arrows between the sides put the committed text back over a change.
+- **Editing**: the working-copy side is an editor. ⌘S saves. Edits are also saved when you switch files, commit, go to another view or repository, or close the window. Line endings (LF or CRLF) are kept as they were.
 - **Commit** at the top: type a message and press *Commit* (or ⌘↩). The ▾ next to it offers *Commit & Push* (⇧⌘↩), which pushes the checked-out branch after committing. It pushes to the branch's upstream, or, for a branch that has never been pushed, publishes it to `origin` and tracks it from then on. The drop-down also has *Undo Changes…*: after you confirm, the ticked files go back to how they are in the checked-out changeset. New files are moved to the Trash, so they can still be recovered. Only the ticked files are committed, exactly as they are on disk; anything else you had staged stays staged. During a merge, git requires the whole merge to be committed at once.
 
-The window refreshes when it regains focus, and the branch explorer reloads after each commit.
+The view refreshes when the window regains focus (or on ⌘R), and the other views reload after each commit. An unsent commit message is kept per repository while you switch between them. A merge window that stops for conflicts brings the main window forward on this view.
 
 **Search.** The search box in the Branch Explorer's bar (⌘F) looks through branch names, changeset ids and commit messages (the full message, not just the first line), plus release names. Matching ignores case and finds the text anywhere, and two wildcards are supported: `*` matches any run of characters and `?` matches exactly one, so `feat*login` finds `feature/login-page` and `v1.?` finds `v1.2`. A changeset id matches from its start once you've typed four or more hex digits. Matches are highlighted in the explorer and everything else fades back. ↑/↓ steps through the results list, Enter jumps to one, Esc ends the search.
 
@@ -164,8 +178,8 @@ cd src-tauri && cargo test              # backend tests: command validation, wor
 | [src/view/explorer.ts](src/view/explorer.ts) | Canvas renderer, pan/zoom and hit testing |
 | [src/view/details.ts](src/view/details.ts) | Changeset and branch details panel |
 | [src-tauri/src/lib.rs](src-tauri/src/lib.rs) | Rust backend: one `git` command that only allows read-only subcommands |
-| [src-tauri/src/pending.rs](src-tauri/src/pending.rs) | The commands that change things: open the Pending Changes window, read and save working-tree files (paths checked to stay inside the repository), commit selected files |
-| [src/pending/main.ts](src/pending/main.ts) | Pending Changes window: file list, diff editor ([CodeMirror](https://codemirror.net) merge view), commit box |
+| [src-tauri/src/pending.rs](src-tauri/src/pending.rs) | The commands that change things: read and save working-tree files (paths checked to stay inside the repository), commit selected files |
+| [src/pending/view.ts](src/pending/view.ts) | Pending Changes view: file list, diff editor ([CodeMirror](https://codemirror.net) merge view), commit box |
 | [src/merge/main.ts](src/merge/main.ts), [src-tauri/src/merge.rs](src-tauri/src/merge.rs) | Merge window: previews merging a changeset into the checked-out one (`git merge-tree`), then merges it (`--no-ff`) |
 | [src-tauri/src/workspace.rs](src-tauri/src/workspace.rs) | Finds the repositories inside a workspace folder, and creates new ones there |
 | [src-tauri/src/hosting.rs](src-tauri/src/hosting.rs) | Where a repository is hosted, from its remote URL, and opening its page there |

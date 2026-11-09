@@ -1,22 +1,30 @@
 /**
  * Merge window: previews merging a changeset ("from") into the checked-out
  * changeset ("into"). Lists the files the merge changes, flags conflicts, and
- * shows each file's merge result next to either side. Nothing in the
- * repository changes until Merge is clicked, which always makes a merge
- * changeset (never a fast-forward), so the branch explorer keeps showing
- * where the merged changesets came from.
+ * shows each file's merge result next to either side; a conflicted file gets
+ * Source, Destination and an editable Result. Nothing in the repository
+ * changes until Merge is clicked, which always makes a merge changeset (never
+ * a fast-forward), so the branch explorer keeps showing where the merged
+ * changesets came from. Results edited here are written over git's when the
+ * merge stops for those conflicts.
  */
 
 import { goToNextChunk, goToPreviousChunk, MergeView } from "@codemirror/merge";
 import { Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { invoke } from "@tauri-apps/api/core";
+import { LogicalPosition } from "@tauri-apps/api/dpi";
 import { emit } from "@tauri-apps/api/event";
+import { Menu } from "@tauri-apps/api/menu";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { basicSetup } from "codemirror";
+import { stripConflicts, type ConflictRegion } from "../git/conflicts.ts";
 import { loadRepo } from "../git/load.ts";
 import { tauriRunner } from "../git/tauriRunner.ts";
 import { inferModel, type Model } from "../model/infer.ts";
 import { dark, lineEndings, readOnly, theme, themeSlot } from "../view/codemirror.ts";
+import { conflictRegions, dropRegion, regionsField, setRegions, sideHighlights } from "../view/conflictPanes.ts";
 import { branchColor } from "../view/explorer.ts";
 
 /** Mirrors `MergeFile` / `MergePreview` in src-tauri/src/merge.rs. */
@@ -57,6 +65,55 @@ let current: MergeFile | null = null;
 /** Which side the result is compared with. */
 let compareWith: "to" | "from" = "to";
 let view: MergeView | null = null;
+/** A conflicted file: Source, Destination and the merge Result side by side. */
+let three: {
+  path: string;
+  key: string;
+  source: EditorView;
+  destination: EditorView;
+  result: EditorView;
+  host: HTMLElement;
+  /** Each side's whole file, for a conflict with no blocks to choose between (one side deleted it); "" if deleted there. */
+  sides: { source: string; destination: string };
+} | null = null;
+
+/** A conflicted file's Result: its text, markers taken out, and the conflicts in it not yet settled. */
+interface ResultState {
+  text: string;
+  regions: ConflictRegion[];
+}
+/** Each conflicted file's Result as git leaves it (markers taken out), once loaded. */
+const originals = new Map<string, ResultState>();
+/**
+ * Results changed here, by path: applied to the working copy when the merge
+ * runs. Only for this pair of changesets (`resolvedFor`); a different
+ * preview starts over.
+ */
+const results = new Map<string, ResultState>();
+let resolvedFor = "";
+const previewKey = (p: MergePreview) => `${p.to}:${p.from}`;
+/**
+ * Conflicted files that are resolved: each of their conflicts settled by
+ * taking a side or marking it resolved (or, for a conflict with nothing to
+ * choose between because one side deleted the file, a version chosen or the
+ * file marked resolved). The merge needs all of them.
+ */
+const resolved = new Set<string>();
+const isResolved = (path: string) => resolved.has(path);
+/** Conflicted files that are binary: there's no text to resolve here, so they're left for Pending Changes. */
+const binaryConflicts = new Set<string>();
+/** The text conflicts still to resolve before Merge is allowed. */
+const unresolved = (p: MergePreview) => p.files.filter((f) => f.conflict && !binaryConflicts.has(f.path) && !resolved.has(f.path));
+
+function closeView() {
+  view?.destroy();
+  view = null;
+  if (three) {
+    for (const v of [three.source, three.destination, three.result]) v.destroy();
+    three.host.remove();
+    three = null;
+  }
+}
 /** A merge, cherry pick or subtractive merge stopped for conflicts, if any. */
 let operation: { kind: string; from: string | null } | null = null;
 /** The merge changeset this window made, once it has. */
@@ -121,12 +178,19 @@ function renderHeader(p: MergePreview) {
   } else if (operation) {
     summary.textContent =
       operation.kind === "merge" && operation.from === p.from
-        ? "This merge is in progress. Resolve its conflicts in Pending Changes and commit, or abort it there."
+        ? (applied ? `This merge is in progress, with your result for ${applied} file${applied === 1 ? "" : "s"} in place. ` : "This merge is in progress. ") +
+          "Finish it in Pending Changes and commit, or abort it there." +
+          (appliedError ? ` ${appliedError}` : "")
         : `A ${operation.kind} is in progress. Finish or abort it in Pending Changes before merging.`;
     summary.className = "conflicts";
   } else if (conflicts) {
-    summary.textContent = `${files} change · ${conflicts} conflict${conflicts === 1 ? "" : "s"} to resolve`;
-    summary.className = "conflicts";
+    const left = unresolved(p).length;
+    const plural = (n: number) => `${n} conflicted file${n === 1 ? "" : "s"}`;
+    summary.textContent =
+      left === 0
+        ? `${files} change · ${plural(conflicts)}, all resolved: ready to merge`
+        : `${files} change · ${plural(conflicts)} · ${left} to resolve before merging`;
+    summary.className = left === 0 ? "clean" : "conflicts";
   } else {
     // git would fast-forward here; the merge still gets a changeset of its own.
     summary.textContent = `${files} change · merges cleanly${p.kind === "fast-forward" ? " (nothing new in the destination; still recorded as a merge)" : ""}`;
@@ -151,25 +215,35 @@ function mergedBranch(hash: string): string | undefined {
   return lane && local && lane.tips[0] === hash ? local.slice("refs/heads/".length) : undefined;
 }
 
+/** After a merge that stopped for conflicts: how many results edited here were written, and any failure. */
+let applied = 0;
+let appliedError = "";
+
 function updateMergeButton(p: MergePreview, conflicts: number) {
-  mergeBtn.disabled = merging || p.kind === "up-to-date" || !!operation;
+  const left = unresolved(p).length;
+  // Every conflict has to be resolved first.
+  mergeBtn.disabled = merging || p.kind === "up-to-date" || !!operation || left > 0;
   mergeBtn.textContent = merging ? "Merging…" : "Merge";
   const into = p.toBranch ?? p.to.slice(0, 8);
-  mergeBtn.title = conflicts
-    ? `Merge into ${into}, then resolve the ${conflicts} conflict${conflicts === 1 ? "" : "s"} in Pending Changes`
-    : `Merge into ${into} as a new merge changeset`;
+  mergeBtn.title = left
+    ? `Resolve ${left === conflicts ? "every conflict" : `the ${left} conflicted file${left === 1 ? "" : "s"} left`} first`
+    : conflicts
+      ? `Merge into ${into} with the conflicts resolved as you chose`
+      : `Merge into ${into} as a new merge changeset`;
 }
 
 async function runMerge() {
   const p = preview;
   if (!p || merging) return;
   const summary = $("summary");
+  applied = 0;
+  appliedError = "";
   // Pending changes would be mixed into the merge (or block it): commit or undo them first.
   const status = await git().run(["status", "--porcelain", "-z", "--untracked-files=no"]).catch(() => "");
   if (status) {
-    summary.textContent = "There are pending changes. Commit or undo them in Pending Changes, then merge.";
+    summary.textContent = "There are pending changes. Commit or undo them in Pending Changes (in the main window), then merge.";
     summary.className = "conflicts";
-    void invoke("open_pending_window", { repo });
+    void invoke("show_pending_changes", { repo });
     return;
   }
   merging = true;
@@ -180,8 +254,34 @@ async function runMerge() {
     if (result.committed) {
       mergedAs = result.committed;
     } else {
-      // The merge is in progress: Pending Changes shows it, with the conflicts to resolve.
-      void invoke("open_pending_window", { repo });
+      // Stopped for the conflicts: write the results resolved here over git's,
+      // then finish the merge with git's message. Anything left over (a binary
+      // file, or a conflict git found that the preview didn't) goes to Pending Changes.
+      const failed: string[] = [];
+      for (const path of result.conflicts) {
+        if (!resolved.has(path)) continue;
+        const text = (results.get(path) ?? originals.get(path))?.text;
+        if (text === undefined) continue;
+        await invoke("write_worktree_file", { repo, path, text }).catch(() => failed.push(path));
+      }
+      applied = result.conflicts.filter((path) => resolved.has(path) && !failed.includes(path)).length;
+      if (failed.length) appliedError = `Could not write your result for ${failed.join(", ")}.`;
+      const leftOver = result.conflicts.filter((path) => !resolved.has(path) || failed.includes(path));
+      if (leftOver.length === 0) {
+        try {
+          const op = await invoke<{ message: string | null } | null>("operation_in_progress", { repo });
+          const message = op?.message ?? `Merge ${mergedBranch(p.from) ? `branch '${mergedBranch(p.from)}'` : `changeset ${p.from.slice(0, 8)}`} into ${p.toBranch ?? p.to.slice(0, 8)}`;
+          mergedAs = await invoke<string>("commit_changes", { repo, message, paths: result.conflicts });
+        } catch (err) {
+          appliedError = `Your results are in place, but the merge couldn't be committed: ${err}`;
+        }
+      }
+      void emit("repo-changed", { repo });
+      if (!mergedAs) void invoke("show_pending_changes", { repo });
+      else {
+        results.clear();
+        resolved.clear();
+      }
     }
   } catch (err) {
     merging = false;
@@ -214,7 +314,14 @@ function renderFiles() {
     if (slash >= 0) path.append(span("file-dir", f.path.slice(0, slash + 1)));
     path.append(span("file-name", f.path.slice(slash + 1)));
     row.append(status, path);
-    if (f.conflict) row.append(span("conflict-badge", "conflict"));
+    if (f.conflict) {
+      // Resolved here (nothing left to choose), edited but not finished, or untouched.
+      const done = isResolved(f.path);
+      const binary = binaryConflicts.has(f.path);
+      const badge = span(`conflict-badge${done ? " resolved" : ""}`, done ? "resolved" : binary ? "binary" : results.has(f.path) ? "conflict · edited" : "conflict");
+      badge.title = done ? "Resolved; your result is used when you merge" : binary ? "A binary file: choose a version in Pending Changes after merging" : "";
+      row.append(badge);
+    }
     row.onclick = () => void selectFile(f);
     return row;
   });
@@ -230,8 +337,7 @@ function renderFiles() {
 // ---- diff -----------------------------------------------------------------------------------
 
 function showMessage(text: string) {
-  view?.destroy();
-  view = null;
+  closeView();
   diffHost.hidden = true;
   diffMessage.hidden = false;
   diffMessage.textContent = text;
@@ -242,6 +348,7 @@ async function loadDiff() {
   const f = current;
   const p = preview;
   if (!f || !p) return showMessage(p?.kind === "up-to-date" ? "Nothing to merge." : "Select a file.");
+  if (f.conflict) return loadConflict(f, p);
   const sidePath = f.origPath ?? f.path;
   const [side, result] = await Promise.all([
     // The destination has the file under its old name if the merge renames it.
@@ -251,7 +358,7 @@ async function loadDiff() {
   if (current !== f || preview !== p) return; // moved on meanwhile
   if (side === null || result === null) return showMessage("Binary file. There is no text to compare.");
 
-  view?.destroy();
+  closeView();
   diffMessage.hidden = true;
   diffHost.hidden = false;
   const common = [basicSetup, themeSlot.of(theme()), readOnly];
@@ -281,9 +388,120 @@ async function loadDiff() {
   if (view.chunks.length) goToNextChunk({ state: view.b.state, dispatch: view.b.dispatch });
 }
 
+/**
+ * A conflicted file, in three panes side by side: Source (what's being
+ * merged in) and Destination (what's checked out), coloured where they
+ * differ, and the Result: git's merge of the file with the conflict markers
+ * taken out, each conflict's two sides tagged. The Result is editable: what
+ * you make of it here is written to the working copy when you merge (see
+ * `runMerge`).
+ */
+async function loadConflict(f: MergeFile, p: MergePreview) {
+  // Already showing (a refresh on focus): keep the editor, with its cursor and scroll position.
+  if (three?.path === f.path && three.key === previewKey(p)) return updateDiffBar();
+  const [src, dest, merged] = await Promise.all([
+    textAt(p.from, f.path),
+    // The destination has the file under its old name if the merge renames it.
+    textAt(p.to, f.origPath ?? f.path),
+    textAt(p.tree, f.path),
+  ]);
+  if (current !== f || preview !== p) return; // moved on meanwhile
+  if (src === null || dest === null || merged === null) {
+    return showMessage("Binary file in conflict. There is no text to resolve here: after merging, choose a version in Pending Changes.");
+  }
+  // The Result shows just the code: each conflict's Destination lines, then its Source lines, tagged.
+  const original = stripConflicts(merged);
+  originals.set(f.path, original);
+  const start = results.get(f.path) ?? original;
+
+  closeView();
+  diffMessage.hidden = true;
+  diffHost.hidden = false;
+  const host = document.createElement("div");
+  host.className = "three-way";
+  const pane = (cls: string, label: string, title: string) => {
+    const box = document.createElement("div");
+    box.className = "tw-editor";
+    const paneEl = document.createElement("div");
+    paneEl.className = `tw-pane ${cls}`;
+    const labelEl = span("tw-label", label);
+    labelEl.title = title;
+    paneEl.append(labelEl, box);
+    host.append(paneEl);
+    return box;
+  };
+  const srcName = laneOf(p.from)?.name ?? p.from.slice(0, 8);
+  const destName = p.toBranch ?? p.to.slice(0, 8);
+  const srcBox = pane("tw-source", `Source · ${srcName}${src ? "" : " (deleted)"}`, `What's coming in: ${p.from.slice(0, 8)}`);
+  const destBox = pane("tw-dest", `Destination · ${destName}${dest ? "" : " (deleted)"}`, `What's checked out: ${p.to.slice(0, 8)}`);
+  const resultBox = pane("tw-result", "Result · editable", "The file as it will be merged. Settle each conflict by using a side or editing it and marking it resolved.");
+  diffHost.append(host);
+
+  const marks = sideHighlights(dest, src);
+  const editor = (doc: string, parent: HTMLElement, extra: unknown, editable = false) =>
+    new EditorView({ doc, parent, extensions: [basicSetup, themeSlot.of(theme()), editable ? [] : readOnly, lineEndings(doc), extra as never] });
+  const path = f.path;
+  three = {
+    path,
+    key: previewKey(p),
+    source: editor(src, srcBox, marks.source),
+    destination: editor(dest, destBox, marks.destination),
+    result: editor(start.text, resultBox, [
+      conflictRegions(start.regions),
+      EditorView.updateListener.of((u) => {
+        const regions = u.state.field(regionsField);
+        if (!u.docChanged && regions === u.startState.field(regionsField)) return;
+        // sliceDoc keeps the file's own line endings (CRLF stays CRLF).
+        const text = u.state.sliceDoc();
+        if (text === original.text && regions.length === original.regions.length) results.delete(path);
+        else results.set(path, { text, regions });
+        // A file with conflicts is resolved once none are left to settle.
+        if (original.regions.length) {
+          if (regions.length) resolved.delete(path);
+          else resolved.add(path);
+        }
+        renderFiles();
+        renderHeader(p);
+      }),
+      Prec.high(
+        keymap.of([
+          { key: "F7", run: () => (step(1), true) },
+          { key: "Shift-F7", run: () => (step(-1), true) },
+        ]),
+      ),
+      EditorView.updateListener.of((u) => {
+        if (u.selectionSet || u.docChanged || u.state.field(regionsField) !== u.startState.field(regionsField)) updateDiffBar();
+      }),
+    ], true),
+    host,
+    sides: { source: src, destination: dest },
+  };
+  updateDiffBar();
+  step(1); // to the first conflict
+}
+
 function updateDiffBar() {
   diffTitle.replaceChildren(current ? current.path : "");
   if (current?.origPath) diffTitle.prepend(`${current.origPath} → `);
+  // A conflict labels its own three panes; the Into/From comparison is for the two-pane view.
+  document.querySelector<HTMLElement>(".segmented")!.hidden = !!three;
+  document.querySelector<HTMLElement>(".diff-sides")!.hidden = !!three;
+  $("take").hidden = !three;
+  if (three) {
+    const regions = three.result.state.field(regionsField);
+    const at = regionAtCursor(false)?.index ?? -1;
+    prevBtn.disabled = nextBtn.disabled = regions.length === 0;
+    const done = resolved.has(three.path);
+    takeMain.disabled = !canTake("source");
+    changeCount.textContent = done
+      ? "Resolved"
+      : regions.length === 0
+        ? "Choose a version, or mark it resolved"
+        : at >= 0
+          ? `Conflict ${at + 1} of ${regions.length}`
+          : `${regions.length} conflict${regions.length === 1 ? "" : "s"} to settle`;
+    return;
+  }
   $("side-a").textContent = compareWith === "to" ? `Into · ${preview?.toBranch ?? preview?.to.slice(0, 8) ?? ""}` : `From · ${preview ? (laneOf(preview.from)?.name ?? preview.from.slice(0, 8)) : ""}`;
   const chunks = view?.chunks ?? [];
   prevBtn.disabled = nextBtn.disabled = chunks.length === 0;
@@ -298,10 +516,128 @@ function updateDiffBar() {
 }
 
 function step(dir: 1 | -1) {
+  if (three) {
+    // From conflict to conflict in the Result.
+    const v = three.result;
+    const starts = v.state.field(regionsField).map((r) => r.destination.from);
+    if (!starts.length) return;
+    const head = v.state.selection.main.head;
+    const inside = regionAtCursor(false)?.index ?? -1;
+    const next = starts.find((s, i) => s > head && i !== inside) ?? starts[0];
+    const prev = [...starts].reverse().find((s, i) => s < head && starts.length - 1 - i !== inside) ?? starts[starts.length - 1];
+    const target = dir > 0 ? next : prev;
+    v.dispatch({ selection: { anchor: target }, effects: EditorView.scrollIntoView(target, { y: "center" }) });
+    v.focus();
+    return;
+  }
   if (!view) return;
   (dir > 0 ? goToNextChunk : goToPreviousChunk)({ state: view.b.state, dispatch: view.b.dispatch });
   view.b.focus();
 }
+
+/**
+ * The conflict the cursor is in, or with `orNext`, else the next one after
+ * it, else the first. A conflict spans its Destination lines then its Source lines.
+ */
+function regionAtCursor(orNext = true): { index: number; region: ConflictRegion } | null {
+  if (!three) return null;
+  const regions = three.result.state.field(regionsField);
+  const head = three.result.state.selection.main.head;
+  const inside = (r: ConflictRegion) => head >= r.destination.from && (head < r.source.to || (head === r.source.to && r.source.to === three!.result.state.doc.length));
+  let index = regions.findIndex(inside);
+  if (index < 0 && orNext) index = regions.findIndex((r) => r.destination.from >= head);
+  if (index < 0 && orNext && regions.length) index = 0;
+  return index < 0 ? null : { index, region: regions[index] };
+}
+
+/**
+ * Whether taking `side` does anything: there's a conflict to settle, or (a
+ * conflict with nothing to choose between, where one side deleted the file)
+ * that side still has the file.
+ */
+function canTake(side: "source" | "destination"): boolean {
+  if (!three || resolved.has(three.path)) return false;
+  if (three.result.state.field(regionsField).length) return true;
+  return three.sides[side] !== "" && three.result.state.sliceDoc() !== three.sides[side];
+}
+
+/**
+ * Settles the conflict at the cursor by taking one side's changes over the
+ * other's: the other side's lines go. Then on to the next. Without conflicts
+ * to settle, takes that side's whole file.
+ */
+function take(side: "source" | "destination") {
+  if (!three || !preview || !canTake(side)) return;
+  const v = three.result;
+  const at = regionAtCursor();
+  if (at) {
+    const drop = side === "source" ? at.region.destination : at.region.source;
+    v.dispatch({ changes: { from: drop.from, to: drop.to }, effects: dropRegion.of(at.index), selection: { anchor: at.region.destination.from } });
+    if (v.state.field(regionsField).length) step(1);
+  } else {
+    v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: three.sides[side] } });
+    resolved.add(three.path);
+    renderFiles();
+    renderHeader(preview);
+    updateDiffBar();
+  }
+  v.focus();
+}
+
+/**
+ * The user says the conflict at the cursor is right as it stands (both sides'
+ * lines as edited); or, for a file with nothing to choose between, the whole file.
+ */
+function markResolved() {
+  if (!three || !preview) return;
+  const at = regionAtCursor();
+  if (at) {
+    three.result.dispatch({ effects: dropRegion.of(at.index) });
+    if (three.result.state.field(regionsField).length) step(1);
+  } else {
+    resolved.add(three.path);
+    renderFiles();
+    renderHeader(preview);
+    updateDiffBar();
+  }
+  three.result.focus();
+}
+
+/** Puts the Result back as git would leave it, unresolved. */
+function resetResult() {
+  if (!three || !preview) return;
+  const original = originals.get(three.path);
+  if (!original) return;
+  const v = three.result;
+  v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: original.text }, effects: setRegions.of(original.regions) });
+  results.delete(three.path);
+  resolved.delete(three.path);
+  renderFiles();
+  renderHeader(preview);
+  updateDiffBar();
+}
+
+// The Resolve split button, like Commit's: the main part takes the Source; the ▾ has the rest.
+const takeMain = $<HTMLButtonElement>("take-main");
+const takeMore = $<HTMLButtonElement>("take-more");
+takeMain.addEventListener("click", () => take("source"));
+takeMore.addEventListener("click", async () => {
+  if (!three) return;
+  const path = three.path;
+  const left = takeMain.getBoundingClientRect().left;
+  const bottom = takeMore.getBoundingClientRect().bottom;
+  const done = resolved.has(path);
+  const menu = await Menu.new({
+    items: [
+      { id: "source", text: "Use Source", enabled: canTake("source"), action: () => take("source") },
+      { id: "destination", text: "Use Destination", enabled: canTake("destination"), action: () => take("destination") },
+      { id: "resolved", text: "Mark as Resolved", enabled: !done, action: markResolved },
+      { item: "Separator" },
+      { id: "reset", text: "Reset to Git's Result", enabled: results.has(path) || done, action: resetResult },
+    ],
+  });
+  await menu.popup(new LogicalPosition(left, bottom + 4));
+});
 
 function setCompare(side: "to" | "from") {
   if (side === compareWith) return;
@@ -325,7 +661,8 @@ nextBtn.addEventListener("click", () => step(1));
 cmpTo.addEventListener("click", () => setCompare("to"));
 cmpFrom.addEventListener("click", () => setCompare("from"));
 dark.addEventListener("change", () => {
-  if (view) for (const v of [view.a, view.b]) v.dispatch({ effects: themeSlot.reconfigure(theme()) });
+  const all = view ? [view.a, view.b] : three ? [three.source, three.destination, three.result] : [];
+  for (const v of all) v.dispatch({ effects: themeSlot.reconfigure(theme()) });
 });
 window.addEventListener("keydown", (e) => {
   if (e.defaultPrevented) return;
@@ -347,6 +684,18 @@ async function refresh() {
     model = inferModel(raw);
     preview = p;
     operation = op;
+    if (previewKey(p) !== resolvedFor) {
+      // Different changesets on either side: edits made for the old ones don't apply.
+      results.clear();
+      originals.clear();
+      resolved.clear();
+      binaryConflicts.clear();
+      resolvedFor = previewKey(p);
+    }
+    // Binary conflicts can't be resolved here; knowing them up front keeps them from blocking the merge.
+    const conflicted = p.files.filter((f) => f.conflict);
+    const texts = await Promise.all(conflicted.map((f) => textAt(p.tree, f.path)));
+    conflicted.forEach((f, i) => texts[i] === null && binaryConflicts.add(f.path));
   } catch (err) {
     $("summary").textContent = `Could not preview the merge: ${err}`;
     $("summary").className = "conflicts";
@@ -371,6 +720,18 @@ async function start() {
     return;
   }
   ({ repo, from } = info);
+  // Results edited here only reach the working copy by merging.
+  void getCurrentWindow().onCloseRequested(async (e) => {
+    if (results.size === 0) return;
+    const n = results.size;
+    const ok = await ask(`Close without merging? Your edits to ${n} file${n === 1 ? "" : "s"} here are only used when you merge, so they'll be lost.`, {
+      title: "Unmerged Edits",
+      kind: "warning",
+      okLabel: "Close",
+      cancelLabel: "Keep Editing",
+    });
+    if (!ok) e.preventDefault();
+  });
   await refresh();
 }
 
