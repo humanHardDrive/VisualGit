@@ -28,6 +28,19 @@ pub async fn repo_web_page(repo: String) -> Result<Option<WebPage>, String> {
     tauri::async_runtime::spawn_blocking(move || find(&repo)).await.map_err(|e| e.to_string())?
 }
 
+/// What a remote URL points at, for showing while it's typed: the service
+/// and the repository's page there. None if it isn't recognisable as hosted.
+#[tauri::command]
+pub async fn describe_remote(url: String) -> Option<WebPage> {
+    let url = url.trim().to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        web_page(&url, &ssh_hostname).map(|(host, url)| WebPage { host, url, remote: "origin".into() })
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 /// Opens the repository's page in the default browser.
 #[tauri::command]
 pub async fn open_repo_web_page(repo: String) -> Result<(), String> {

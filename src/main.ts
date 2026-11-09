@@ -783,6 +783,9 @@ const repoDialog = $<HTMLDialogElement>("repo-dialog");
 const repoName = $<HTMLInputElement>("repo-name");
 const repoBranch = $<HTMLInputElement>("repo-branch");
 const repoOpen = $<HTMLInputElement>("repo-open");
+const repoRemote = $<HTMLInputElement>("repo-remote");
+const repoRemoteNote = $("repo-remote-note");
+const REMOTE_HINT = repoRemoteNote.textContent ?? "";
 const repoError = $("repo-error");
 const repoCreate = $<HTMLButtonElement>("repo-create");
 
@@ -834,6 +837,8 @@ function openRepoDialog() {
   $("repo-workspace").title = workspace;
   repoName.value = "";
   repoBranch.value = "main";
+  repoRemote.value = "";
+  repoRemoteNote.textContent = REMOTE_HINT;
   repoError.textContent = "";
   updateRepoDialog();
   repoDialog.showModal();
@@ -853,11 +858,25 @@ function updateRepoDialog() {
       : /\s/.test(repoBranch.value.trim())
         ? "Branch names can't contain spaces"
         : "";
-  repoCreate.disabled = !name || !!repoError.textContent;
+  repoCreate.disabled = !name || !repoRemote.value.trim() || !!repoError.textContent;
+}
+
+let remoteSeq = 0;
+/** Says where the typed remote points ("Pushes to GitHub · https://github.com/you/app"). */
+async function describeRemote() {
+  const url = repoRemote.value.trim();
+  const seq = ++remoteSeq;
+  const page = url ? await invoke<WebPage | null>("describe_remote", { url }).catch(() => null) : null;
+  if (seq !== remoteSeq) return; // typed on meanwhile
+  repoRemoteNote.textContent = page ? `Pushes to ${page.host} · ${page.url}` : REMOTE_HINT;
 }
 
 repoName.addEventListener("input", updateRepoDialog);
 repoBranch.addEventListener("input", updateRepoDialog);
+repoRemote.addEventListener("input", () => {
+  updateRepoDialog();
+  void describeRemote();
+});
 $("repo-cancel").addEventListener("click", () => repoDialog.close());
 
 $("repo-form").addEventListener("submit", async (e) => {
@@ -865,9 +884,14 @@ $("repo-form").addEventListener("submit", async (e) => {
   if (!workspace) return;
   repoCreate.disabled = true;
   try {
-    const made = await invoke<RepoInfo>("create_repo", { workspace, name: repoName.value, branch: repoBranch.value.trim() || null });
+    const made = await invoke<RepoInfo>("create_repo", {
+      workspace,
+      name: repoName.value,
+      branch: repoBranch.value.trim() || null,
+      remote: repoRemote.value.trim(),
+    });
     repoDialog.close();
-    notify(`Created the repository ${made.name}.`, "ok");
+    notify(`Created the repository ${made.name}. Its first Commit & Push publishes it to the remote.`, "ok");
     await rescanWorkspace();
     if (repoOpen.checked) void loadRepoAt(made.path);
   } catch (err) {

@@ -196,6 +196,7 @@ button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(
 .dialog .field { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
 .dialog .field input { padding: 6px 8px; font: inherit; font-size: 13px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
 .dialog .field input:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: -1px; border-color: var(--accent); }
+.dialog .field-gap { margin-top: 10px; }
 .dialog-note { margin: 4px 0 10px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
 .dialog-error { min-height: 18px; margin: 4px 0 6px; color: #d1242f; font-size: 12px; }
 .dialog .check { display: flex; align-items: center; gap: 6px; }

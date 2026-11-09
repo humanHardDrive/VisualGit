@@ -114,6 +114,7 @@ pub fn run() {
             find_repos,
             workspace::create_repo,
             hosting::repo_web_page,
+            hosting::describe_remote,
             hosting::open_repo_web_page,
             initial_repo,
             pending::open_pending_window,

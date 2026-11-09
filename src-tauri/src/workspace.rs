@@ -95,17 +95,22 @@ fn repo_info(root: &Path, dir: &Path) -> Option<RepoInfo> {
 /// inside the workspace, and returns it as the Workspace view lists it.
 /// An existing folder that isn't a repository yet is turned into one, its
 /// files left as they are (new, uncommitted). `branch` names the first
-/// branch; without it git's `init.defaultBranch` applies.
+/// branch; without it git's `init.defaultBranch` applies. `remote` becomes
+/// `origin`, so the first push has somewhere to go.
 #[tauri::command]
-pub async fn create_repo(workspace: String, name: String, branch: Option<String>) -> Result<RepoInfo, String> {
-    tauri::async_runtime::spawn_blocking(move || create(Path::new(&workspace), &name, branch.as_deref().map(str::trim).filter(|b| !b.is_empty())))
-        .await
-        .map_err(|e| e.to_string())?
+pub async fn create_repo(workspace: String, name: String, branch: Option<String>, remote: String) -> Result<RepoInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        create(Path::new(&workspace), &name, branch.as_deref().map(str::trim).filter(|b| !b.is_empty()), remote.trim())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
-fn create(workspace: &Path, name: &str, branch: Option<&str>) -> Result<RepoInfo, String> {
+fn create(workspace: &Path, name: &str, branch: Option<&str>, remote: &str) -> Result<RepoInfo, String> {
     let root = workspace.canonicalize().map_err(|_| format!("The workspace folder {} doesn't exist", workspace.display()))?;
     let parts = folder_parts(name)?;
+    // Checked before anything is created, so a bad remote leaves nothing behind.
+    check_remote_url(remote)?;
     // Repositories inside repositories aren't listed (or wanted): check the workspace and every folder on the way.
     let mut dir = root.clone();
     for (i, part) in std::iter::once(None).chain(parts.iter().map(Some)).enumerate() {
@@ -148,8 +153,38 @@ fn create(workspace: &Path, name: &str, branch: Option<&str>) -> Result<RepoInfo
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
     }
+    crate::pending::git(&target, &["remote", "add", "origin", remote], &[], None)
+        .map_err(|e| format!("Created the repository, but could not add the remote: {e}"))?;
     // Listed under the workspace path as given, like the scan does.
     repo_info(workspace, &workspace.join(parts.join("/"))).ok_or_else(|| "git init didn't create a repository".to_string())
+}
+
+/// A URL (or path) git can push to. Only the transports people host
+/// repositories on: in particular not `ext::`, which runs a command.
+pub(crate) fn check_remote_url(url: &str) -> Result<(), String> {
+    if url.is_empty() {
+        return Err("Enter the remote to push to, e.g. https://github.com/you/my-project.git".into());
+    }
+    if url.starts_with('-') || url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("That isn't a valid remote URL".into());
+    }
+    if let Some((scheme, rest)) = url.split_once("://") {
+        let known = ["https", "http", "ssh", "git", "git+ssh", "ssh+git", "file"];
+        if !known.contains(&scheme.to_ascii_lowercase().as_str()) || rest.is_empty() {
+            return Err(format!("VisualGit doesn't push to {scheme}:// remotes; use an https:// or SSH URL"));
+        }
+        return Ok(());
+    }
+    if url.contains("::") {
+        return Err("That isn't a valid remote URL".into());
+    }
+    // scp-like `git@host:owner/repo.git`, or a path to a repository on this machine or a network drive.
+    let scp_like = url.split_once(':').is_some_and(|(host, path)| host.len() > 1 && !host.contains('/') && !path.is_empty());
+    if scp_like || Path::new(url).is_absolute() {
+        Ok(())
+    } else {
+        Err("Enter a full URL, such as https://github.com/you/my-project.git or git@github.com:you/my-project.git".into())
+    }
 }
 
 /// `name` as folder names, refusing anything the workspace scan wouldn't find.
@@ -249,15 +284,17 @@ mod tests {
     fn creates_repositories_only_where_the_scan_finds_them() {
         let tmp = temp_root();
         let root = &tmp.0;
-        let made = create(root, "tools/app", Some("trunk")).unwrap();
+        let made = create(root, "tools/app", Some("trunk"), "git@github.com:me/app.git").unwrap();
         assert_eq!((made.name.as_str(), made.head.as_deref(), made.detached), ("tools/app", Some("trunk"), false));
+        let url = Command::new("git").arg("-C").arg(root.join("tools/app")).args(["remote", "get-url", "origin"]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&url.stdout).trim(), "git@github.com:me/app.git");
         assert_eq!(made.path, root.join("tools/app").to_string_lossy());
         assert!(find_repos(root, MAX_DEPTH).contains(&made));
 
         // An existing folder of files becomes a repository; its files stay.
         fs::create_dir_all(root.join("notes")).unwrap();
         fs::write(root.join("notes/todo.txt"), "x").unwrap();
-        create(root, "notes/", None).unwrap();
+        create(root, "notes/", None, "https://gitlab.com/me/notes.git").unwrap();
         assert!(root.join("notes/.git").is_dir() && root.join("notes/todo.txt").exists());
 
         for (name, why) in [
@@ -270,12 +307,17 @@ mod tests {
             ("a/b/c/d/e", "Too deep"),
             ("  ", "Enter a name"),
         ] {
-            let err = create(root, name, None).unwrap_err();
+            let err = create(root, name, None, "https://github.com/me/x.git").unwrap_err();
             assert!(err.contains(why), "{name}: {err}");
         }
-        assert!(create(root, "bad-branch", Some("no spaces")).unwrap_err().contains("valid branch name"));
+        assert!(create(root, "bad-branch", Some("no spaces"), "https://github.com/me/x.git").unwrap_err().contains("valid branch name"));
+        // The remote is checked first: nothing is created for a bad one.
+        for bad in ["", "ext::sh -c touch% /tmp/x", "-uhttps://x", "https://github.com/a b", "my-project", "ftp://host/x"] {
+            assert!(create(root, "bad-remote", None, bad).is_err(), "{bad}");
+        }
+        assert!(!root.join("bad-remote").exists());
         assert!(!root.join("bad-branch").exists(), "nothing is created for a bad branch name");
         fs::write(root.join("file"), "").unwrap();
-        assert!(create(root, "file", None).unwrap_err().contains("is a file"));
+        assert!(create(root, "file", None, "https://github.com/me/x.git").unwrap_err().contains("is a file"));
     }
 }
