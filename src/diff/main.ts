@@ -11,6 +11,7 @@ import { EditorView, keymap } from "@codemirror/view";
 import { invoke } from "@tauri-apps/api/core";
 import { basicSetup } from "codemirror";
 import { loadChangesetFiles, type ChangedFile } from "../git/changeset.ts";
+import { loadFileHistory, type HistoryEntry } from "../git/history.ts";
 import { loadRepo } from "../git/load.ts";
 import { tauriRunner } from "../git/tauriRunner.ts";
 import { inferModel, type Model } from "../model/infer.ts";
@@ -36,8 +37,14 @@ let model: Model | null = null;
 let parents: string[] = [];
 /** Which parent the changeset is compared with (merges have several). */
 let parentIndex = 0;
-let files: ChangedFile[] = [];
-let current: ChangedFile | null = null;
+/** A row in the list: a changed file, or (for a file's history) one changeset of it. */
+type Item = ChangedFile & { entry?: HistoryEntry };
+let files: Item[] = [];
+let current: Item | null = null;
+/** Set when showing one file's history. */
+let historyOf: string | null = null;
+/** Rows are files, except in a history, where the same path repeats: there they're changesets. */
+const keyOf = (f: Item) => f.entry?.hash ?? f.path;
 let view: MergeView | null = null;
 
 const git = () => tauriRunner(repo);
@@ -145,12 +152,30 @@ function renderParentInfo() {
 
 // ---- file list ------------------------------------------------------------------------------
 
+function historyRow(f: Item & { entry: HistoryEntry }) {
+  const e = f.entry;
+  const row = document.createElement("div");
+  row.className = "pfile history-row";
+  row.setAttribute("role", "option");
+  if (current && keyOf(f) === keyOf(current)) row.classList.add("current");
+  row.title = `${e.hash.slice(0, 8)} ${e.subject}\n${e.author}, ${new Date(e.time * 1000).toLocaleString()}${e.oldPath ? `\nRenamed from ${e.oldPath}` : ""}`;
+  const text = document.createElement("span");
+  text.className = "history-text";
+  text.append(span("history-subject", e.subject || "(no message)"), span("history-meta", `${e.hash.slice(0, 8)} · ${e.author} · ${new Date(e.time * 1000).toLocaleDateString()}`));
+  row.append(span(`file-status st-${f.status}`, f.status), text);
+  row.onclick = () => void selectFile(f);
+  // Double-click: everything else that changeset changed.
+  row.ondblclick = () => void invoke("open_diff_window", { repo, at: e.hash });
+  return row;
+}
+
 function renderFiles() {
   const rows = files.map((f) => {
+    if (f.entry) return historyRow(f as Item & { entry: HistoryEntry });
     const row = document.createElement("div");
     row.className = "pfile";
     row.setAttribute("role", "option");
-    if (f.path === current?.path) row.classList.add("current");
+    if (current && keyOf(f) === keyOf(current)) row.classList.add("current");
     row.title = f.origPath ? `${STATUS_NAMES[f.status]}: ${f.origPath} → ${f.path}` : `${STATUS_NAMES[f.status]}: ${f.path}`;
     const slash = f.path.lastIndexOf("/");
     const path = document.createElement("span");
@@ -164,7 +189,11 @@ function renderFiles() {
   if (rows.length === 0) {
     const none = document.createElement("div");
     none.className = "file-empty";
-    none.textContent = branchName ? "This branch's changesets add up to no file changes." : "This changeset changes no files compared with this parent.";
+    none.textContent = historyOf
+      ? "This file has never been committed."
+      : branchName
+        ? "This branch's changesets add up to no file changes."
+        : "This changeset changes no files compared with this parent.";
     rows.push(none);
   }
   fileList.replaceChildren(...rows);
@@ -194,9 +223,14 @@ function showMessage(text: string) {
 
 async function loadDiff() {
   const f = current;
-  if (!f) return showMessage(files.length ? "Select a file." : "No files changed.");
-  const p = parent();
-  const [before, after] = await Promise.all([textAt(p, f.origPath ?? f.path), textAt(changeset, f.path)]);
+  if (!f) return showMessage(files.length ? "Select a file." : historyOf ? "No history yet." : "No files changed.");
+  const p = f.entry ? f.entry.parent : parent();
+  const at = f.entry ? f.entry.hash : changeset;
+  const [before, after] = await Promise.all([
+    textAt(p, f.origPath ?? f.path),
+    // Deleted in this changeset: nothing after.
+    f.status === "D" ? Promise.resolve("") : textAt(at, f.path),
+  ]);
   if (current !== f) return; // moved on meanwhile
   if (before === null || after === null) return showMessage("Binary file. There is no text to compare.");
 
@@ -233,9 +267,12 @@ async function loadDiff() {
 function updateDiffBar() {
   diffTitle.replaceChildren(current ? current.path : "");
   if (current?.origPath) diffTitle.prepend(`${current.origPath} → `);
-  const p = parent();
+  const e = current?.entry;
+  const p = e ? e.parent : parent();
   $("side-a").textContent = p ? `Before · ${laneOf(p)?.name ?? ""} ${p.slice(0, 8)}` : "Before · (nothing)";
-  $("side-b").textContent = `After · ${branchName ? `${branchName} ` : ""}${changeset.slice(0, 8)}`;
+  $("side-b").textContent = e
+    ? `After · ${e.hash.slice(0, 8)} ${e.subject}`
+    : `After · ${branchName ? `${branchName} ` : ""}${changeset.slice(0, 8)}`;
   const chunks = view?.chunks ?? [];
   prevBtn.disabled = nextBtn.disabled = chunks.length === 0;
   if (!view) {
@@ -254,21 +291,46 @@ function step(dir: 1 | -1) {
   view.b.focus();
 }
 
-async function selectFile(f: ChangedFile) {
-  if (f.path === current?.path) return;
+async function selectFile(f: Item) {
+  if (current && keyOf(f) === keyOf(current)) return;
   current = f;
   renderFiles();
   await loadDiff();
 }
 
+/** A file's history: one row per changeset that changed it, newest first. */
+async function loadHistory(path: string) {
+  try {
+    const entries = await loadFileHistory(git(), path);
+    files = entries.map((entry) => ({ path: entry.path, origPath: entry.oldPath, status: entry.status as ChangedFile["status"], entry }));
+  } catch (err) {
+    files = [];
+    showMessage(`Could not read the history: ${err}`);
+  }
+  current = files[0] ?? null;
+  const n = files.length;
+  $("file-count").textContent = `${n} changeset${n === 1 ? "" : "s"}`;
+  $("parent-info").textContent = "Newest first · double-click for the whole changeset";
+  $("subject").textContent = `History of ${path}`;
+  const id = $("cs-id");
+  id.textContent = path;
+  id.title = path;
+  for (const k of ["cs-branch", "cs-author", "cs-date", "cs-tags"]) $(k).textContent = "";
+  $<HTMLDetailsElement>("cs-message").hidden = true;
+  document.title = `History of ${path}`;
+  renderFiles();
+  await loadDiff();
+}
+
 async function loadFiles() {
+  if (historyOf) return loadHistory(historyOf);
   try {
     files = await loadChangesetFiles(git(), changeset, parent());
   } catch (err) {
     files = [];
     showMessage(`Could not read the changeset: ${err}`);
   }
-  current = files.find((f) => f.path === current?.path) ?? files[0] ?? null;
+  current = files.find((f) => current && keyOf(f) === keyOf(current)) ?? files[0] ?? null;
   renderParentInfo();
   renderFiles();
   await loadDiff();
@@ -301,17 +363,27 @@ window.addEventListener("keydown", (e) => {
 });
 
 async function start() {
-  const info = await invoke<{ repo: string; changeset: string; branch: string | null; base: string | null } | null>("diff_window_info");
+  const info = await invoke<{ repo: string; changeset: string; branch: string | null; base: string | null; file: string | null } | null>(
+    "diff_window_info",
+  );
   if (!info) {
     showMessage("This window has no changeset. Open it by double-clicking a changeset in the branch explorer.");
     return;
   }
   ({ repo, changeset } = info);
   branchName = info.branch;
+  historyOf = info.file;
   try {
     model = inferModel(await loadRepo(git()));
   } catch {
     model = null; // the header gets less detail; the diff still works
+  }
+  if (historyOf) {
+    // Each history row brings its own parent.
+    $("prev-file").title = "Newer changeset (↑)";
+    $("next-file").title = "Older changeset (↓)";
+    await loadFiles();
+    return;
   }
   if (branchName) {
     // A branch is compared with where it started.

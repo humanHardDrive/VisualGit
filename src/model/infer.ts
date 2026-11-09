@@ -128,6 +128,12 @@ export function inferModel(raw: RawRepo): Model {
     }
   }
   for (const c of byName.values()) c.tips = c.tips.filter((t) => commits.has(t));
+  // A checked-out branch with nothing committed yet (a new repository, or
+  // `git switch --orphan`): HEAD names it, but git has no ref for it until its
+  // first commit. It still gets its own, empty lane, where HEAD is shown.
+  if (raw.headBranch && !raw.headHash && !byName.has(raw.headBranch)) {
+    byName.set(raw.headBranch, { name: raw.headBranch, kind: "local", refs: [], tips: [], priority: 0 });
+  }
 
   // ---- 2. Pick the trunk -------------------------------------------------
   let trunkName: string | undefined;
@@ -344,8 +350,8 @@ export function inferModel(raw: RawRepo): Model {
 
 /**
  * The checked-out branch when it has no changesets of its own yet (just
- * created, or HEAD detached on another branch's changeset). HEAD is then shown
- * on that branch's empty lane rather than on the changeset it points at.
+ * created, or the first branch of a new repository). HEAD is then shown on
+ * that branch's empty lane rather than on the changeset it points at.
  */
 export function uncommittedHead(model: Model): Branch | undefined {
   return model.branches.find((b) => b.isHead && b.commits.length === 0);

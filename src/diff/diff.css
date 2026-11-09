@@ -4,3 +4,10 @@
 .cs-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; color: var(--muted); font-size: 12px; }
 .cs-meta .mono { cursor: text; user-select: all; }
 .cs-tags { color: var(--text); font-weight: 700; }
+
+/* File history rows: a changeset per row. */
+.history-row { align-items: flex-start; }
+.history-row .file-status { margin-top: 1px; }
+.history-text { display: flex; flex-direction: column; min-width: 0; }
+.history-subject { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-meta { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

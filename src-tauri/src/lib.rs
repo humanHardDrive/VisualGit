@@ -1,5 +1,7 @@
 mod branch;
 mod diff;
+mod files;
+mod hosting;
 mod menu;
 mod merge;
 mod pending;
@@ -13,7 +15,7 @@ use workspace::RepoInfo;
 /// argument checks in `validate` pass.
 /// `status` would refresh the index's stat cache, but GIT_OPTIONAL_LOCKS=0
 /// (set in `run_git`) makes it skip that write.
-const ALLOWED: &[&str] = &["log", "show", "for-each-ref", "rev-parse", "reflog", "symbolic-ref", "status", "diff-tree"];
+const ALLOWED: &[&str] = &["log", "show", "for-each-ref", "rev-parse", "reflog", "symbolic-ref", "status", "diff-tree", "ls-files"];
 
 /// Rejects anything that could modify the repository or write files.
 fn validate(args: &[String]) -> Result<(), String> {
@@ -104,15 +106,18 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .menu(menu::build)
         .on_menu_event(menu::handle)
-        .manage(pending::PendingWindows::default())
         .manage(merge::MergeWindows::default())
         .manage(diff::DiffWindows::default())
         .invoke_handler(tauri::generate_handler![
             git,
             find_repos,
+            workspace::create_repo,
+            workspace::clone_repo,
+            hosting::repo_web_page,
+            hosting::describe_remote,
+            hosting::open_repo_web_page,
             initial_repo,
-            pending::open_pending_window,
-            pending::window_repo,
+            pending::show_pending_changes,
             pending::read_worktree_file,
             pending::write_worktree_file,
             pending::commit_changes,
@@ -122,12 +127,18 @@ pub fn run() {
             branch::create_branch,
             branch::switch_to_changeset,
             branch::switch_to_remote_branch,
+            files::open_file,
+            files::open_file_with,
+            files::add_to_gitignore,
+            files::remove_file,
             diff::open_diff_window,
             diff::diff_window_info,
             merge::open_merge_window,
             merge::merge_window_info,
             merge::merge_preview,
+            merge::merge,
             merge::cherry_pick,
+            merge::subtractive_merge,
             merge::operation_in_progress,
             merge::abort_operation,
         ])
@@ -151,6 +162,7 @@ mod tests {
         assert!(v(&["for-each-ref", "refs/heads"]).is_ok());
         assert!(v(&["status", "--porcelain=v2", "-z", "--branch"]).is_ok());
         assert!(v(&["diff-tree", "-r", "-z", "--name-status", "HEAD~1", "HEAD"]).is_ok());
+        assert!(v(&["ls-files", "-z", "--others", "--exclude-standard"]).is_ok());
     }
 
     #[test]

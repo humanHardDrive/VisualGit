@@ -28,6 +28,8 @@
       <div class="merge-summary">
         <span id="summary"></span>
         <button id="refresh" class="icon" title="Refresh">↻</button>
+        <span class="spacer"></span>
+        <button id="merge" class="primary" disabled>Merge</button>
       </div>
       <details id="messages" class="merge-messages" hidden>
         <summary>Messages from git</summary>
@@ -48,6 +50,12 @@
             <span class="segmented-label">Compare result with</span>
             <button id="cmp-to" role="radio" aria-checked="true" class="on">Into</button>
             <button id="cmp-from" role="radio" aria-checked="false">From</button>
+          </div>
+          <div id="take" class="split take" role="group" aria-label="Resolve the conflict" hidden>
+            <button id="take-main" class="primary" title="Take the Source's changes over the Destination's for the conflict at the cursor">Use Source</button>
+            <button id="take-more" class="primary caret" title="More ways to resolve" aria-label="More ways to resolve" aria-haspopup="menu">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
+            </button>
           </div>
           <span id="change-count" class="change-count"></span>
           <div class="nav" role="group" aria-label="Change navigation">
