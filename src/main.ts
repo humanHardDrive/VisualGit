@@ -16,6 +16,7 @@ import { branchColor, Explorer, type Selection, type View } from "./view/explore
 import { filterRepos, renderWorkspaceList, type RepoInfo } from "./view/workspaceList.ts";
 import { createPendingView } from "./pending/view.ts";
 import { createSearchBox } from "./view/searchBox.ts";
+import { reportSubmoduleFailures, submodulesUpdated, type SubmoduleUpdate } from "./view/submoduleUpdate.ts";
 
 /** Selection saved across reloads; branches by name, since ids are reassigned. */
 type SavedSelection = { kind: "commit"; hash: string } | { kind: "branch"; name: string };
@@ -182,8 +183,14 @@ function switchTarget(m: Model, hash: string): { branch?: string; current: boole
   return { branch: lane ?? names[0], current: false };
 }
 
+/** Mirrors `Switched` in src-tauri/src/branch.rs. */
+interface Switched {
+  message: string;
+  submodules: SubmoduleUpdate;
+}
+
 function switchTo(hash: string, branch: string | undefined) {
-  void runSwitch(branch ?? hash.slice(0, 8), (repo) => invoke<string>("switch_to_changeset", { repo, at: hash, branch: branch ?? null }));
+  void runSwitch(branch ?? hash.slice(0, 8), (repo) => invoke<Switched>("switch_to_changeset", { repo, at: hash, branch: branch ?? null }));
 }
 
 /**
@@ -191,16 +198,16 @@ function switchTo(hash: string, branch: string | undefined) {
  * remote-only one gets a local tracking branch; a deleted or unnamed lane's
  * last changeset is checked out as a detached HEAD.
  */
-function switchToBranchCall(b: Model["branches"][number]): ((repo: string) => Promise<string>) | null {
+function switchToBranchCall(b: Model["branches"][number]): ((repo: string) => Promise<Switched>) | null {
   const local = b.refs.find((r) => r.startsWith("refs/heads/"));
   if (local) {
     const name = local.slice("refs/heads/".length);
-    return (repo) => invoke<string>("switch_to_changeset", { repo, at: b.tips[0], branch: name });
+    return (repo) => invoke<Switched>("switch_to_changeset", { repo, at: b.tips[0], branch: name });
   }
   const remote = b.refs.find((r) => r.startsWith("refs/remotes/"));
-  if (remote) return (repo) => invoke<string>("switch_to_remote_branch", { repo, remoteRef: remote });
+  if (remote) return (repo) => invoke<Switched>("switch_to_remote_branch", { repo, remoteRef: remote });
   const last = b.commits[b.commits.length - 1];
-  return last ? (repo) => invoke<string>("switch_to_changeset", { repo, at: last, branch: null }) : null;
+  return last ? (repo) => invoke<Switched>("switch_to_changeset", { repo, at: last, branch: null }) : null;
 }
 
 /** Applies a changeset on top of HEAD; on conflicts, Pending Changes takes over. */
@@ -235,15 +242,17 @@ async function applyChangeset(hash: string, how: "pick" | "subtract") {
   if (await hasPendingChanges(doing)) return;
   notify(how === "pick" ? `Cherry picking ${short}…` : `Taking ${short}'s changes out…`);
   try {
-    const result = await invoke<{ committed: string | null; conflicts: string[] }>(how === "pick" ? "cherry_pick" : "subtractive_merge", {
+    const result = await invoke<{ committed: string | null; conflicts: string[]; submodules: SubmoduleUpdate }>(how === "pick" ? "cherry_pick" : "subtractive_merge", {
       repo: path,
       at: hash,
     });
     if (result.committed) {
       notify(
-        how === "pick" ? `Cherry picked ${short} as ${result.committed.slice(0, 8)}.` : `Took ${short}'s changes out in ${result.committed.slice(0, 8)}.`,
+        (how === "pick" ? `Cherry picked ${short} as ${result.committed.slice(0, 8)}.` : `Took ${short}'s changes out in ${result.committed.slice(0, 8)}.`) +
+          submodulesUpdated(result.submodules),
         "ok",
       );
+      void reportSubmoduleFailures(result.submodules, how === "pick" ? "cherry pick" : "subtractive merge");
     } else {
       const n = result.conflicts.length;
       const what = how === "pick" ? `Cherry picking ${short}` : `The subtractive merge of ${short}`;
@@ -273,17 +282,21 @@ async function hasPendingChanges(doing: string): Promise<boolean> {
 }
 
 /** Runs a switch unless there are pending changes, then reloads and shows the new HEAD. */
-async function runSwitch(label: string, call: (repo: string) => Promise<string>) {
+async function runSwitch(label: string, call: (repo: string) => Promise<Switched>) {
   if (!repoPath || !git) return;
   const path = repoPath;
   if (await hasPendingChanges("switching")) return;
   notify(`Switching to ${label}…`);
+  let done: Switched;
   try {
-    notify(`${await call(path)}.`, "ok");
+    done = await call(path);
   } catch (err) {
     notify(`Could not switch: ${err}`, "error");
     return;
   }
+  // Submodules follow the switch (checked out at the changesets it records); any that didn't get a message box.
+  notify(`${done.message}.${submodulesUpdated(done.submodules)}`, "ok");
+  void reportSubmoduleFailures(done.submodules, "switch");
   if (repoPath !== path) return;
   await loadRepoAt(path, { reload: true });
   goHome();
@@ -329,7 +342,7 @@ $("branch-form").addEventListener("submit", async (e) => {
   const name = branchName.value.trim();
   branchCreate.disabled = true;
   try {
-    const result = await invoke<{ switched: boolean; switchError: string | null }>("create_branch", {
+    const result = await invoke<{ switched: boolean; switchError: string | null; submodules: SubmoduleUpdate }>("create_branch", {
       repo: path,
       name,
       at: branchAt,
@@ -337,7 +350,8 @@ $("branch-form").addEventListener("submit", async (e) => {
     });
     branchDialog.close();
     if (result.switchError) notify(`Created ${name}, but could not switch to it: ${result.switchError}`, "error");
-    else notify(result.switched ? `Created ${name} and switched to it.` : `Created ${name}.`, "ok");
+    else notify(result.switched ? `Created ${name} and switched to it.${submodulesUpdated(result.submodules)}` : `Created ${name}.`, "ok");
+    void reportSubmoduleFailures(result.submodules, "switch");
     if (repoPath !== path) return;
     await loadRepoAt(path, { reload: true });
     const created = model?.branches.find((b) => b.name === name);
@@ -1226,10 +1240,9 @@ async function showFolderMenu(folder: string) {
     // Its folder on disk; listed or not, that's where its repository is.
     const root = files?.list.nested?.get(folder)?.root ?? `${repoPath}/${folder}`;
     const checkedOut = files?.list.nested?.get(folder)?.checkedOut !== false;
-    items.push(
-      { id: "open-nested", text: kind === "submodule" ? "Open Submodule as Repository" : "Open as Repository", enabled: checkedOut, action: () => void openNested(root) },
-      { item: "Separator" },
-    );
+    items.push({ id: "open-nested", text: kind === "submodule" ? "Open Submodule as Repository" : "Open as Repository", enabled: checkedOut, action: () => void openNested(root) });
+    if (kind === "submodule") items.push({ id: "remove-submodule", text: "Remove Submodule…", action: () => void removeSubmodule(folder) });
+    items.push({ item: "Separator" });
   }
   items.push({ id: "add-submodule", text: folder ? `Add Submodule in “${name}”…` : "Add Submodule…", action: () => openAddSubmodule(folder) });
   const menu = await Menu.new({ items });
@@ -1332,7 +1345,52 @@ async function ignoreFile(path: string, pattern: string, what: string) {
   reload();
 }
 
+/**
+ * Removes a submodule from everything git keeps about it (the index,
+ * .gitmodules, .git/config, .git/modules), keeping its folder as a
+ * standalone repository on disk, or moving that to the Trash.
+ */
+async function removeSubmodule(path: string) {
+  const w = whereIs(path);
+  if (!w || !repoPath) return;
+  const repo = repoPath;
+  const KEEP = "Remove, Keep the Folder";
+  const BOTH = "Remove and Move to Trash";
+  const choice = await message(
+    `Remove the submodule “${path}”?
+
+Git forgets it entirely: it's taken out of the index, .gitmodules and .git/config, and its repository leaves .git/modules.
+
+Nothing in it is lost. Its repository (with its history, and any changes not yet committed or pushed) moves into its folder, which becomes an ordinary repository.
+
+${KEEP}: the folder stays where it is.
+
+${BOTH}: the folder goes to the Trash.
+
+The removal is a pending change: commit it to record it.`,
+    { title: "Remove Submodule", kind: "warning", buttons: { yes: KEEP, no: BOTH, cancel: "Cancel" } },
+  );
+  let fromDisk: boolean;
+  if (choice === "Yes" || choice === KEEP) fromDisk = false;
+  else if (choice === "No" || choice === BOTH) fromDisk = true;
+  else return;
+  try {
+    await invoke("remove_submodule", { repo: w.repo, path: w.path, fromDisk });
+    notify(
+      fromDisk
+        ? `Removed the submodule ${path} and moved its folder to the Trash. Commit to record the removal.`
+        : `Removed the submodule ${path}; its folder is now a repository of its own. Commit to record the removal.`,
+      "ok",
+    );
+  } catch (err) {
+    await message(String(err), { title: `Could not remove the submodule ${path}`, kind: "error" });
+  }
+  if (repoPath === repo) reload();
+}
+
 async function deleteFile(path: string, untracked: boolean) {
+  // A submodule is more than its entry in the index: clean up everything git keeps about it.
+  if (files?.list.kinds.get(path) === "submodule") return removeSubmodule(path);
   const w = whereIs(path);
   if (!w || !repoPath) return;
   const repo = repoPath;

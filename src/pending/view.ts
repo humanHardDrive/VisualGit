@@ -19,6 +19,7 @@ import { basicSetup } from "codemirror";
 import { loadPendingChanges, type PendingChanges, type PendingFile } from "../git/status.ts";
 import { tauriRunner } from "../git/tauriRunner.ts";
 import { dark, lineEndings, readOnly, theme, themeSlot } from "../view/codemirror.ts";
+import { reportSubmoduleFailures, submodulesUpdated, type SubmoduleUpdate } from "../view/submoduleUpdate.ts";
 
 /** Mirrors `FileText` in src-tauri/src/pending.rs. */
 interface FileText {
@@ -467,9 +468,13 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     updateCommitButton();
     setStatus("Committing…");
     try {
-      const hash = await invoke<string>("commit_changes", { repo: at, message, paths });
+      // Finishing a merge (or cherry pick) also brings the submodules to the changesets it records.
+      const finishing = operation?.kind;
+      const done = await invoke<{ hash: string; submodules: SubmoduleUpdate }>("commit_changes", { repo: at, message, paths });
+      const hash = done.hash;
       messageBox.value = "";
-      setStatus(`Committed ${hash.slice(0, 8)}`, "ok");
+      setStatus(`Committed ${hash.slice(0, 8)}.${submodulesUpdated(done.submodules)}`, "ok");
+      void reportSubmoduleFailures(done.submodules, finishing ?? "commit");
       opts.onChanged();
       if (andPush) {
         setStatus(`Committed ${hash.slice(0, 8)}. Pushing…`);

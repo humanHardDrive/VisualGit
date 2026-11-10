@@ -1,6 +1,7 @@
 //! Creating branches and switching between changesets from the explorer.
 
 use crate::pending::{git, repo_root};
+use crate::submodule::{update_all, SubmoduleUpdate};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -10,6 +11,22 @@ pub struct Created {
     switched: bool,
     /// Why switching failed, when it was asked for and didn't happen. The branch exists either way.
     switch_error: Option<String>,
+    /// After switching: the submodules brought up to date.
+    submodules: SubmoduleUpdate,
+}
+
+/// What a switch did: a summary for the user, and the submodules it updated.
+#[derive(Debug, Serialize)]
+pub struct Switched {
+    message: String,
+    submodules: SubmoduleUpdate,
+}
+
+impl Switched {
+    /// Having checked out another changeset: its submodules follow.
+    fn after(root: &std::path::Path, message: String) -> Self {
+        Switched { message, submodules: update_all(root) }
+    }
 }
 
 /// Creates branch `name` at changeset `at`, and checks it out if `switch_to` is set.
@@ -35,25 +52,25 @@ fn create(repo: &str, name: &str, at: &str, switch_to: bool) -> Result<Created, 
     commit_id(&root, at)?;
     git(&root, &["branch", "--no-track", name, at], &[], None)?;
     if !switch_to {
-        return Ok(Created { switched: false, switch_error: None });
+        return Ok(Created { switched: false, switch_error: None, submodules: SubmoduleUpdate::default() });
     }
     // Uncommitted changes come along; git refuses only if they would be overwritten.
     match git(&root, &["switch", name], &[], None) {
-        Ok(_) => Ok(Created { switched: true, switch_error: None }),
-        Err(e) => Ok(Created { switched: false, switch_error: Some(e) }),
+        Ok(_) => Ok(Created { switched: true, switch_error: None, submodules: update_all(&root) }),
+        Err(e) => Ok(Created { switched: false, switch_error: Some(e), submodules: SubmoduleUpdate::default() }),
     }
 }
 
 /// Checks out changeset `at`: as `branch` when given (it must point there), otherwise
 /// as a detached HEAD. Returns a summary for the user.
 #[tauri::command]
-pub async fn switch_to_changeset(repo: String, at: String, branch: Option<String>) -> Result<String, String> {
+pub async fn switch_to_changeset(repo: String, at: String, branch: Option<String>) -> Result<Switched, String> {
     tauri::async_runtime::spawn_blocking(move || switch(&repo, &at, branch.as_deref()))
         .await
         .map_err(|e| e.to_string())?
 }
 
-fn switch(repo: &str, at: &str, branch: Option<&str>) -> Result<String, String> {
+fn switch(repo: &str, at: &str, branch: Option<&str>) -> Result<Switched, String> {
     let root = repo_root(repo)?;
     let full = commit_id(&root, at)?;
     let short = &full[..8.min(full.len())];
@@ -63,22 +80,22 @@ fn switch(repo: &str, at: &str, branch: Option<&str>) -> Result<String, String> 
             return Err(format!("{b} does not point at {short}"));
         }
         git(&root, &["switch", b], &[], None)?;
-        return Ok(format!("Switched to {b}"));
+        return Ok(Switched::after(&root, format!("Switched to {b}")));
     }
     git(&root, &["switch", "--detach", &full], &[], None)?;
-    Ok(format!("Switched to changeset {short} (detached HEAD). Create a branch here before committing"))
+    Ok(Switched::after(&root, format!("Switched to changeset {short} (detached HEAD). Create a branch here before committing")))
 }
 
 /// Creates a local branch tracking `remote_ref` (`refs/remotes/<remote>/<name>`)
 /// under the same name, and switches to it.
 #[tauri::command]
-pub async fn switch_to_remote_branch(repo: String, remote_ref: String) -> Result<String, String> {
+pub async fn switch_to_remote_branch(repo: String, remote_ref: String) -> Result<Switched, String> {
     tauri::async_runtime::spawn_blocking(move || track(&repo, &remote_ref))
         .await
         .map_err(|e| e.to_string())?
 }
 
-fn track(repo: &str, remote_ref: &str) -> Result<String, String> {
+fn track(repo: &str, remote_ref: &str) -> Result<Switched, String> {
     let root = repo_root(repo)?;
     let short = remote_ref.strip_prefix("refs/remotes/").ok_or_else(|| format!("{remote_ref} is not a remote branch"))?;
     let (_, name) = short.split_once('/').ok_or_else(|| format!("{remote_ref} is not a remote branch"))?;
@@ -89,7 +106,7 @@ fn track(repo: &str, remote_ref: &str) -> Result<String, String> {
         return Err(format!("A local branch named {name} already exists"));
     }
     git(&root, &["switch", "-c", name, "--track", short], &[], None)?;
-    Ok(format!("Switched to {name}, a new local branch tracking {short}"))
+    Ok(Switched::after(&root, format!("Switched to {name}, a new local branch tracking {short}")))
 }
 
 /// The full id of changeset `at`, which must be a (possibly abbreviated) commit id.
@@ -159,11 +176,11 @@ mod tests {
         let repo = dir.to_string_lossy().into_owned();
         let head = || git(&dir, &["rev-parse", "HEAD"], &[], None).unwrap().trim().to_string();
 
-        assert!(switch(&repo, &first, None).unwrap().contains("detached"));
+        assert!(switch(&repo, &first, None).unwrap().message.contains("detached"));
         assert_eq!(head(), first);
         assert!(git(&dir, &["symbolic-ref", "-q", "HEAD"], &[], None).is_err());
 
-        assert_eq!(switch(&repo, &second[..10], Some("main")).unwrap(), "Switched to main");
+        assert_eq!(switch(&repo, &second[..10], Some("main")).unwrap().message, "Switched to main");
         assert_eq!(git(&dir, &["symbolic-ref", "--short", "HEAD"], &[], None).unwrap().trim(), "main");
 
         assert!(switch(&repo, &first, Some("main")).unwrap_err().contains("does not point"));
@@ -179,7 +196,7 @@ mod tests {
         // Fake a fetched remote branch (tracking needs the remote to be configured).
         git(&dir, &["remote", "add", "origin", "https://example.invalid/repo.git"], &[], None).unwrap();
         git(&dir, &["update-ref", "refs/remotes/origin/topic", &first], &[], None).unwrap();
-        assert_eq!(track(&repo, "refs/remotes/origin/topic").unwrap(), "Switched to topic, a new local branch tracking origin/topic");
+        assert_eq!(track(&repo, "refs/remotes/origin/topic").unwrap().message, "Switched to topic, a new local branch tracking origin/topic");
         assert_eq!(git(&dir, &["symbolic-ref", "--short", "HEAD"], &[], None).unwrap().trim(), "topic");
         assert_eq!(git(&dir, &["rev-parse", "--abbrev-ref", "@{u}"], &[], None).unwrap().trim(), "origin/topic");
         assert!(track(&repo, "refs/remotes/origin/topic").unwrap_err().contains("already exists"));

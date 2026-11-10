@@ -19,6 +19,7 @@ use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder, Window}
 
 use crate::branch::commit_id;
 use crate::pending::{git, repo_root};
+use crate::submodule::{update_all, SubmoduleUpdate};
 
 #[derive(Clone, Serialize)]
 pub struct MergeWindowInfo {
@@ -182,6 +183,22 @@ pub struct CherryPick {
     committed: Option<String>,
     /// Files left with conflict markers, when it didn't. The cherry pick is then in progress.
     conflicts: Vec<String>,
+    /// When it applied cleanly: the submodules brought to the changesets the new one records.
+    /// (After conflicts, that happens when the result is committed.)
+    submodules: SubmoduleUpdate,
+}
+
+impl CherryPick {
+    /// Done, as changeset HEAD: its submodules follow.
+    fn committed(root: &Path) -> Result<Self, String> {
+        let committed = git(root, &["rev-parse", "HEAD"], &[], None)?.trim().to_string();
+        Ok(CherryPick { committed: Some(committed), conflicts: vec![], submodules: update_all(root) })
+    }
+
+    /// Stopped for conflicts, still in progress.
+    fn stopped(conflicts: Vec<String>) -> Self {
+        CherryPick { committed: None, conflicts, submodules: SubmoduleUpdate::default() }
+    }
 }
 
 /// Applies changeset `at` on top of HEAD as a new changeset (`git cherry-pick`).
@@ -240,11 +257,11 @@ fn apply(repo: &str, at: &str, how: Apply) -> Result<CherryPick, String> {
     }
     args.push(&at);
     match git(&root, &args, &[], None) {
-        Ok(_) => Ok(CherryPick { committed: Some(git(&root, &["rev-parse", "HEAD"], &[], None)?.trim().to_string()), conflicts: vec![] }),
+        Ok(_) => CherryPick::committed(&root),
         Err(err) => {
             let conflicts = conflicted_paths(&root);
             if !conflicts.is_empty() {
-                return Ok(CherryPick { committed: None, conflicts });
+                return Ok(CherryPick::stopped(conflicts));
             }
             // Nothing to apply (or remove), or another failure: leave no half-done state.
             if in_progress(&root).is_some() {
@@ -303,11 +320,11 @@ fn merge_into_head(repo: &str, from: &str, branch: Option<&str>) -> Result<Cherr
     };
     let args = ["merge", "--no-ff", "--no-edit", "--allow-unrelated-histories", "-m", &message, &from];
     match git(&root, &args, &[], None) {
-        Ok(_) => Ok(CherryPick { committed: Some(git(&root, &["rev-parse", "HEAD"], &[], None)?.trim().to_string()), conflicts: vec![] }),
+        Ok(_) => CherryPick::committed(&root),
         Err(err) => {
             let conflicts = conflicted_paths(&root);
             if !conflicts.is_empty() {
-                return Ok(CherryPick { committed: None, conflicts });
+                return Ok(CherryPick::stopped(conflicts));
             }
             if in_progress(&root) == Some("merge") {
                 let _ = git(&root, &["merge", "--abort"], &[], None);
@@ -650,5 +667,79 @@ mod tests {
         assert_eq!(in_progress(&dir), None);
         assert_eq!(run(&["status", "--porcelain"]), "");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn submodules_follow_a_merge_clean_or_after_conflicts() {
+        let tmp = std::env::temp_dir().join(format!("visualgit-merge-sub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let at = |dir: PathBuf| {
+            move |args: &[&str]| {
+                let out = Command::new("git")
+                    .arg("-C")
+                    .arg(&dir)
+                    .args(["-c", "user.name=T", "-c", "user.email=t@e", "-c", "init.defaultBranch=main", "-c", "protocol.file.allow=always"])
+                    .args(args)
+                    .output()
+                    .unwrap();
+                assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+                String::from_utf8_lossy(&out.stdout).trim().to_string()
+            }
+        };
+        let (lib, app) = (tmp.join("lib"), tmp.join("app"));
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::create_dir_all(&app).unwrap();
+        let l = at(lib.clone());
+        l(&["init", "-q"]);
+        for n in ["one", "two", "three"] {
+            l(&["commit", "-q", "--allow-empty", "-m", n]);
+        }
+        let commits: Vec<String> = l(&["rev-list", "--reverse", "HEAD"]).lines().map(str::to_string).collect();
+        let a = at(app.clone());
+        a(&["init", "-q"]);
+        std::fs::write(app.join("f.txt"), "base\n").unwrap();
+        a(&["submodule", "add", "-q", lib.to_str().unwrap(), "lib"]);
+        at(app.join("lib"))(&["checkout", "-q", "--detach", &commits[0]]);
+        a(&["add", "."]);
+        a(&["commit", "-qm", "base"]);
+        let sub = |c: &str| {
+            at(app.join("lib"))(&["checkout", "-q", "--detach", c]);
+            a(&["add", "lib"]);
+        };
+        let lib_head = || at(app.join("lib"))(&["rev-parse", "HEAD"]);
+
+        // A branch that moves the submodule on; merged cleanly, the submodule follows.
+        a(&["switch", "-q", "-c", "bump"]);
+        sub(&commits[1]);
+        a(&["commit", "-qm", "lib to two"]);
+        a(&["switch", "-q", "main"]);
+        sub(&commits[0]); // git switch leaves it where it was
+        let root = repo_root(app.to_str().unwrap()).unwrap();
+        let done = merge_into_head(root.to_str().unwrap(), &a(&["rev-parse", "bump"]), Some("bump")).unwrap();
+        assert!(done.committed.is_some());
+        assert_eq!(done.submodules.updated, vec!["lib".to_string()]);
+        assert_eq!(lib_head(), commits[1]);
+
+        // Another that moves it again, but also conflicts in a file: it follows when the result is committed.
+        a(&["switch", "-q", "-c", "clash", "HEAD~1"]);
+        sub(&commits[2]);
+        std::fs::write(app.join("f.txt"), "clash\n").unwrap();
+        a(&["commit", "-qam", "lib to three, f clashes"]);
+        a(&["switch", "-q", "main"]);
+        sub(&commits[1]);
+        std::fs::write(app.join("f.txt"), "main\n").unwrap();
+        a(&["commit", "-qam", "f on main"]);
+        let stopped = merge_into_head(root.to_str().unwrap(), &a(&["rev-parse", "clash"]), None).unwrap();
+        assert_eq!(stopped.conflicts, vec!["f.txt".to_string()]);
+        assert_eq!(lib_head(), commits[1], "git leaves it while the merge is in progress");
+        std::fs::write(app.join("f.txt"), "resolved\n").unwrap();
+        let committed = crate::pending::commit_and_follow(root.to_str().unwrap(), "Merge clash", &["f.txt".into()]).unwrap();
+        assert_eq!(committed.submodules.updated, vec!["lib".to_string()]);
+        assert_eq!(lib_head(), commits[2]);
+        // An ordinary commit afterwards leaves submodules alone.
+        std::fs::write(app.join("f.txt"), "later\n").unwrap();
+        assert!(crate::pending::commit_and_follow(root.to_str().unwrap(), "later", &["f.txt".into()]).unwrap().submodules.updated.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

@@ -6,6 +6,7 @@
 //! does a single, narrow thing, with its paths checked to stay inside the
 //! repository.
 
+use crate::submodule::{update_all, SubmoduleUpdate};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -86,10 +87,32 @@ pub fn write_worktree_file(repo: String, path: String, text: String) -> Result<(
 /// Commits the given files as they are in the working tree, with `message`,
 /// and returns the new changeset id. Other staged files are left staged.
 #[tauri::command]
-pub async fn commit_changes(repo: String, message: String, paths: Vec<String>) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || commit(&repo, &message, &paths))
-        .await
-        .map_err(|e| e.to_string())?
+pub async fn commit_changes(repo: String, message: String, paths: Vec<String>) -> Result<Committed, String> {
+    tauri::async_runtime::spawn_blocking(move || commit_and_follow(&repo, &message, &paths)).await.map_err(|e| e.to_string())?
+}
+
+/// `commit`, and when that finishes a merge (or cherry pick, or subtractive
+/// merge) that stopped for conflicts, the submodules follow: git left them
+/// where they were while it was in progress.
+pub(crate) fn commit_and_follow(repo: &str, message: &str, paths: &[String]) -> Result<Committed, String> {
+    let root = repo_root(repo)?;
+    let finishing = finishing_operation(&root);
+    let hash = commit(repo, message, paths)?;
+    let submodules = if finishing { update_all(&root) } else { SubmoduleUpdate::default() };
+    Ok(Committed { hash, submodules })
+}
+
+#[derive(Serialize)]
+pub struct Committed {
+    /// The new changeset.
+    pub hash: String,
+    /// For a commit that finished a merge: the submodules brought to the changesets it records.
+    pub submodules: SubmoduleUpdate,
+}
+
+/// Whether a merge, cherry pick or subtractive merge (revert) is in progress, to be committed whole.
+fn finishing_operation(root: &Path) -> bool {
+    ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"].iter().any(|r| git(root, &["rev-parse", "-q", "--verify", r], &[], None).is_ok())
 }
 
 pub(crate) fn commit(repo: &str, message: &str, paths: &[String]) -> Result<String, String> {
@@ -105,10 +128,30 @@ pub(crate) fn commit(repo: &str, message: &str, paths: &[String]) -> Result<Stri
     }
     // Stage the selected files exactly as they are on disk, including deletions.
     git(&root, &["add", "-A", "--"], paths, None)?;
+    // A repository inside this one that isn't a submodule (no .gitmodules entry, so nobody could
+    // clone it) would be committed as a dangling link: take it back out and say why. This is
+    // what a submodule's folder looks like when it's left behind by switching to a changeset without it.
+    let staged = git(&root, &["ls-files", "--stage", "-z", "--"], paths, None)?;
+    let nested: Vec<String> = staged
+        .split('\0')
+        .filter(|e| e.starts_with("160000 "))
+        .filter_map(|e| e.split_once('\t').map(|(_, p)| p.to_string()))
+        .filter(|p| crate::submodule::submodule_name(&root, p).is_none())
+        .collect();
+    if !nested.is_empty() {
+        let committed = git(&root, &["ls-tree", "-r", "--name-only", "HEAD", "--"], &nested, None).unwrap_or_default();
+        for p in nested.iter().filter(|p| !committed.lines().any(|c| c == p.as_str())) {
+            let _ = git(&root, &["rm", "--quiet", "--cached", "--force", "--"], &[p.clone()], None);
+        }
+        let list = nested.join(", ");
+        return Err(format!(
+            "{list} {} a separate repository inside this one, not a submodule, so {} wasn't committed. Add it with Add Submodule… in the Files view, or move the folder out of the repository. Nothing was committed.",
+            if nested.len() == 1 { "is" } else { "are" },
+            if nested.len() == 1 { "it" } else { "they" },
+        ));
+    }
     // A merge or cherry pick in progress must be committed whole; otherwise commit only the selection.
-    let merging = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"]
-        .iter()
-        .any(|r| git(&root, &["rev-parse", "-q", "--verify", r], &[], None).is_ok());
+    let merging = finishing_operation(&root);
     let selection: &[String] = if merging { &[] } else { paths };
     let only: &[&str] = if merging { &["commit", "-F", "-"] } else { &["commit", "-F", "-", "--"] };
     git(&root, only, selection, Some(message))?;
