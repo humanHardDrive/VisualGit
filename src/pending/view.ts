@@ -26,6 +26,8 @@ interface FileText {
   missing: boolean;
   binary: boolean;
   tooLarge: boolean;
+  /** A submodule: the changeset it has checked out ("" if none). */
+  submodule: string | null;
 }
 
 /** Mirrors `Operation` in src-tauri/src/merge.rs. */
@@ -231,6 +233,13 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     const [base, work] = await Promise.all([baseText(f), invoke<FileText>("read_worktree_file", { repo, path: f.path })]);
     if (current?.path !== f.path || repo !== at) return; // the user moved on meanwhile
     if (work.tooLarge) return showMessage("This file is too large to show.");
+    if (work.submodule !== null) {
+      return showMessage(
+        work.submodule
+          ? `A submodule, checked out at ${work.submodule.slice(0, 8)}. Committing records that changeset.`
+          : "A submodule, with nothing checked out yet.",
+      );
+    }
     if (base === null || work.binary) return showMessage("Binary file. There is no text to compare.");
 
     const text = work.text ?? "";

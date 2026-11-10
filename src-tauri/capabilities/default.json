@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions for the main window and the Pending Changes, merge and diff windows",
-  "windows": ["main", "merge-*", "diff-*"],
+  "description": "Permissions for the main window and the merge, diff and submodule windows",
+  "windows": ["main", "merge-*", "diff-*", "submodule-*"],
   "permissions": ["core:default", "core:window:allow-destroy", "dialog:allow-open", "dialog:allow-ask", "dialog:allow-message"]
 }

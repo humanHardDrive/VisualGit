@@ -6,7 +6,7 @@ import { loadRepo, type GitRunner } from "./git/load.ts";
 import { inTauri, tauriRunner } from "./git/tauriRunner.ts";
 import { inferModel, pendingChangesOn, uncommittedHead, type Model } from "./model/infer.ts";
 import { layoutModel, type Edge } from "./model/layout.ts";
-import { searchModel, type SearchResults } from "./model/search.ts";
+import { nextOf, previousOf } from "./model/navigate.ts";
 import { branchRows, renderBranchList, type BranchSort } from "./view/branchList.ts";
 import { clearDetails, showBranch, showCommit } from "./view/details.ts";
 import { buildTree, loadFiles, loadLastChanges, type FileList, type Folder, type LastChange } from "./git/files.ts";
@@ -15,6 +15,7 @@ import { ignorePatterns } from "./git/ignore.ts";
 import { branchColor, Explorer, type Selection, type View } from "./view/explorer.ts";
 import { filterRepos, renderWorkspaceList, type RepoInfo } from "./view/workspaceList.ts";
 import { createPendingView } from "./pending/view.ts";
+import { createSearchBox } from "./view/searchBox.ts";
 
 /** Selection saved across reloads; branches by name, since ids are reassigned. */
 type SavedSelection = { kind: "commit"; hash: string } | { kind: "branch"; name: string };
@@ -414,146 +415,18 @@ function openPendingChanges(path?: string) {
 
 // ---- search ---------------------------------------------------------------------
 
-const MAX_BRANCH_RESULTS = 50;
-const MAX_COMMIT_RESULTS = 200;
-
-let results: SearchResults | null = null;
-/** Result rows in display order, for keyboard navigation. */
-let resultRows: { sel: Selection; el: HTMLElement }[] = [];
-let activeResult = -1;
-
-/** Re-runs the query against the current model; `open` shows the results list. */
-function runSearch(open: boolean) {
-  results = model ? searchModel(model, searchInput.value) : null;
-  explorer.setMatches(results && { commits: new Set(results.commits), branches: new Set(results.branches) });
-  activeResult = -1;
-  renderResults();
-  searchPanel.hidden = !open || !results;
-  renderBranchView();
-}
-
-/** After a reload or repository switch: same query, new history. */
-function refreshSearch() {
-  runSearch(!searchPanel.hidden);
-}
-
-function clearSearch() {
-  searchInput.value = "";
-  runSearch(false);
-}
-
-function renderResults() {
-  if (!results || !model) {
-    resultRows = [];
-    searchPanel.replaceChildren();
-    return;
-  }
-  const m = model;
-  const rows: { sel: Selection; el: HTMLElement }[] = [];
-  const nodes: HTMLElement[] = [];
-  const div = (cls: string, text = "") => {
-    const d = document.createElement("div");
-    d.className = cls;
-    d.textContent = text;
-    return d;
-  };
-  const addRow = (sel: Selection, ...kids: HTMLElement[]) => {
-    const el = div("result");
-    el.setAttribute("role", "option");
-    el.append(...kids);
-    const i = rows.length;
-    // Keep focus in the search box, so the list doesn't close before the click lands.
-    el.onmousedown = (e) => e.preventDefault();
-    el.onclick = () => chooseResult(i, true);
-    rows.push({ sel, el });
-    nodes.push(el);
-  };
-  const more = (n: number, what: string) => {
-    if (n > 0) nodes.push(div("result-more", `and ${n.toLocaleString()} more ${what}; refine the search to see them`));
-  };
-
-  const { branches, commits } = results;
-  const plural = (n: number, one: string, many: string) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
-  nodes.push(
-    div(
-      "result-summary",
-      branches.length || commits.length
-        ? `${plural(branches.length, "branch", "branches")} · ${plural(commits.length, "changeset", "changesets")}`
-        : "No matches",
-    ),
-  );
-
-  if (branches.length) {
-    nodes.push(div("result-head", "Branches"));
-    for (const id of branches.slice(0, MAX_BRANCH_RESULTS)) {
-      const b = m.branches[id];
-      const swatch = div("swatch");
-      swatch.style.background = branchColor(m, id);
-      addRow({ kind: "branch", id }, swatch, div("result-text", b.name));
-    }
-    more(branches.length - MAX_BRANCH_RESULTS, "branches");
-  }
-  if (commits.length) {
-    nodes.push(div("result-head", "Changesets"));
-    for (const hash of commits.slice(0, MAX_COMMIT_RESULTS)) {
-      const c = m.commits.get(hash)!;
-      const owner = m.owner.get(hash)!;
-      const branch = div("result-meta", m.branches[owner].name);
-      branch.style.color = branchColor(m, owner);
-      addRow({ kind: "commit", hash }, div("result-id", hash.slice(0, 8)), div("result-text", c.subject || "(no message)"), branch);
-    }
-    more(commits.length - MAX_COMMIT_RESULTS, "changesets");
-  }
-  nodes.push(div("result-hint", "* matches anything · ? matches one character · ↑↓ to browse · Enter to go"));
-  resultRows = rows;
-  searchPanel.replaceChildren(...nodes);
-}
-
-function setActiveResult(i: number) {
-  resultRows[activeResult]?.el.classList.remove("active");
-  activeResult = i;
-  const row = resultRows[i];
-  if (!row) return;
-  row.el.classList.add("active");
-  row.el.scrollIntoView({ block: "nearest" });
-}
-
-/** Shows a result in the explorer; `close` also hands the keyboard back to the explorer. */
-function chooseResult(i: number, close: boolean) {
-  const row = resultRows[i];
-  if (!row) return;
-  setActiveResult(i);
-  applySelection(row.sel, true);
-  if (close) {
-    searchPanel.hidden = true;
-    searchInput.blur();
-  }
-}
-
-searchInput.addEventListener("input", () => runSearch(true));
-searchInput.addEventListener("focus", () => {
-  if (results) searchPanel.hidden = false;
+const search = createSearchBox({
+  input: searchInput,
+  panel: searchPanel,
+  model: () => model,
+  onResults: (results) => {
+    explorer.setMatches(results && { commits: new Set(results.commits), branches: new Set(results.branches) });
+    renderBranchView();
+  },
+  onChoose: (sel) => applySelection(sel, true),
 });
-searchInput.addEventListener("blur", () => {
-  searchPanel.hidden = true;
-});
-searchInput.addEventListener("keydown", (e) => {
-  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-    e.preventDefault();
-    if (!results) return;
-    searchPanel.hidden = false;
-    const n = resultRows.length;
-    if (n) chooseResult(e.key === "ArrowDown" ? (activeResult + 1) % n : (activeResult - 1 + n) % n, false);
-  } else if (e.key === "Enter") {
-    e.preventDefault();
-    chooseResult(Math.max(activeResult, 0), true);
-  } else if (e.key === "Escape") {
-    e.preventDefault();
-    e.stopPropagation();
-    clearSearch();
-    searchInput.blur();
-  }
-});
+const refreshSearch = () => search.refresh();
+const clearSearch = () => search.clear();
 
 // ---- changeset navigation --------------------------------------------------------
 
@@ -571,18 +444,6 @@ function navAnchor(m: Model): string | null {
     return b.commits[b.commits.length - 1] ?? b.base;
   }
   return m.headHash && m.commits.has(m.headHash) ? m.headHash : null;
-}
-
-/** The changeset before `hash`: its first parent, which leaves a branch at the changeset it was created from. */
-function previousOf(m: Model, hash: string): string | null {
-  const p = m.commits.get(hash)?.parents[0];
-  return p && m.commits.has(p) ? p : null;
-}
-
-/** The next changeset on the same branch lane. */
-function nextOf(m: Model, hash: string): string | null {
-  const b = m.branches[m.owner.get(hash)!];
-  return b.commits[b.commits.indexOf(hash) + 1] ?? null;
 }
 
 function navTarget(dir: -1 | 1): string | null {
@@ -1217,8 +1078,29 @@ function renderFileView() {
         renderFileView();
       }
       if (r.kind === "file") void showFileMenu(r.path);
+      else void showFolderMenu(r.folder.path);
     },
   });
+}
+
+/** Right-click on the Files view's empty space: things for the top folder. */
+filesView.addEventListener("contextmenu", (e) => {
+  if (e.defaultPrevented) return; // a row's own menu
+  e.preventDefault();
+  void showFolderMenu("");
+});
+
+/** Opens the Add Submodule window, for a submodule in `folder` ("" for the top of the repository). */
+function openAddSubmodule(folder: string) {
+  if (!repoPath) return;
+  void invoke("open_add_submodule_window", { repo: repoPath, folder, workspace }).catch((err) => notify(`Could not add a submodule: ${err}`, "error"));
+}
+
+async function showFolderMenu(folder: string) {
+  const menu = await Menu.new({
+    items: [{ id: "add-submodule", text: folder ? `Add Submodule in “${folder.slice(folder.lastIndexOf("/") + 1)}”…` : "Add Submodule…", action: () => openAddSubmodule(folder) }],
+  });
+  await menu.popup();
 }
 
 // ---- file right-click menu -------------------------------------------------------------
@@ -1253,6 +1135,9 @@ async function showFileMenu(path: string) {
         ],
       },
       { id: "delete", text: "Delete…", action: () => void deleteFile(path, untracked) },
+      { item: "Separator" },
+      // Next to this file, in its folder.
+      { id: "add-submodule", text: "Add Submodule…", action: () => openAddSubmodule(path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "") },
     ],
   });
   await menu.popup();
@@ -1570,6 +1455,12 @@ if (inTauri()) {
   // A merge made in a merge window.
   void listen<{ repo: string }>("repo-changed", (e) => {
     if (e.payload.repo === repoPath) reload();
+  });
+  // A submodule added from the Choose Changeset window: it's a pending change now.
+  void listen<{ repo: string; path: string; changeset: string }>("submodule-added", (e) => {
+    if (e.payload.repo !== repoPath) return;
+    reload();
+    notify(`Added the submodule ${e.payload.path} at ${e.payload.changeset.slice(0, 8)}. It's staged, with .gitmodules, for your next commit.`, "ok");
   });
   // A merge window that stopped for conflicts (or found pending changes) hands over to Pending Changes.
   void listen<{ repo: string }>("show-pending", async (e) => {

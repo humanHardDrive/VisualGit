@@ -12,6 +12,7 @@ import { loadPendingChanges } from "../src/git/status.ts";
 import { nodeRunner } from "../src/git/nodeRunner.ts";
 import { branchNameFromMerge, inferModel, pendingChangesOn, uncommittedHead, type Model } from "../src/model/infer.ts";
 import { layoutModel } from "../src/model/layout.ts";
+import { laneNeighbour, nextOf, previousOf } from "../src/model/navigate.ts";
 import { compileQuery, searchModel } from "../src/model/search.ts";
 import { branchRows } from "../src/view/branchList.ts";
 import { fileRows, rowKey, type FileRow } from "../src/view/files.ts";
@@ -227,6 +228,35 @@ describe("layoutModel", () => {
     expect(row("one")).toBe(1);
     expect(row("two")).toBe(1);
     expect(row("nested")).toBe(2);
+  });
+});
+
+describe("keyboard navigation", () => {
+  it("steps along a branch with ←/→ and between lanes with ↑/↓", async () => {
+    const { git, commit, model } = fixture();
+    const m1 = commit("m1");
+    git("checkout", "-q", "-b", "one");
+    const o1 = commit("o1");
+    const o2 = commit("o2");
+    git("checkout", "-q", "main");
+    const m2 = commit("m2");
+    git("checkout", "-q", "-b", "deep", "one");
+    const d1 = commit("d1");
+    const m = await model();
+    const l = layoutModel(m);
+
+    expect(previousOf(m, o1)).toBe(m1); // off the start of a branch: where it was created
+    expect(nextOf(m, o1)).toBe(o2);
+    expect(nextOf(m, o2)).toBeNull();
+    expect(previousOf(m, m1)).toBeNull();
+
+    // Down from main's m2 to the lane below, then further down, and back up.
+    const below = laneNeighbour(m, l, m2, 1);
+    expect([o1, o2]).toContain(below);
+    expect(laneNeighbour(m, l, o2, 1)).toBe(d1);
+    expect(laneNeighbour(m, l, d1, -1)).toBe(o2);
+    expect(laneNeighbour(m, l, m1, -1)).toBeNull();
+    expect(laneNeighbour(m, l, d1, 1)).toBeNull();
   });
 });
 

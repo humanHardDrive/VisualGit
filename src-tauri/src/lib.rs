@@ -5,6 +5,7 @@ mod hosting;
 mod menu;
 mod merge;
 mod pending;
+mod submodule;
 mod workspace;
 
 use std::path::Path;
@@ -108,6 +109,7 @@ pub fn run() {
         .on_menu_event(menu::handle)
         .manage(merge::MergeWindows::default())
         .manage(diff::DiffWindows::default())
+        .manage(submodule::SubmoduleWindows::default())
         .invoke_handler(tauri::generate_handler![
             git,
             find_repos,
@@ -141,6 +143,11 @@ pub fn run() {
             merge::subtractive_merge,
             merge::operation_in_progress,
             merge::abort_operation,
+            submodule::open_add_submodule_window,
+            submodule::add_submodule_info,
+            submodule::choose_submodule_changeset,
+            submodule::pick_changeset_info,
+            submodule::add_submodule,
         ])
         .run(tauri::generate_context!())
         .expect("error while running VisualGit");

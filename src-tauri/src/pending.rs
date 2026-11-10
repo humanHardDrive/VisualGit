@@ -42,15 +42,21 @@ pub struct FileText {
     missing: bool,
     binary: bool,
     too_large: bool,
+    /// For a submodule (a folder with its own repository): the changeset it has checked out.
+    submodule: Option<String>,
 }
 
 /// Reads a working-tree file for the diff editor.
 #[tauri::command]
 pub fn read_worktree_file(repo: String, path: String) -> Result<FileText, String> {
     let file = resolve(&repo, &path)?;
-    let none = FileText { text: None, missing: false, binary: false, too_large: false };
+    let none = FileText { text: None, missing: false, binary: false, too_large: false, submodule: None };
     let meta = match std::fs::metadata(&file) {
         Ok(m) if m.is_file() => m,
+        Ok(m) if m.is_dir() && file.join(".git").exists() => {
+            let at = git(&file, &["rev-parse", "--verify", "-q", "HEAD"], &[], None).map(|s| s.trim().to_string()).unwrap_or_default();
+            return Ok(FileText { submodule: Some(at), ..none });
+        }
         Ok(_) | Err(_) => return Ok(FileText { missing: true, ..none }),
     };
     if meta.len() > MAX_FILE_BYTES {
