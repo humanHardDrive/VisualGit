@@ -9,6 +9,7 @@ import { loadFileHistory } from "../src/git/history.ts";
 import { ignorePatterns } from "../src/git/ignore.ts";
 import { loadRepo } from "../src/git/load.ts";
 import { loadPendingChanges } from "../src/git/status.ts";
+import { submoduleChange } from "../src/git/submoduleChange.ts";
 import { nodeRunner } from "../src/git/nodeRunner.ts";
 import { branchNameFromMerge, inferModel, pendingChangesOn, uncommittedHead, type Model } from "../src/model/infer.ts";
 import { layoutModel } from "../src/model/layout.ts";
@@ -228,6 +229,63 @@ describe("layoutModel", () => {
     expect(row("one")).toBe(1);
     expect(row("two")).toBe(1);
     expect(row("nested")).toBe(2);
+  });
+});
+
+describe("submoduleChange", () => {
+  it("describes a submodule's recorded and new changesets, and what's between", async () => {
+    const { dir, git, commit } = fixture();
+    const lib = fixture();
+    const one = lib.commit("one");
+    lib.commit("two: the fix");
+    const three = lib.commit("three\n\nWith a longer explanation.");
+    writeFileSync(join(dir, "a.txt"), "a\n");
+    git("add", ".");
+    commit("base");
+    git("-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.dir, "libs/lib");
+    const sub = (...args: string[]) => execFileSync("git", ["-C", join(dir, "libs/lib"), ...args], { encoding: "utf8" });
+    sub("checkout", "-q", "--detach", one);
+    git("add", "libs/lib");
+
+    // New: only an after side.
+    let c = (await submoduleChange(dir, "libs/lib", nodeRunner))!;
+    expect(c.from).toBeNull();
+    expect(c.to).toBe(one);
+    expect(c.before).toBe("");
+    expect(c.after).toContain(`Changeset  ${one}`);
+    expect(c.summary).toBe(`New submodule, at ${one.slice(0, 8)}`);
+
+    // Moved forward two changesets: both described, with what it brings in.
+    commit("add lib");
+    sub("checkout", "-q", "--detach", three);
+    c = (await submoduleChange(dir, "libs/lib", nodeRunner))!;
+    expect([c.from, c.to]).toEqual([one, three]);
+    expect(c.before).toContain(`Changeset  ${one}`);
+    expect(c.before).toContain("\none\n");
+    expect(c.after).toContain(`Changeset  ${three}`);
+    expect(c.after).toContain("With a longer explanation.");
+    expect(c.after).toContain("Author     Test <test@example.com>");
+    expect(c.after).toMatch(/On {9}main/);
+    expect(c.after).toContain("Brings in 2 changesets, newest first:");
+    expect(c.after).toContain("two: the fix");
+    expect(c.summary).toBe("Moves forward 2 changesets");
+    // Back again, with a change of its own in it: what it leaves out, and a note.
+    sub("checkout", "-q", "--detach", one);
+    git("add", "libs/lib");
+    commit("lib to one");
+    sub("checkout", "-q", "--detach", three);
+    git("add", "libs/lib");
+    commit("lib to three");
+    sub("checkout", "-q", "--detach", one);
+    writeFileSync(join(dir, "libs/lib/x"), "x");
+    sub("add", "x");
+    c = (await submoduleChange(dir, "libs/lib", nodeRunner))!;
+    expect(c.summary).toBe("Moves back 2 changesets");
+    expect(c.after).toContain("Leaves out 2 changesets the recorded one has");
+    expect(c.after).toContain("1 uncommitted change of its own");
+
+    // Not a submodule: nothing to say.
+    expect(await submoduleChange(dir, "a.txt", nodeRunner)).toBeNull();
   });
 });
 

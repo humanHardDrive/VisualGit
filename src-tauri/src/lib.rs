@@ -16,7 +16,7 @@ use workspace::RepoInfo;
 /// argument checks in `validate` pass.
 /// `status` would refresh the index's stat cache, but GIT_OPTIONAL_LOCKS=0
 /// (set in `run_git`) makes it skip that write.
-const ALLOWED: &[&str] = &["log", "show", "for-each-ref", "rev-parse", "reflog", "symbolic-ref", "status", "diff-tree", "ls-files"];
+const ALLOWED: &[&str] = &["log", "show", "for-each-ref", "rev-parse", "reflog", "symbolic-ref", "status", "diff-tree", "ls-files", "ls-tree"];
 
 /// Rejects anything that could modify the repository or write files.
 fn validate(args: &[String]) -> Result<(), String> {
