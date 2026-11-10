@@ -6,7 +6,7 @@
 //! does a single, narrow thing, with its paths checked to stay inside the
 //! repository.
 
-use crate::submodule::{update_all, SubmoduleUpdate};
+use crate::submodule::{update_all, SubmoduleFailure, SubmoduleUpdate};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -161,12 +161,22 @@ pub(crate) fn commit(repo: &str, message: &str, paths: &[String]) -> Result<Stri
 /// Undoes pending changes. `tracked` paths (in the checked-out changeset) get
 /// their committed content back, in the working tree and the index. `created`
 /// paths (new files) are unstaged and moved to the Trash, so they can still be
-/// recovered.
+/// recovered. Submodules among them are put back properly (see `undo`); the
+/// result says which, and which couldn't be.
 #[tauri::command]
-pub async fn undo_changes(repo: String, tracked: Vec<String>, created: Vec<String>) -> Result<(), String> {
+pub async fn undo_changes(repo: String, tracked: Vec<String>, created: Vec<String>) -> Result<SubmoduleUpdate, String> {
     tauri::async_runtime::spawn_blocking(move || undo(&repo, &tracked, &created, &to_trash))
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// Of `paths`, the ones that are submodules in `tree_or_index` (an `ls-tree HEAD` or `ls-files --stage` listing).
+fn gitlinks(listing: &str) -> Vec<String> {
+    listing
+        .split('\0')
+        .filter(|e| e.starts_with("160000 "))
+        .filter_map(|e| e.split_once('\t').map(|(_, p)| p.to_string()))
+        .collect()
 }
 
 fn to_trash(files: &[&PathBuf]) -> Result<(), String> {
@@ -174,23 +184,48 @@ fn to_trash(files: &[&PathBuf]) -> Result<(), String> {
 }
 
 /// `discard` gets rid of the new files (the Trash in the app; tests delete them).
-fn undo(repo: &str, tracked: &[String], created: &[String], discard: &dyn Fn(&[&PathBuf]) -> Result<(), String>) -> Result<(), String> {
+///
+/// Submodules need more than their entry in the index put back. A new one is
+/// removed from everything git keeps about it (as Remove Submodule does) and
+/// its folder discarded. A moved or removed one is checked out (or set up)
+/// again at the changeset HEAD records, just that one.
+pub(crate) fn undo(repo: &str, tracked: &[String], created: &[String], discard: &dyn Fn(&[&PathBuf]) -> Result<(), String>) -> Result<SubmoduleUpdate, String> {
     let root = repo_root(repo)?;
     for p in tracked.iter().chain(created) {
         check_relative(p)?;
     }
+    let mut result = SubmoduleUpdate::default();
+    // New submodules: cleaned up first (this edits .gitmodules, which may itself be among the files).
+    let new_links = if created.is_empty() { vec![] } else { gitlinks(&git(&root, &["ls-files", "--stage", "-z", "--"], created, None)?) };
+    let mut gone: Vec<PathBuf> = Vec::new();
+    for p in &new_links {
+        match crate::submodule::remove(&root, p) {
+            Ok(folder) => gone.push(folder),
+            Err(error) => result.failed.push(SubmoduleFailure { path: p.clone(), error }),
+        }
+    }
+    let created: Vec<String> = created.iter().filter(|p| !new_links.contains(p)).cloned().collect();
     let files: Vec<PathBuf> = created.iter().map(|p| resolve(repo, p)).collect::<Result<_, _>>()?;
     if !created.is_empty() {
-        git(&root, &["rm", "--cached", "--quiet", "--ignore-unmatch", "-r", "--"], created, None)?;
+        git(&root, &["rm", "--cached", "--quiet", "--ignore-unmatch", "-r", "--"], &created, None)?;
     }
+    // Moved or removed submodules: their folders follow the restored entries, after .gitmodules is back.
+    let old_links = if tracked.is_empty() { vec![] } else { gitlinks(&git(&root, &["ls-tree", "-z", "HEAD", "--"], tracked, None).unwrap_or_default()) };
     if !tracked.is_empty() {
         git(&root, &["restore", "--source=HEAD", "--staged", "--worktree", "--"], tracked, None)?;
     }
-    let existing: Vec<&PathBuf> = files.iter().filter(|f| f.symlink_metadata().is_ok()).collect();
+    for p in &old_links {
+        match crate::submodule::restore_submodule(&root, p) {
+            Ok(()) => result.updated.push(p.clone()),
+            Err(error) => result.failed.push(SubmoduleFailure { path: p.clone(), error }),
+        }
+    }
+    let existing: Vec<&PathBuf> = files.iter().chain(&gone).filter(|f| f.symlink_metadata().is_ok()).collect();
     if !existing.is_empty() {
         discard(&existing)?;
     }
-    Ok(())
+    result.put_away = new_links.into_iter().filter(|p| !result.failed.iter().any(|f| &f.path == p)).collect();
+    Ok(result)
 }
 
 /// Pushes the checked-out branch and returns a summary like "Pushed main to origin".

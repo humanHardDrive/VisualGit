@@ -548,9 +548,20 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     // Tracked files go back to their committed content; a rename also restores its old path.
     const tracked = files.flatMap((f) => (isNew(f) ? (f.staged === "R" && f.origPath ? [f.origPath] : []) : [f.path]));
     const what = files.length === 1 ? files[0].path : `${files.length} files`;
+    // Submodules are put back too: a moved one to its recorded changeset, a new one taken out entirely.
+    const paths = files.map((f) => f.path);
+    const runner = tauriRunner(repo);
+    const listings = await Promise.all([
+      runner.run(["ls-files", "--stage", "-z", "--", ...paths]).catch(() => ""),
+      runner.run(["ls-tree", "-z", "HEAD", "--", ...paths]).catch(() => ""),
+    ]);
+    const submodules = listings.some((l) => /(^|\0)160000 /.test(l));
     const ok = await ask(
       `Undo the changes to ${what}? Their content goes back to the checked-out changeset and your edits are lost.` +
-        (created.length ? `\n\nNew files (${created.length}) are moved to the Trash.` : ""),
+        (created.length ? `\n\nNew files (${created.length}) are moved to the Trash.` : "") +
+        (submodules
+          ? "\n\nSubmodules go back too: a moved one is checked out at the changeset recorded for it, a removed one is set up again, and a new one is taken out of .gitmodules and git's records, its folder moved to the Trash."
+          : ""),
       { title: "Undo Changes", kind: "warning", okLabel: "Undo Changes", cancelLabel: "Cancel" },
     );
     if (!ok) return;
@@ -559,8 +570,11 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     busy = true;
     updateCommitButton();
     try {
-      await invoke("undo_changes", { repo, tracked, created });
-      setStatus(`Undid changes to ${what}`, "ok");
+      const subs = await invoke<SubmoduleUpdate>("undo_changes", { repo, tracked, created });
+      const back = subs.updated.length ? ` Put back ${subs.updated.length === 1 ? `the submodule ${subs.updated[0]}` : `${subs.updated.length} submodules`} at the recorded changeset.` : "";
+      const out = subs.putAway.length ? ` Took out the new submodule${subs.putAway.length === 1 ? "" : "s"} ${subs.putAway.join(", ")}.` : "";
+      setStatus(`Undid changes to ${what}.${back}${out}`, "ok");
+      void reportSubmoduleFailures(subs, "undo");
       opts.onChanged();
     } catch (err) {
       setStatus(String(err), "error");

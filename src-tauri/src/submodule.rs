@@ -588,8 +588,32 @@ pub async fn remove_submodule(repo: String, path: String, from_disk: bool) -> Re
     .map_err(|e| e.to_string())?
 }
 
+/// After undoing a submodule's pending change (its entry in the index is the
+/// checked-out changeset's again): its folder follows. A moved one is checked
+/// out at the recorded changeset again; a removed one (its folder now a
+/// repository of its own, or gone) is set up as a submodule again, its
+/// repository moved back into .git/modules, or cloned if the folder is gone.
+pub(crate) fn restore_submodule(root: &Path, path: &str) -> Result<(), String> {
+    let _one_at_a_time = ADDING.lock().unwrap_or_else(|e| e.into_inner());
+    check_path(path)?;
+    let folder = root.join(path);
+    // Made standalone by Remove Submodule: its repository goes back where submodules keep theirs.
+    if folder.join(".git").is_dir() {
+        git(root, &["submodule", "--quiet", "absorbgitdirs", "--"], &[path.to_string()], None)
+            .map_err(|e| format!("Could not put {path}'s repository back under .git/modules: {e}"))?;
+    }
+    if submodule_name(root, path).is_none() {
+        return Err(format!("{path} isn't in .gitmodules, so git can't set it up as a submodule. Undo the change to .gitmodules too."));
+    }
+    git(root, &["submodule", "--quiet", "init", "--"], &[path.to_string()], None).map_err(|e| format!("Could not register {path} again: {e}"))?;
+    // Only this one: others may have pending changes of their own.
+    git(root, &["submodule", "--quiet", "update", "--init", "--recursive", "--"], &[path.to_string()], None)
+        .map_err(|e| format!("Could not check {path} out at its recorded changeset: {e}"))?;
+    Ok(())
+}
+
 /// The removal itself (see `remove_submodule`); returns the submodule's folder.
-fn remove(root: &Path, path: &str) -> Result<PathBuf, String> {
+pub(crate) fn remove(root: &Path, path: &str) -> Result<PathBuf, String> {
     let _one_at_a_time = ADDING.lock().unwrap_or_else(|e| e.into_inner());
     check_path(path)?;
     let staged = git(root, &["ls-files", "--stage", "--"], &[path.to_string()], None)?;
@@ -932,6 +956,79 @@ mod tests {
         assert!(refused.contains("separate repository"), "{refused}");
         assert_eq!(run(&root, &["rev-parse", "HEAD"]), at_one);
         assert!(!run(&root, &["diff", "--cached", "--name-only"]).contains("other"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn undoing_a_submodule_change_puts_the_submodule_back() {
+        let tmp = std::env::temp_dir().join(format!("visualgit-submodule-undo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let (lib, app) = (tmp.join("lib"), tmp.join("app"));
+        repo(&lib, &["one", "two"]);
+        let (one, two) = (run(&lib, &["rev-parse", "HEAD~1"]), run(&lib, &["rev-parse", "HEAD"]));
+        repo(&app, &["a"]);
+        run(&app, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.to_str().unwrap(), "lib"]);
+        run(&app.join("lib"), &["checkout", "-q", "--detach", &one]);
+        run(&app, &["add", "lib"]);
+        run(&app, &["commit", "-qm", "lib at one"]);
+        let root = repo_root(app.to_str().unwrap()).unwrap();
+        let delete = |files: &[&PathBuf]| -> Result<(), String> {
+            for f in files {
+                if f.is_dir() { std::fs::remove_dir_all(f) } else { std::fs::remove_file(f) }.map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        };
+        let clean = || run(&root, &["status", "--porcelain"]);
+        let undo = |tracked: &[&str], created: &[&str]| {
+            let t: Vec<String> = tracked.iter().map(|s| s.to_string()).collect();
+            let c: Vec<String> = created.iter().map(|s| s.to_string()).collect();
+            crate::pending::undo(root.to_str().unwrap(), &t, &c, &delete).unwrap()
+        };
+
+        // Moved (staged, or just checked out elsewhere): back at the recorded changeset.
+        move_to(&root, "lib", &two).unwrap();
+        let done = undo(&["lib"], &[]);
+        assert_eq!(done.updated, vec!["lib".to_string()]);
+        assert_eq!(run(&root.join("lib"), &["rev-parse", "HEAD"]), one);
+        assert_eq!(clean(), "");
+        run(&root.join("lib"), &["checkout", "-q", "--detach", &two]);
+        undo(&["lib"], &[]);
+        assert_eq!(run(&root.join("lib"), &["rev-parse", "HEAD"]), one);
+        assert_eq!(clean(), "");
+
+        // Removed (with .gitmodules): set up again, its repository back under .git/modules.
+        remove(&root, "lib").unwrap();
+        assert!(root.join("lib/.git").is_dir());
+        let done = undo(&["lib", ".gitmodules"], &[]);
+        assert!(done.failed.is_empty(), "{done:?}");
+        assert!(root.join("lib/.git").is_file(), "its repository went back under .git/modules");
+        assert_eq!(run(&root.join("lib"), &["rev-parse", "HEAD"]), one);
+        assert_eq!(run(&root, &["config", "--local", "--get", "submodule.lib.active"]), "true");
+        assert_eq!(clean(), "");
+        // Removed, but .gitmodules left as it is: says what else to undo.
+        remove(&root, "lib").unwrap();
+        let done = undo(&["lib"], &[]);
+        assert!(done.failed[0].error.contains("Undo the change to .gitmodules too"), "{done:?}");
+        undo(&["lib", ".gitmodules"], &[]);
+        assert_eq!(clean(), "");
+
+        // New: taken out of everything, folder gone, nothing left behind.
+        let info = PickChangesetInfo {
+            repo: root.to_string_lossy().into(),
+            path: "extra".into(),
+            source: lib.to_string_lossy().into(),
+            history: lib.to_string_lossy().into(),
+            remote: false,
+            current: None,
+        };
+        add(&root, &info, &two).unwrap();
+        let done = undo(&[".gitmodules"], &["extra"]);
+        assert_eq!(done.put_away, vec!["extra".to_string()]);
+        assert!(!root.join("extra").exists());
+        assert!(!root.join(".git/modules/extra").exists());
+        assert!(!run(&root, &["config", "--local", "--list"]).contains("submodule.extra"));
+        assert!(!std::fs::read_to_string(root.join(".gitmodules")).unwrap().contains("extra"));
+        assert_eq!(clean(), "");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
