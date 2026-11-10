@@ -1214,6 +1214,28 @@ function whereIs(path: string): { repo: string; path: string; submodule: string 
   return o ? { repo: o.root, path: o.path, submodule: o.at } : { repo: repoPath, path, submodule: null };
 }
 
+/**
+ * The repository that has the submodule at `path` (the open repository, or
+ * an open submodule it's inside), and its path there. Unlike `whereIs`, an
+ * opened submodule's own row belongs to the repository around it.
+ */
+function submoduleHome(path: string): { repo: string; path: string } | null {
+  const slash = path.lastIndexOf("/");
+  const w = whereIs(slash < 0 ? "" : path.slice(0, slash));
+  if (!w) return null;
+  const name = path.slice(slash + 1);
+  return { repo: w.repo, path: w.path ? `${w.path}/${name}` : name };
+}
+
+/** Opens the Choose Changeset window on a submodule's own history, to move it to another changeset. */
+function editSubmodule(path: string) {
+  const home = submoduleHome(path);
+  if (!home) return;
+  void invoke("open_edit_submodule_window", { repo: home.repo, path: home.path }).catch((err) =>
+    message(String(err), { title: `Could not edit the submodule ${path}`, kind: "error" }),
+  );
+}
+
 /** Opens the Add Submodule window, for a submodule in `folder` ("" for the top of the repository). */
 function openAddSubmodule(folder: string) {
   // Inside an open submodule, the new one goes into that submodule's repository.
@@ -1241,7 +1263,12 @@ async function showFolderMenu(folder: string) {
     const root = files?.list.nested?.get(folder)?.root ?? `${repoPath}/${folder}`;
     const checkedOut = files?.list.nested?.get(folder)?.checkedOut !== false;
     items.push({ id: "open-nested", text: kind === "submodule" ? "Open Submodule as Repository" : "Open as Repository", enabled: checkedOut, action: () => void openNested(root) });
-    if (kind === "submodule") items.push({ id: "remove-submodule", text: "Remove Submodule…", action: () => void removeSubmodule(folder) });
+    if (kind === "submodule") {
+      items.push(
+        { id: "edit-submodule", text: "Edit Submodule…", enabled: checkedOut, action: () => editSubmodule(folder) },
+        { id: "remove-submodule", text: "Remove Submodule…", action: () => void removeSubmodule(folder) },
+      );
+    }
     items.push({ item: "Separator" });
   }
   items.push({ id: "add-submodule", text: folder ? `Add Submodule in “${name}”…` : "Add Submodule…", action: () => openAddSubmodule(folder) });
@@ -1351,7 +1378,8 @@ async function ignoreFile(path: string, pattern: string, what: string) {
  * standalone repository on disk, or moving that to the Trash.
  */
 async function removeSubmodule(path: string) {
-  const w = whereIs(path);
+  // The repository around it (not its own, which an opened submodule's row would otherwise give).
+  const w = submoduleHome(path);
   if (!w || !repoPath) return;
   const repo = repoPath;
   const KEEP = "Remove, Keep the Folder";
@@ -1669,6 +1697,16 @@ if (inTauri()) {
     if (e.payload.repo !== repoPath) return;
     reload();
     notify(`Added the submodule ${e.payload.path} at ${e.payload.changeset.slice(0, 8)}. It's staged, with .gitmodules, for your next commit.`, "ok");
+  });
+  // A submodule moved to another changeset from its Edit Submodule window: staged in the repository that has it.
+  void listen<{ repo: string; path: string; changeset: string; submodules: SubmoduleUpdate }>("submodule-moved", (e) => {
+    const p = e.payload;
+    const inOpen = p.repo === repoPath || [...(files?.list.nested?.values() ?? [])].some((n) => n.root === p.repo);
+    if (!inOpen) return;
+    reload();
+    const where = p.repo === repoPath ? "" : ` in ${p.repo.split("/").pop()}`;
+    notify(`Moved the submodule ${p.path}${where} to ${p.changeset.slice(0, 8)}. It's staged for your next commit.${submodulesUpdated(p.submodules)}`, "ok");
+    void reportSubmoduleFailures(p.submodules, "move");
   });
   // A merge window that stopped for conflicts (or found pending changes) hands over to Pending Changes.
   void listen<{ repo: string }>("show-pending", async (e) => {

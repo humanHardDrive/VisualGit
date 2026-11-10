@@ -41,6 +41,9 @@ pub struct PickChangesetInfo {
     /// The repository whose history is shown: the local one, or the cached clone of a remote.
     history: String,
     remote: bool,
+    /// Set when editing a submodule that's already there (rather than adding one): the
+    /// changeset it's checked out at now. Its own repository is `history`.
+    current: Option<String>,
 }
 
 /// What each Add Submodule and Choose Changeset window is for, by window label.
@@ -210,19 +213,27 @@ pub async fn choose_submodule_changeset(
         source: if remote { source } else { history.to_string_lossy().into_owned() },
         history: history.to_string_lossy().into_owned(),
         remote,
+        current: None,
     };
     let label = label("submodule-pick-", (&root, &path));
     if let Some(old) = app.get_webview_window(&label) {
         old.destroy().ok();
     }
+    open_picker(&app, &windows, label, info, format!("Choose the Changeset for {path}"))?;
+    windows.add.lock().unwrap().remove(window.label());
+    window.destroy().map_err(|e| e.to_string())
+}
+
+/// Opens a Choose Changeset window on `info`'s repository.
+fn open_picker(app: &AppHandle, windows: &SubmoduleWindows, label: String, info: PickChangesetInfo, title: String) -> Result<(), String> {
     windows.pick.lock().unwrap().insert(label.clone(), info);
-    let picker = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("submodule-pick.html".into()))
-        .title(format!("Choose the Changeset for {path}"))
+    let picker = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("submodule-pick.html".into()))
+        .title(title)
         .inner_size(1180.0, 720.0)
         .min_inner_size(640.0, 400.0)
         .build()
         .map_err(|e| e.to_string())?;
-    // Closed (added or not): forget it, and a remote's clone, which was only for showing its history.
+    // Closed (done or not): forget it, and a remote's clone, which was only for showing its history.
     let handle = picker.app_handle().clone();
     picker.on_window_event(move |e| {
         if let WindowEvent::Destroyed = e {
@@ -233,8 +244,119 @@ pub async fn choose_submodule_changeset(
             }
         }
     });
-    windows.add.lock().unwrap().remove(window.label());
-    window.destroy().map_err(|e| e.to_string())
+    Ok(())
+}
+
+/// The submodule at `path` in `root`, checked out: its folder and the changeset it's at.
+fn checked_out_submodule(root: &Path, path: &str) -> Result<(PathBuf, String), String> {
+    check_path(path)?;
+    let staged = git(root, &["ls-files", "--stage", "--"], &[path.to_string()], None)?;
+    if !staged.lines().any(|l| l.starts_with("160000 ") && l.split('\t').nth(1) == Some(path)) {
+        return Err(format!("{path} isn't a submodule"));
+    }
+    let folder = root.join(path);
+    if !folder.join(".git").exists() {
+        return Err(format!("The submodule {path} isn't checked out, so there's no history to choose from. Switch to its changeset (or run git submodule update --init) first."));
+    }
+    let head = git(&folder, &["rev-parse", "--verify", "-q", "HEAD"], &[], None).map_err(|_| format!("The submodule {path} has nothing checked out"))?;
+    Ok((folder, head.trim().to_string()))
+}
+
+/// Opens the Choose Changeset window to move the submodule at `path` (in `repo`) to another changeset.
+#[tauri::command]
+pub async fn open_edit_submodule_window(app: AppHandle, windows: State<'_, SubmoduleWindows>, repo: String, path: String) -> Result<(), String> {
+    let root = repo_root(&repo)?;
+    let path = path.trim().trim_matches('/').to_string();
+    let (folder, current) = checked_out_submodule(&root, &path)?;
+    let label = label("submodule-pick-", (&root, &path));
+    if let Some(done) = focus(&app, &label) {
+        return done;
+    }
+    let url = submodule_name(&root, &path)
+        .and_then(|n| git(&root, &["config", "--file", &root.join(".gitmodules").to_string_lossy(), "--get", &format!("submodule.{n}.url")], &[], None).ok())
+        .map(|u| u.trim().to_string())
+        .unwrap_or_else(|| folder.to_string_lossy().into_owned());
+    let info = PickChangesetInfo {
+        repo: root.to_string_lossy().into_owned(),
+        path: path.clone(),
+        source: url,
+        history: folder.to_string_lossy().into_owned(),
+        // Its own repository: never removed when the window closes.
+        remote: false,
+        current: Some(current),
+    };
+    open_picker(&app, &windows, label, info, format!("Edit Submodule {path}"))
+}
+
+/// For an edited submodule: fetches its remotes, so changesets made since the last fetch can be chosen.
+#[tauri::command]
+pub async fn fetch_submodule(window: Window, windows: State<'_, SubmoduleWindows>) -> Result<(), String> {
+    let info = windows.pick.lock().unwrap().get(window.label()).cloned().ok_or("This window has no submodule")?;
+    if info.current.is_none() {
+        return Err("Only a submodule being edited can be fetched".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        git(Path::new(&info.history), &["fetch", "--all", "--prune", "--quiet"], &[], None).map(|_| ()).map_err(|e| format!("Could not fetch: {e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Moves the edited submodule to changeset `at`: checked out there (detached), staged in its
+/// repository for the next commit, with submodules inside it following. Tells the main window
+/// (`submodule-moved`) and closes the calling window.
+#[tauri::command]
+pub async fn move_submodule(app: AppHandle, window: Window, windows: State<'_, SubmoduleWindows>, at: String) -> Result<String, String> {
+    let info = windows.pick.lock().unwrap().get(window.label()).cloned().ok_or("This window has no submodule")?;
+    if info.current.is_none() {
+        return Err("This window adds a submodule; there's none to move yet".into());
+    }
+    let root = repo_root(&info.repo)?;
+    let (path, at2) = (info.path.clone(), at.clone());
+    let (changeset, submodules) = tauri::async_runtime::spawn_blocking(move || move_to(&root, &path, &at2)).await.map_err(|e| e.to_string())??;
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.emit("submodule-moved", &SubmoduleMoved { repo: info.repo.clone(), path: info.path.clone(), changeset: changeset.clone(), submodules });
+    }
+    window.destroy().map_err(|e| e.to_string())?;
+    Ok(changeset)
+}
+
+#[derive(Serialize)]
+struct SubmoduleMoved {
+    repo: String,
+    path: String,
+    changeset: String,
+    submodules: SubmoduleUpdate,
+}
+
+fn move_to(root: &Path, path: &str, at: &str) -> Result<(String, SubmoduleUpdate), String> {
+    {
+        let _one_at_a_time = ADDING.lock().unwrap_or_else(|e| e.into_inner());
+        let (folder, current) = checked_out_submodule(root, path)?;
+        let at = commit_id(&folder, at)?;
+        if at == current {
+            return Err(format!("The submodule {path} is already at {}", &at[..8]));
+        }
+        // Moving would carry (or trip over) its uncommitted changes: they're the submodule's to commit first.
+        let changes = git(&folder, &["status", "--porcelain", "--untracked-files=no"], &[], None)?;
+        if !changes.trim().is_empty() {
+            let n = changes.lines().count();
+            return Err(format!(
+                "The submodule {path} has {n} uncommitted change{} of its own. Commit or undo {} in the submodule first (right-click it: Open Submodule as Repository).",
+                if n == 1 { "" } else { "s" },
+                if n == 1 { "it" } else { "them" }
+            ));
+        }
+        git(&folder, &["checkout", "--quiet", "--detach", &at], &[], None).map_err(|e| format!("Could not check out {} in {path}: {e}", &at[..8]))?;
+        git(root, &["add", "--"], &[path.to_string()], None).map_err(|e| format!("Moved the submodule, but could not stage it: {e}"))?;
+    }
+    // Submodules inside it follow, as they would after a switch.
+    let submodules = update_all(&root.join(path));
+    Ok((at_of(root, path)?, submodules))
+}
+
+fn at_of(root: &Path, path: &str) -> Result<String, String> {
+    Ok(git(&root.join(path), &["rev-parse", "HEAD"], &[], None)?.trim().to_string())
 }
 
 /// Adds the submodule chosen in a Choose Changeset window, checked out at
@@ -243,6 +365,9 @@ pub async fn choose_submodule_changeset(
 #[tauri::command]
 pub async fn add_submodule(app: AppHandle, window: Window, windows: State<'_, SubmoduleWindows>, at: String) -> Result<String, String> {
     let info = windows.pick.lock().unwrap().get(window.label()).cloned().ok_or("This window has no submodule to add")?;
+    if info.current.is_some() {
+        return Err("This window edits a submodule that's already there".into());
+    }
     let at = commit_id(Path::new(&info.history), &at)?;
     let root = repo_root(&info.repo)?;
     let added = SubmoduleAdded { repo: info.repo.clone(), path: info.path.clone(), changeset: at.clone() };
@@ -666,6 +791,7 @@ mod tests {
             source: lib.to_string_lossy().into(),
             history: lib.to_string_lossy().into(),
             remote: false,
+            current: None,
         };
         add(&root, &local, &first).unwrap();
         assert_eq!(run(&root.join("libs/lib"), &["rev-parse", "HEAD"]), first);
@@ -679,6 +805,23 @@ mod tests {
         assert!(status.starts_with(&first), "{status}");
         // Taken now.
         assert!(submodule_target(&root, "libs/lib").unwrap_err().contains("already"));
+
+        // Edited: moved to another changeset, staged, with the folder there too.
+        let second = run(&lib, &["rev-parse", "HEAD"]);
+        let (moved, _) = move_to(&root, "libs/lib", &second[..10]).unwrap();
+        assert_eq!(moved, second);
+        assert_eq!(run(&root.join("libs/lib"), &["rev-parse", "HEAD"]), second);
+        assert!(run(&root, &["ls-files", "--stage", "libs/lib"]).starts_with(&format!("160000 {second}")));
+        assert!(run(&root, &["diff", "--cached", "--name-only"]).lines().any(|l| l == "libs/lib"));
+        assert!(move_to(&root, "libs/lib", &second).unwrap_err().contains("already at"));
+        // Not with uncommitted changes of its own in the way.
+        std::fs::write(root.join("libs/lib/a"), "edited").unwrap();
+        assert!(move_to(&root, "libs/lib", &first).unwrap_err().contains("uncommitted change"));
+        assert_eq!(run(&root.join("libs/lib"), &["rev-parse", "HEAD"]), second);
+        run(&root.join("libs/lib"), &["checkout", "--", "a"]);
+        assert!(move_to(&root, "x", &first).unwrap_err().contains("isn't a submodule"));
+        // Back where it was, for the rest of the test.
+        move_to(&root, "libs/lib", &first).unwrap();
 
         // Remote: through a clone made only to show its history, which can go afterwards.
         let peek = tmp.join("peek");

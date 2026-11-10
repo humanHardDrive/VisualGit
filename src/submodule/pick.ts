@@ -1,7 +1,8 @@
 /**
  * The Choose Changeset window: the Branch Explorer of the repository being
- * added as a submodule. Double-click a changeset (or right-click it and
- * choose Use This Changeset) to add the submodule checked out there. The
+ * added as a submodule, or of a submodule being edited. Double-click a
+ * changeset (or right-click it and choose Use This Changeset) to add the
+ * submodule checked out there, or to move the edited one there. The
  * search box finds changesets by id or message, and branches by name; the
  * panel on the right shows the selected one. ←/→ move along a branch, ↑/↓
  * between lanes, Home goes to the repository's checked-out changeset.
@@ -31,6 +32,8 @@ interface Info {
   source: string;
   history: string;
   remote: boolean;
+  /** Editing a submodule that's already there: the changeset it's at now. */
+  current: string | null;
 }
 
 let info: Info | null = null;
@@ -40,7 +43,9 @@ let adding = false;
 /** The selected changeset or branch: Enter uses it, the arrow keys move from it. */
 let current: Selection | null = null;
 
-const HINT = "Double-click a changeset to use it for the submodule";
+let HINT = "Double-click a changeset to use it for the submodule";
+/** Editing an existing submodule (moving it), rather than adding one. */
+const editing = () => !!info?.current;
 
 function say(text: string, isError = false) {
   status.textContent = text;
@@ -54,10 +59,12 @@ function showDetails(sel: Selection | null) {
   else showBranch(details, model, sel.id, go);
   const hash = sel.kind === "commit" ? sel.hash : model.branches[sel.id].commits.at(-1);
   if (!hash) return;
+  const here = editing() && hash === info?.current;
   const button = Object.assign(document.createElement("button"), {
     className: "primary pick-use",
-    textContent: sel.kind === "commit" ? "Use This Changeset" : "Use Its Latest Changeset",
-    title: `Add the submodule checked out at ${hash.slice(0, 8)}`,
+    textContent: here ? "The Submodule Is Here" : editing() ? (sel.kind === "commit" ? "Move to This Changeset" : "Move to Its Latest Changeset") : sel.kind === "commit" ? "Use This Changeset" : "Use Its Latest Changeset",
+    title: editing() ? `Move the submodule to ${hash.slice(0, 8)}` : `Add the submodule checked out at ${hash.slice(0, 8)}`,
+    disabled: here,
     onclick: () => void use(hash),
   });
   // Above the message, so it's in view without scrolling.
@@ -72,7 +79,8 @@ function describe(sel: Selection | null) {
   if (!model || sel?.kind !== "commit") return say(HINT);
   const c = model.commits.get(sel.hash);
   const lane = model.branches[model.owner.get(sel.hash)!];
-  say(`${sel.hash.slice(0, 8)} · ${lane?.name ?? ""} · ${c?.subject || "(no message)"} · double-click to use it`);
+  const what = editing() ? (sel.hash === info?.current ? "the submodule is here now" : "double-click to move it here") : "double-click to use it";
+  say(`${sel.hash.slice(0, 8)} · ${lane?.name ?? ""} · ${c?.subject || "(no message)"} · ${what}`);
 }
 
 /** Goes to a changeset or branch: from the details panel's links, search and the arrow menu. */
@@ -109,11 +117,12 @@ async function showMenu(sel: Selection) {
   if (!model) return;
   const items =
     sel.kind === "commit"
-      ? [{ id: "use", text: "Use This Changeset", action: () => void use(sel.hash) }]
+      ? [{ id: "use", text: editing() ? "Move to This Changeset" : "Use This Changeset", enabled: sel.hash !== info?.current, action: () => void use(sel.hash) }]
       : (() => {
           // A branch: its latest changeset.
           const tip = model.branches[sel.id].commits.at(-1);
-          return [{ id: "use-tip", text: "Use Its Latest Changeset", enabled: !!tip, action: () => tip && void use(tip) }];
+          const text = editing() ? "Move to Its Latest Changeset" : "Use Its Latest Changeset";
+          return [{ id: "use-tip", text, enabled: !!tip && tip !== info?.current, action: () => tip && void use(tip) }];
         })();
   const menu = await Menu.new({ items });
   await menu.popup();
@@ -121,6 +130,7 @@ async function showMenu(sel: Selection) {
 
 async function use(hash: string) {
   if (!info || !model || adding || !hash) return;
+  if (editing()) return moveTo(hash);
   const c = model.commits.get(hash);
   const ok = await ask(`Add ${info.source} as a submodule in ${info.path}, checked out at ${hash.slice(0, 8)} “${c?.subject || "(no message)"}”?\n\nIt's staged, with .gitmodules, for your next commit.`, {
     title: "Add Submodule",
@@ -140,6 +150,46 @@ async function use(hash: string) {
     say("The submodule wasn't added. See the message for why.", true);
     await message(String(err), { title: "Could not add the submodule", kind: "error" });
   }
+}
+
+/** Editing: moves the submodule to `hash`, staged in its repository for the next commit. */
+async function moveTo(hash: string) {
+  if (!info?.current || !model || adding) return;
+  if (hash === info.current) return say(`The submodule is already at ${hash.slice(0, 8)}.`);
+  const subject = (h: string) => `${h.slice(0, 8)} “${model!.commits.get(h)?.subject || "(no message)"}”`;
+  const ok = await ask(`Move the submodule ${info.path} from ${subject(info.current)} to ${subject(hash)}?\n\nThe move is staged for your next commit, in the repository that has the submodule.`, {
+    title: "Edit Submodule",
+    kind: "info",
+    okLabel: "Move Submodule",
+    cancelLabel: "Cancel",
+  });
+  if (!ok) return;
+  adding = true;
+  say("Moving the submodule…");
+  try {
+    // On success the main window is told and this window closes.
+    await invoke("move_submodule", { at: hash });
+  } catch (err) {
+    adding = false;
+    say("The submodule wasn't moved. See the message for why.", true);
+    await message(String(err), { title: "Could not move the submodule", kind: "error" });
+  }
+}
+
+/** Editing: gets the remote's newer changesets, then shows them. */
+async function fetchRemote() {
+  const btn = $<HTMLButtonElement>("pick-fetch");
+  btn.disabled = true;
+  say("Fetching from its remote…");
+  try {
+    await invoke("fetch_submodule");
+    await loadHistory();
+    say("Fetched. " + HINT);
+  } catch (err) {
+    say("Couldn't fetch. See the message for why.", true);
+    await message(String(err), { title: "Could not fetch", kind: "error" });
+  }
+  btn.disabled = false;
 }
 
 const ARROWS: Record<string, "left" | "right" | "up" | "down"> = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" };
@@ -163,6 +213,7 @@ function arrowTarget(dir: "left" | "right" | "up" | "down"): string | null {
 }
 
 $("pick-cancel").addEventListener("click", () => void getCurrentWindow().destroy());
+$("pick-fetch").addEventListener("click", () => void fetchRemote());
 $("zoom-in").addEventListener("click", () => explorer.zoomBy(1.25));
 $("zoom-out").addEventListener("click", () => explorer.zoomBy(0.8));
 $("zoom-fit").addEventListener("click", () => explorer.fit());
@@ -198,22 +249,45 @@ async function start() {
     return;
   }
   const name = info.source.replace(/[/\\]+$/, "").split(/[/:\\]/).pop() ?? info.source;
-  $("pick-title").textContent = `Choose the changeset of ${name.replace(/\.git$/i, "")} for ${info.path}`;
   const sub = $("pick-sub");
-  sub.textContent = `From ${info.source}`;
+  if (info.current) {
+    HINT = "Double-click a changeset to move the submodule there";
+    $("pick-title").textContent = `Edit the submodule ${info.path}`;
+    sub.textContent = `Now at ${info.current.slice(0, 8)} · from ${info.source}`;
+    $("pick-fetch").hidden = false;
+    document.title = `Edit Submodule ${info.path}`;
+  } else {
+    $("pick-title").textContent = `Choose the changeset of ${name.replace(/\.git$/i, "")} for ${info.path}`;
+    sub.textContent = `From ${info.source}`;
+  }
   sub.title = info.source;
   say("Reading its history…");
+  if (!(await loadHistory())) return;
+  say(HINT);
+  // Editing: start where the submodule is now.
+  if (info.current && model?.commits.has(info.current)) go({ kind: "commit", hash: info.current });
+}
+
+/** Reads (or re-reads, after a fetch) the repository's history into the explorer. */
+async function loadHistory(): Promise<boolean> {
+  if (!info) return false;
+  const first = !model;
   try {
     model = inferModel(await loadRepo(tauriRunner(info.history)));
   } catch (err) {
     say("Could not read the repository.", true);
     await message(String(err), { title: "Could not read the repository", kind: "error" });
-    return;
+    return false;
   }
   layout = layoutModel(model);
-  explorer.setData(model, layout, "latest");
+  explorer.setData(model, layout, first ? "latest" : "keep");
   searchInput.disabled = false;
-  say(HINT);
+  search.refresh();
+  if (current) {
+    const gone = current.kind === "commit" ? !model.commits.has(current.hash) : !model.branches[current.id];
+    describe(gone ? null : current);
+  }
+  return true;
 }
 
 void start();

@@ -149,6 +149,9 @@ pub fn run() {
             submodule::pick_changeset_info,
             submodule::add_submodule,
             submodule::remove_submodule,
+            submodule::open_edit_submodule_window,
+            submodule::fetch_submodule,
+            submodule::move_submodule,
         ])
         .run(tauri::generate_context!())
         .expect("error while running VisualGit");
