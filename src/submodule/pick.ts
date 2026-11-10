@@ -10,7 +10,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Menu } from "@tauri-apps/api/menu";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { ask } from "@tauri-apps/plugin-dialog";
+import { ask, message } from "@tauri-apps/plugin-dialog";
 import { loadRepo } from "../git/load.ts";
 import { tauriRunner } from "../git/tauriRunner.ts";
 import { inferModel, type Model } from "../model/infer.ts";
@@ -136,7 +136,9 @@ async function use(hash: string) {
     await invoke("add_submodule", { at: hash });
   } catch (err) {
     adding = false;
-    say(String(err), true);
+    // git's errors can run to several lines: show them whole, in a message box (the status line is one line).
+    say("The submodule wasn't added. See the message for why.", true);
+    await message(String(err), { title: "Could not add the submodule", kind: "error" });
   }
 }
 
@@ -204,7 +206,8 @@ async function start() {
   try {
     model = inferModel(await loadRepo(tauriRunner(info.history)));
   } catch (err) {
-    say(`Could not read the repository: ${err}`, true);
+    say("Could not read the repository.", true);
+    await message(String(err), { title: "Could not read the repository", kind: "error" });
     return;
   }
   layout = layoutModel(model);

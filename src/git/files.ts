@@ -32,6 +32,58 @@ export interface FileList {
   status: Map<string, FileStatus>;
   /** The changeset that last changed each file, once loaded (see `loadLastChanges`). */
   last?: Map<string, LastChange>;
+  /**
+   * Submodules (and repositories inside) whose own files have been listed in
+   * here too, by repository-relative path. Their files' paths, statuses and
+   * last changes are prefixed with that path (see `nestList`).
+   */
+  nested?: Map<string, NestedRepo>;
+  /** Last changes of files inside `nested` repositories, from their own histories. */
+  nestedLast?: Map<string, LastChange>;
+}
+
+export interface NestedRepo {
+  /** Its folder on disk. */
+  root: string;
+  /** False for a submodule that hasn't been checked out (an empty folder): nothing to list. */
+  checkedOut: boolean;
+}
+
+/** A submodule, or a repository inside this one: shown as a folder that opens onto its own files. */
+export const isRepoKind = (kind: FileKind | undefined): kind is "submodule" | "repository" => kind === "submodule" || kind === "repository";
+
+/**
+ * Adds the files of the repository at `at` (listed on its own, with paths
+ * relative to it) to `parent`, under `at/`.
+ */
+export function nestList(parent: FileList, at: string, root: string, sub: FileList) {
+  const under = (p: string) => `${at}/${p}`;
+  const paths = new Set(parent.paths);
+  for (const p of sub.paths) paths.add(under(p));
+  parent.paths = [...paths].sort();
+  for (const [p, k] of sub.kinds) parent.kinds.set(under(p), k);
+  for (const [p, s] of sub.status) parent.status.set(under(p), s);
+  parent.nestedLast ??= new Map();
+  for (const m of [sub.last, sub.nestedLast]) for (const [p, c] of m ?? []) parent.nestedLast.set(under(p), c);
+  parent.nested ??= new Map();
+  parent.nested.set(at, { root, checkedOut: true });
+  for (const [p, r] of sub.nested ?? []) parent.nested.set(under(p), r);
+}
+
+/** The last change to `path`, from this repository's history or (inside a submodule) the submodule's. */
+export const lastChangeOf = (list: FileList, path: string) => list.last?.get(path) ?? list.nestedLast?.get(path);
+
+/**
+ * Which listed repository `path` belongs to: the innermost submodule it's
+ * in (or is), with the path relative to it; null for this repository's own.
+ */
+export function ownerOf(list: FileList, path: string): { at: string; root: string; path: string } | null {
+  let best: string | null = null;
+  for (const at of list.nested?.keys() ?? []) {
+    if ((path === at || path.startsWith(`${at}/`)) && at.length > (best?.length ?? -1)) best = at;
+  }
+  if (best === null) return null;
+  return { at: best, root: list.nested!.get(best)!.root, path: path === best ? "" : path.slice(best.length + 1) };
 }
 
 /**
@@ -153,6 +205,8 @@ export interface Folder {
   changed: number;
   /** The most recent last change of any file below, once known. */
   latest?: LastChange;
+  /** Set when this folder is a submodule or another repository inside this one. */
+  repo?: "submodule" | "repository";
 }
 
 /** Turns a flat path list into folders (sorted, folders before files). */
@@ -171,9 +225,12 @@ export function buildTree(list: FileList): Folder {
   };
   for (const p of list.paths) {
     const slash = p.lastIndexOf("/");
-    const folder = folderOf(slash < 0 ? "" : p.slice(0, slash));
-    folder.files.push(p);
-    const change = list.last?.get(p);
+    const kind = list.kinds.get(p);
+    // A submodule (or repository inside) is a folder, which opens onto its own files once they're listed.
+    const folder = isRepoKind(kind) ? folderOf(p) : folderOf(slash < 0 ? "" : p.slice(0, slash));
+    if (isRepoKind(kind)) folder.repo = kind;
+    else folder.files.push(p);
+    const change = lastChangeOf(list, p);
     if (change) {
       // A folder was last modified when anything inside it was.
       let dir = folder.path;

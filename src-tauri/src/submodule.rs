@@ -5,8 +5,8 @@
 //!    the app's cache so its history can be shown.
 //! 2. *Choose Changeset* (`submodule-pick-…`): that repository's Branch
 //!    Explorer. Double-clicking a changeset adds the submodule checked out
-//!    there (`git submodule add`, then a detached checkout), staged for the
-//!    next commit.
+//!    there (`git submodule add`, then a detached checkout, then `git
+//!    submodule init`), staged for the next commit.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -261,7 +261,12 @@ struct SubmoduleAdded {
     changeset: String,
 }
 
+/// One submodule is added at a time: each add edits .gitmodules and the
+/// index, and a second running alongside would find the index locked.
+static ADDING: Mutex<()> = Mutex::new(());
+
 fn add(root: &Path, info: &PickChangesetInfo, at: &str) -> Result<(), String> {
+    let _one_at_a_time = ADDING.lock().unwrap_or_else(|e| e.into_inner());
     submodule_target(root, &info.path)?;
     // `file` transport is off by default for submodules; the user chose this repository.
     let mut args = vec!["-c", "protocol.file.allow=always", "submodule", "add", "--quiet"];
@@ -281,6 +286,11 @@ fn add(root: &Path, info: &PickChangesetInfo, at: &str) -> Result<(), String> {
             .map_err(|e| format!("Added the submodule, but could not check out {}: {e}", &at[..8]))?;
     }
     git(root, &["add", "--"], &[info.path.clone(), ".gitmodules".into()], None).map_err(|e| format!("Could not stage the submodule: {e}"))?;
+    // Register it in .git/config from .gitmodules (its URL, and that it's active), so
+    // `git submodule update` and friends work on it straight away. Just this one:
+    // the others are left as they are.
+    git(root, &["submodule", "--quiet", "init", "--"], &[info.path.clone()], None)
+        .map_err(|e| format!("Added the submodule, but `git submodule init` failed: {e}"))?;
     Ok(())
 }
 
@@ -336,6 +346,12 @@ mod tests {
         assert_eq!(run(&root.join("libs/lib"), &["rev-parse", "HEAD"]), first);
         let staged = run(&root, &["diff", "--cached", "--name-status"]);
         assert!(staged.contains("A\t.gitmodules") && staged.contains("A\tlibs/lib"), "{staged}");
+        // Initialised: registered in .git/config, and `git submodule status` has it at the chosen changeset.
+        assert_eq!(run(&root, &["config", "--local", "--get", "submodule.libs/lib.active"]), "true");
+        assert!(!run(&root, &["config", "--local", "--get", "submodule.libs/lib.url"]).is_empty());
+        let status = run(&root, &["submodule", "status", "--", "libs/lib"]);
+        // (`run` trims the leading space; "-" would be uninitialised, "+" a different changeset.)
+        assert!(status.starts_with(&first), "{status}");
         // Taken now.
         assert!(submodule_target(&root, "libs/lib").unwrap_err().contains("already"));
 
@@ -354,6 +370,14 @@ mod tests {
         std::fs::remove_dir_all(&peek).unwrap();
         assert_eq!(run(&root.join("other"), &["rev-parse", "HEAD"]), tip);
         run(&root.join("other"), &["fsck", "--no-progress"]);
+
+        // Added one after the other, each is initialised on its own and keeps its own changeset.
+        let status = run(&root, &["submodule", "status"]);
+        let lines: Vec<&str> = status.lines().map(str::trim).collect();
+        assert_eq!(lines.len(), 2, "{status}");
+        assert!(lines.iter().any(|l| l.starts_with(&first) && l.contains("libs/lib")), "{status}");
+        assert!(lines.iter().any(|l| l.starts_with(&tip) && l.contains("other")), "{status}");
+        assert_eq!(run(&root, &["config", "--local", "--get", "submodule.other.active"]), "true");
 
         assert!(check_path("../out").is_err());
         assert!(check_path("a/.git/b").is_err());

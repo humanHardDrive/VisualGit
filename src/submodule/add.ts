@@ -9,7 +9,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { open } from "@tauri-apps/plugin-dialog";
+import { message, open } from "@tauri-apps/plugin-dialog";
 import type { RepoInfo } from "../view/workspaceList.ts";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -127,8 +127,10 @@ async function submit() {
     // On success this window closes and the Choose Changeset window opens.
     await invoke("choose_submodule_changeset", { repo: info.repo, path: pathInput.value, source: src, remote: remote() });
   } catch (err) {
-    error.textContent = String(err);
+    // git's errors can run to several lines: show them whole, in a message box.
+    error.textContent = "Couldn't continue. See the message for why.";
     progress.textContent = "";
+    await message(String(err), { title: remote() ? "Could not fetch the repository" : "Could not use that repository", kind: "error" });
     busy = false;
     next.disabled = false;
     for (const el of form.querySelectorAll<HTMLInputElement | HTMLButtonElement>("input, #sm-browse, .sm-list button")) el.disabled = false;

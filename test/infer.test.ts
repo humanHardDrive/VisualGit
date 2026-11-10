@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { loadChangesetFiles } from "../src/git/changeset.ts";
-import { buildTree, fileType, loadFiles, loadLastChanges } from "../src/git/files.ts";
+import { buildTree, fileType, lastChangeOf, loadFiles, loadLastChanges, nestList, ownerOf } from "../src/git/files.ts";
 import { loadFileHistory } from "../src/git/history.ts";
 import { ignorePatterns } from "../src/git/ignore.ts";
 import { loadRepo } from "../src/git/load.ts";
@@ -587,6 +587,51 @@ describe("files", () => {
     expect(fileType("link", (await loadFiles(nodeRunner(dir))).kinds.get("link"))).toBe("Symbolic link");
     expect(fileType("bin/tool", "executable")).toBe("Program");
     expect(fileType("a/Thing.XYZ", undefined)).toBe("XYZ file");
+  });
+
+  it("opens a submodule like a folder, onto its own files", async () => {
+    const { dir, git, commit } = fixture();
+    const lib = fixture();
+    mkdirSync(join(lib.dir, "src"));
+    writeFileSync(join(lib.dir, "src", "lib.ts"), "l\n");
+    writeFileSync(join(lib.dir, "README.md"), "r\n");
+    lib.git("add", ".");
+    const libCommit = lib.commit("lib");
+    writeFileSync(join(dir, "app.ts"), "a\n");
+    git("add", ".");
+    commit("base");
+    git("-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.dir, "libs/lib");
+    writeFileSync(join(dir, "libs/lib/README.md"), "changed\n"); // a pending change inside the submodule
+
+    const list = await loadFiles(nodeRunner(dir));
+    // Closed: a folder with nothing listed inside yet.
+    let tree = buildTree(list);
+    const libs = tree.folders.find((f) => f.name === "libs")!;
+    expect(libs.folders.map((f) => [f.name, f.repo])).toEqual([["lib", "submodule"]]);
+    expect(libs.files).toEqual([]);
+
+    // Opened: its own listing, from its own repository, under its path.
+    const sub = await loadFiles(nodeRunner(join(dir, "libs/lib")));
+    sub.last = await loadLastChanges(nodeRunner(join(dir, "libs/lib")));
+    nestList(list, "libs/lib", join(dir, "libs/lib"), sub);
+    tree = buildTree(list);
+    const keys = (rows: FileRow[]) => rows.map((r) => `${"  ".repeat(r.depth)}${rowKey(r)}`);
+    expect(keys(fileRows(tree, list, new Set(["libs", "libs/lib", "libs/lib/src"]), ""))).toEqual([
+      "libs/",
+      "  libs/lib/",
+      "    libs/lib/src/",
+      "      libs/lib/src/lib.ts",
+      "    libs/lib/README.md",
+      ".gitmodules",
+      "app.ts",
+    ]);
+    expect(list.status.get("libs/lib/README.md")?.letter).toBe("M");
+    expect(lastChangeOf(list, "libs/lib/src/lib.ts")?.hash).toBe(libCommit);
+    // Inside it, actions belong to its repository, with paths relative to it.
+    expect(ownerOf(list, "libs/lib/src/lib.ts")).toEqual({ at: "libs/lib", root: join(dir, "libs/lib"), path: "src/lib.ts" });
+    expect(ownerOf(list, "libs/lib")?.path).toBe("");
+    expect(ownerOf(list, "app.ts")).toBeNull();
+    expect(ownerOf(list, "libs/library.ts")).toBeNull();
   });
 
   it("finds who last changed each file, and when, with folders taking their newest file", async () => {

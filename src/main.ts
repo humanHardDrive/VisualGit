@@ -9,7 +9,7 @@ import { layoutModel, type Edge } from "./model/layout.ts";
 import { nextOf, previousOf } from "./model/navigate.ts";
 import { branchRows, renderBranchList, type BranchSort } from "./view/branchList.ts";
 import { clearDetails, showBranch, showCommit } from "./view/details.ts";
-import { buildTree, loadFiles, loadLastChanges, type FileList, type Folder, type LastChange } from "./git/files.ts";
+import { buildTree, isRepoKind, loadFiles, loadLastChanges, nestList, ownerOf, type FileList, type Folder, type LastChange } from "./git/files.ts";
 import { fileRows, renderFiles, rowKey, type FileRow } from "./view/files.ts";
 import { ignorePatterns } from "./git/ignore.ts";
 import { branchColor, Explorer, type Selection, type View } from "./view/explorer.ts";
@@ -940,7 +940,10 @@ function showView(view: ViewName, opts: { pendingPath?: string } = {}) {
   }
   renderBranchView();
   renderRepos();
-  if (view === "files") void showFiles();
+  if (view === "files") {
+    void showFiles();
+    scheduleFilesCheck();
+  }
 }
 
 for (const item of document.querySelectorAll<HTMLButtonElement>(".view-item")) {
@@ -1002,6 +1005,101 @@ branchSearch.addEventListener("keydown", (e) => {
 const filesView = $("files-view");
 const fileSearch = $<HTMLInputElement>("file-search");
 let files: { repo: string; list: FileList; tree: Folder } | null = null;
+
+/** Last changes inside submodules, by the submodule's folder, kept while its HEAD stays put. */
+const nestedLastChanges = new Map<string, { head: string; map: Map<string, LastChange> }>();
+
+/**
+ * The Files view's listing: this repository's files, plus the files of each
+ * submodule (or repository inside) that's open in the tree, listed from that
+ * repository itself — and so on for submodules inside those.
+ */
+async function loadListing(runner: GitRunner, root: string, open: Set<string>): Promise<FileList> {
+  const list = await loadFiles(runner);
+  list.nested = new Map();
+  const listed = new Set<string>();
+  for (;;) {
+    const next = [...open].filter((p) => !listed.has(p) && isRepoKind(list.kinds.get(p)));
+    if (next.length === 0) return list;
+    await Promise.all(
+      next.map(async (at) => {
+        listed.add(at);
+        const dir = `${root}/${at}`;
+        const sub = tauriRunner(dir);
+        // A submodule that hasn't been checked out is an empty folder, where git would find this repository instead.
+        const top = (await sub.run(["rev-parse", "--show-toplevel"]).catch(() => "")).trim();
+        if (top !== dir) {
+          list.nested!.set(at, { root: dir, checkedOut: false });
+          return;
+        }
+        let inner: FileList;
+        let head: string;
+        try {
+          [inner, head] = await Promise.all([loadFiles(sub), sub.run(["rev-parse", "-q", "--verify", "HEAD"]).then((h) => h.trim(), () => "")]);
+        } catch {
+          list.nested!.set(at, { root: dir, checkedOut: false }); // unreadable: shown with nothing inside
+          return;
+        }
+        const cached = nestedLastChanges.get(dir);
+        if (cached?.head === head) inner.last = cached.map;
+        else {
+          inner.last = head ? await loadLastChanges(sub).catch(() => new Map()) : new Map();
+          nestedLastChanges.set(dir, { head, map: inner.last });
+        }
+        nestList(list, at, dir, inner);
+      }),
+    );
+  }
+}
+
+/** What the Files view shows, to tell whether a fresh listing changed anything. */
+const filesFingerprint = (list: FileList) =>
+  JSON.stringify([list.paths, [...list.kinds], [...list.status].map(([path, s]) => [path, s.letter])]);
+
+/**
+ * While the Files view is showing, it keeps itself up to date: every few
+ * seconds it lists the files again and, if anything changed (files added or
+ * removed, pending changes, HEAD moving), reloads everything that shows
+ * them. A repository that's slow to list is checked less often. Nothing runs
+ * while the window is hidden.
+ */
+const FILES_CHECK_MS = 3000;
+let filesCheck = 0;
+let filesChecking = false;
+
+function scheduleFilesCheck(delay = FILES_CHECK_MS) {
+  clearTimeout(filesCheck);
+  filesCheck = window.setTimeout(() => void checkFiles(), delay);
+}
+
+async function checkFiles() {
+  if (currentView !== "files") return; // showView starts it again
+  const runner = git;
+  const shown = files;
+  if (document.hidden || !runner || !shown || !model || filesChecking || loadingPath !== null || shown.repo !== repoPath) {
+    scheduleFilesCheck();
+    return;
+  }
+  filesChecking = true;
+  const started = performance.now();
+  try {
+    const [list, head] = await Promise.all([
+      loadListing(runner, shown.repo, expanded()),
+      runner.run(["rev-parse", "-q", "--verify", "HEAD"]).catch(() => ""),
+    ]);
+    const unchanged = files === shown && filesFingerprint(list) === filesFingerprint(shown.list) && (head.trim() || null) === (model?.headHash ?? null);
+    if (!unchanged && currentView === "files" && git === runner) reload();
+  } catch {
+    // e.g. the repository went away; the next reload says so
+  } finally {
+    filesChecking = false;
+    scheduleFilesCheck(Math.max(FILES_CHECK_MS, (performance.now() - started) * 10));
+  }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && currentView === "files") scheduleFilesCheck(0);
+});
 /** Expanded folders, per repository. */
 const expandedFolders = new Map<string, Set<string>>();
 /** The selected row in the Files view: a file path, or a folder path ending in "/". */
@@ -1028,7 +1126,7 @@ async function showFiles() {
   const seq = ++filesSeq;
   const path = repoPath;
   try {
-    const list = await loadFiles(git);
+    const list = await loadListing(git, path, expanded());
     if (seq !== filesSeq || repoPath !== path) return;
     if (files?.repo !== path) selectedFile = null;
     const key = `${path}\0${model?.headHash ?? ""}`;
@@ -1055,7 +1153,7 @@ async function fillLastChanges(seq: number, path: string) {
   }
   lastChanges = { key, map };
   if (seq !== filesSeq || files?.repo !== path) return;
-  files.list.last = map;
+  files.list.last = map; // this repository's own; submodules' are in nestedLast
   files.tree = buildTree(files.list);
   renderFileView();
 }
@@ -1063,9 +1161,11 @@ async function fillLastChanges(seq: number, path: string) {
 function renderFileView() {
   if (currentView !== "files" || !files) return;
   const { list, tree } = files;
-  const changed = list.status.size;
-  $("file-count").textContent =
-    `${list.paths.length.toLocaleString()} file${list.paths.length === 1 ? "" : "s"}` + (changed ? ` · ${changed} with pending changes` : "");
+  // This repository's own files (an open submodule's are counted in it, not here).
+  const own = (p: string) => !ownerOf(list, p);
+  const count = list.paths.filter(own).length;
+  const changed = [...list.status.keys()].filter(own).length;
+  $("file-count").textContent = `${count.toLocaleString()} file${count === 1 ? "" : "s"}` + (changed ? ` · ${changed} with pending changes` : "");
   renderFiles(filesView, tree, list, {
     expanded: expanded(),
     query: fileSearch.value,
@@ -1090,16 +1190,49 @@ filesView.addEventListener("contextmenu", (e) => {
   void showFolderMenu("");
 });
 
+/**
+ * The repository a Files view path belongs to, and the path within it: an
+ * open submodule's for its files, otherwise the open repository.
+ */
+function whereIs(path: string): { repo: string; path: string; submodule: string | null } | null {
+  if (!repoPath) return null;
+  const o = files ? ownerOf(files.list, path) : null;
+  return o ? { repo: o.root, path: o.path, submodule: o.at } : { repo: repoPath, path, submodule: null };
+}
+
 /** Opens the Add Submodule window, for a submodule in `folder` ("" for the top of the repository). */
 function openAddSubmodule(folder: string) {
-  if (!repoPath) return;
-  void invoke("open_add_submodule_window", { repo: repoPath, folder, workspace }).catch((err) => notify(`Could not add a submodule: ${err}`, "error"));
+  // Inside an open submodule, the new one goes into that submodule's repository.
+  const w = whereIs(folder);
+  if (!w) return;
+  void invoke("open_add_submodule_window", { repo: w.repo, folder: w.path, workspace }).catch((err) =>
+    message(String(err), { title: "Could not add a submodule", kind: "error" }),
+  );
+}
+
+/** Makes a submodule (or repository inside) the open repository, e.g. to commit in it; then `then`. */
+async function openNested(root: string, then?: () => void) {
+  await loadRepoAt(root);
+  if (repoPath !== root) return; // couldn't open it (loadRepoAt said why)
+  notify(`Switched to ${root.split("/").pop()}, a repository inside the one you were in. Switch back from the Workspace view.`, "ok");
+  then?.();
 }
 
 async function showFolderMenu(folder: string) {
-  const menu = await Menu.new({
-    items: [{ id: "add-submodule", text: folder ? `Add Submodule in “${folder.slice(folder.lastIndexOf("/") + 1)}”…` : "Add Submodule…", action: () => openAddSubmodule(folder) }],
-  });
+  const name = folder.slice(folder.lastIndexOf("/") + 1);
+  const kind = files?.list.kinds.get(folder);
+  const items: ({ id: string; text: string; enabled?: boolean; action: () => void } | { item: "Separator" })[] = [];
+  if (isRepoKind(kind) && repoPath) {
+    // Its folder on disk; listed or not, that's where its repository is.
+    const root = files?.list.nested?.get(folder)?.root ?? `${repoPath}/${folder}`;
+    const checkedOut = files?.list.nested?.get(folder)?.checkedOut !== false;
+    items.push(
+      { id: "open-nested", text: kind === "submodule" ? "Open Submodule as Repository" : "Open as Repository", enabled: checkedOut, action: () => void openNested(root) },
+      { item: "Separator" },
+    );
+  }
+  items.push({ id: "add-submodule", text: folder ? `Add Submodule in “${name}”…` : "Add Submodule…", action: () => openAddSubmodule(folder) });
+  const menu = await Menu.new({ items });
   await menu.popup();
 }
 
@@ -1111,7 +1244,9 @@ async function showFileMenu(path: string) {
   const name = path.slice(path.lastIndexOf("/") + 1);
   const untracked = status?.letter === "?";
   const onDisk = status?.letter !== "D";
-  const patterns = ignorePatterns(path);
+  // Inside an open submodule, its own .gitignore, with paths relative to it.
+  const inner = whereIs(path)?.path ?? path;
+  const patterns = ignorePatterns(inner);
   const dot = name.lastIndexOf(".");
   const ext = patterns.extension ? `*${name.slice(dot)}` : null;
   const menu = await Menu.new({
@@ -1119,7 +1254,7 @@ async function showFileMenu(path: string) {
       { id: "open", text: "Open", enabled: onDisk, action: () => void openFile(path) },
       { id: "open-with", text: "Open With…", enabled: onDisk, action: () => void openFileWith(path) },
       { item: "Separator" },
-      { id: "history", text: "View History", enabled: !untracked, action: () => openHistory(path) },
+      { id: "history", text: "View History", enabled: !untracked, action: () => void openHistory(path) },
       { item: "Separator" },
       {
         text: "Ignore",
@@ -1131,7 +1266,7 @@ async function showFileMenu(path: string) {
             enabled: !!ext,
             action: () => void ignoreFile(path, patterns.extension!, `every ${ext} file`),
           },
-          { id: "ignore-path", text: `Ignore “/${path}”`, action: () => void ignoreFile(path, patterns.path, `/${path}`) },
+          { id: "ignore-path", text: `Ignore “/${inner}”`, action: () => void ignoreFile(path, patterns.path, `/${inner}`) },
         ],
       },
       { id: "delete", text: "Delete…", action: () => void deleteFile(path, untracked) },
@@ -1168,33 +1303,38 @@ async function openFileWith(path: string) {
 }
 
 /** The file's history in the diff window: every changeset that changed it. */
-function openHistory(path: string) {
-  if (!repoPath || !model?.headHash) return;
-  void invoke("open_diff_window", { repo: repoPath, at: model.headHash, file: path }).catch((err) =>
-    notify(`Could not open the history of ${path}: ${err}`, "error"),
-  );
+async function openHistory(path: string) {
+  const w = whereIs(path);
+  if (!w || !model?.headHash) return;
+  // A file inside a submodule: that repository's history, from its checked-out changeset.
+  const at = w.submodule === null ? model.headHash : (await tauriRunner(w.repo).run(["rev-parse", "HEAD"]).catch(() => "")).trim();
+  if (!at) return notify(`${w.submodule} has no changesets checked out, so ${path} has no history to show.`, "error");
+  void invoke("open_diff_window", { repo: w.repo, at, file: w.path }).catch((err) => notify(`Could not open the history of ${path}: ${err}`, "error"));
 }
 
 async function ignoreFile(path: string, pattern: string, what: string) {
-  if (!repoPath) return;
+  const w = whereIs(path);
+  if (!w) return;
+  const gitignore = w.submodule === null ? ".gitignore" : `${w.submodule}/.gitignore`;
   try {
-    const added = await invoke<boolean>("add_to_gitignore", { repo: repoPath, pattern });
+    const added = await invoke<boolean>("add_to_gitignore", { repo: w.repo, pattern });
     const tracked = files?.list.status.get(path)?.letter !== "?";
     notify(
-      (added ? `Added ${pattern} to .gitignore, so git ignores ${what}.` : `.gitignore already ignores ${what}.`) +
+      (added ? `Added ${pattern} to ${gitignore}, so git ignores ${what}.` : `${gitignore} already ignores ${what}.`) +
         // gitignore only affects files git doesn't track yet.
         (tracked ? ` ${path} is already in source control, so git keeps tracking it until it's removed (Delete… › Remove from Source Control).` : ""),
       tracked ? "" : "ok", // the tracked-file note stays until read
     );
   } catch (err) {
-    notify(`Could not update .gitignore: ${err}`, "error");
+    notify(`Could not update ${gitignore}: ${err}`, "error");
     return;
   }
   reload();
 }
 
 async function deleteFile(path: string, untracked: boolean) {
-  if (!repoPath) return;
+  const w = whereIs(path);
+  if (!w || !repoPath) return;
   const repo = repoPath;
   const name = path.slice(path.lastIndexOf("/") + 1);
   let fromDisk: boolean;
@@ -1226,7 +1366,8 @@ Either way the removal is a pending change: commit it to record it.`,
     else return;
   }
   try {
-    await invoke("remove_file", { repo, path, fromDisk });
+    // Inside an open submodule, it's that repository's file to remove.
+    await invoke("remove_file", { repo: w.repo, path: w.path, fromDisk });
     notify(
       untracked
         ? `Moved ${name} to the Trash.`
@@ -1250,14 +1391,21 @@ function selectFileRow(r: FileRow) {
 
 /** Folders open and close; a file with pending changes opens Pending Changes. */
 function openFileRow(r: FileRow) {
-  if (r.kind === "file" && files?.list.status.has(r.path)) openPendingChanges(r.path);
+  if (r.kind !== "file" || !files?.list.status.has(r.path)) return;
+  const w = whereIs(r.path);
+  // A change inside a submodule is that repository's to commit: open it, then its Pending Changes.
+  if (w?.submodule != null) void openNested(w.repo, () => openPendingChanges(w.path));
+  else openPendingChanges(r.path);
 }
 
 function toggleFolder(path: string, open?: boolean) {
   const set = expanded();
-  if (open ?? !set.has(path)) set.add(path);
+  const opening = open ?? !set.has(path);
+  if (opening) set.add(path);
   else set.delete(path);
   renderFileView();
+  // A submodule opened for the first time: list its files.
+  if (opening && files && isRepoKind(files.list.kinds.get(path)) && !files.list.nested?.has(path)) void showFiles();
 }
 
 /** Keyboard in the Files view: ↑/↓ move, ←/→ close/open folders, Enter opens. */
@@ -1305,7 +1453,8 @@ fileSearch.addEventListener("keydown", (e) => {
 $("expand-all").addEventListener("click", () => {
   if (!files) return;
   const set = expanded();
-  const all = (f: Folder) => f.folders.forEach((s) => (set.add(s.path), all(s)));
+  // Submodules stay as they are: opening one lists a whole other repository.
+  const all = (f: Folder) => f.folders.forEach((s) => s.repo || (set.add(s.path), all(s)));
   all(files.tree);
   renderFileView();
 });
@@ -1364,6 +1513,7 @@ function reload() {
 }
 
 $("rescan").addEventListener("click", () => void rescanWorkspace());
+$("files-refresh").addEventListener("click", reload);
 reloadBtn.addEventListener("click", reload);
 navPrev.addEventListener("click", () => step(-1));
 navNext.addEventListener("click", () => step(1));

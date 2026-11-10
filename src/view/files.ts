@@ -1,6 +1,6 @@
 /** Files view: the repository's working copy as a folder tree. */
 
-import { fileType, type FileList, type Folder, type LastChange } from "../git/files.ts";
+import { fileType, lastChangeOf, type FileList, type FileStatus, type Folder, type LastChange } from "../git/files.ts";
 import { compileQuery } from "../model/search.ts";
 
 export type FileRow = { kind: "folder"; folder: Folder; depth: number } | { kind: "file"; path: string; depth: number };
@@ -46,6 +46,15 @@ const ICON_FOLDER = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5
 const ICON_REPO = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.8 13.5 4.6v6.8L8 14.2 2.5 11.4V4.6Z M2.5 4.6 8 7.4l5.5-2.8 M8 7.4v6.8" /></svg>';
 const ICON_FILE = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2h5l3 3v9H4z M9 2v3h3" /></svg>';
 
+/** A pending change's letter (M, A, ?…) after the name, and the row in bold. */
+function statusLetter(main: HTMLElement, row: HTMLElement, status: FileStatus | undefined) {
+  if (!status) return;
+  const st = el("span", `tree-status st-${status.letter === "?" ? "untracked" : status.letter}`, status.letter);
+  st.title = status.title;
+  main.append(st);
+  row.classList.add("changed");
+}
+
 /** The date and author columns: blank until history has loaded, "Not committed" for new files. */
 function changeCells(change: LastChange | undefined, loaded: boolean, isNew: boolean): HTMLElement[] {
   if (change) {
@@ -72,18 +81,25 @@ export function renderFiles(host: HTMLElement, tree: Folder, list: FileList, opt
     main.style.paddingLeft = `${r.depth * 16}px`;
     if (rowKey(r) === opts.selected) row.classList.add("selected");
     if (r.kind === "folder") {
-      const open = opts.expanded.has(r.folder.path);
+      const f = r.folder;
+      const open = opts.expanded.has(f.path);
       row.setAttribute("aria-expanded", String(open));
       const twisty = el("span", "twisty", open ? "▾" : "▸");
-      const icon = el("span", "tree-icon folder");
-      icon.innerHTML = ICON_FOLDER;
-      main.append(twisty, icon, el("span", "tree-name", r.folder.name));
-      if (r.folder.changed) {
+      // A submodule (or repository inside) opens like a folder, onto its own files.
+      const icon = el("span", f.repo === "submodule" ? "tree-icon submodule" : f.repo ? "tree-icon" : "tree-icon folder");
+      icon.innerHTML = f.repo ? ICON_REPO : ICON_FOLDER;
+      main.append(twisty, icon, el("span", "tree-name", f.name));
+      // The submodule itself can be a pending change: added, or now at another changeset.
+      if (f.repo) statusLetter(main, row, list.status.get(f.path));
+      if (f.changed) {
         const badge = el("span", "tree-changed", `${r.folder.changed}`);
         badge.title = `${r.folder.changed} file${r.folder.changed === 1 ? "" : "s"} with pending changes`;
         main.append(badge);
       }
-      row.append(main, el("span", "tree-col tree-type", "Folder"), ...changeCells(r.folder.latest, loaded, false));
+      const nested = list.nested?.get(f.path);
+      const type = f.repo ? `${fileType(f.path, f.repo)}${nested && !nested.checkedOut ? " (not checked out)" : ""}` : "Folder";
+      row.append(main, el("span", "tree-col tree-type", type), ...changeCells(f.latest, loaded, false));
+      if (f.repo) row.title = `${f.path} · ${type}`;
     } else {
       const status = list.status.get(r.path);
       const kind = list.kinds.get(r.path);
@@ -93,14 +109,9 @@ export function renderFiles(host: HTMLElement, tree: Folder, list: FileList, opt
       // While searching the rows are flat, so show the whole path.
       const name = opts.query.trim() ? r.path : r.path.slice(r.path.lastIndexOf("/") + 1);
       main.append(el("span", "twisty"), icon, el("span", "tree-name", name));
-      if (status) {
-        const st = el("span", `tree-status st-${status.letter === "?" ? "untracked" : status.letter}`, status.letter);
-        st.title = status.title;
-        main.append(st);
-        row.classList.add("changed");
-      }
+      statusLetter(main, row, status);
       const type = fileType(r.path, kind);
-      row.append(main, el("span", "tree-col tree-type", type), ...changeCells(list.last?.get(r.path), loaded, status?.letter === "?" || status?.letter === "A"));
+      row.append(main, el("span", "tree-col tree-type", type), ...changeCells(lastChangeOf(list, r.path), loaded, status?.letter === "?" || status?.letter === "A"));
       row.title = `${r.path} · ${type}`;
     }
     row.onclick = () => opts.onSelect(r);
