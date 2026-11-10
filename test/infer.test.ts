@@ -1,10 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { loadChangesetFiles } from "../src/git/changeset.ts";
-import { buildTree, loadFiles, loadLastChanges } from "../src/git/files.ts";
+import { buildTree, fileType, loadFiles, loadLastChanges } from "../src/git/files.ts";
 import { loadFileHistory } from "../src/git/history.ts";
 import { ignorePatterns } from "../src/git/ignore.ts";
 import { loadRepo } from "../src/git/load.ts";
@@ -562,6 +562,31 @@ describe("files", () => {
     expect(keys(fileRows(tree, list, new Set(), ""))).toEqual(["src/", ".gitignore", "README.md"]);
     expect(keys(fileRows(tree, list, new Set(["src"]), ""))).toEqual(["src/", "  src/view/", "  src/a.ts", "  src/new.ts", ".gitignore", "README.md"]);
     expect(keys(fileRows(tree, list, new Set(), "*.ts"))).toEqual(["src/a.ts", "src/new.ts", "src/view/b.ts"]);
+  });
+
+  it("says what each file is: submodules, repositories inside, links and programs", async () => {
+    const { dir, git, commit } = fixture();
+    const lib = fixture();
+    lib.commit("lib");
+    writeFileSync(join(dir, "run.sh"), "#!/bin/sh\n");
+    writeFileSync(join(dir, "notes.md"), "n\n");
+    git("add", ".");
+    git("update-index", "--chmod=+x", "run.sh");
+    commit("base");
+    git("-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.dir, "libs/lib");
+    symlinkSync("notes.md", join(dir, "link"));
+    const nested = fixture(); // a repository inside, not added
+    nested.commit("n");
+    execFileSync("mv", [nested.dir, join(dir, "vendor")]);
+
+    const list = await loadFiles(nodeRunner(dir));
+    expect(list.paths).toEqual([".gitmodules", "libs/lib", "link", "notes.md", "run.sh", "vendor"]);
+    const types = list.paths.map((p) => fileType(p, list.kinds.get(p)));
+    expect(types).toEqual(["Git submodules", "Submodule", "File", "Markdown", "Shell script (executable)", "Repository (not a submodule)"]);
+    git("add", "link");
+    expect(fileType("link", (await loadFiles(nodeRunner(dir))).kinds.get("link"))).toBe("Symbolic link");
+    expect(fileType("bin/tool", "executable")).toBe("Program");
+    expect(fileType("a/Thing.XYZ", undefined)).toBe("XYZ file");
   });
 
   it("finds who last changed each file, and when, with folders taking their newest file", async () => {

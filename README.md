@@ -55,6 +55,7 @@ The app opens whatever repository you pass as `visualgit /path/to/repo` or in `V
 
 - **Files:** the repository's working copy as a folder tree. That's every tracked file, plus new files git isn't ignoring.
   - **Pending changes:** files with pending changes show their status letter (M, A, D, ?, U), and each folder shows how many changed files it holds.
+  - **Type:** what each entry is: *Folder*, *Submodule* (with its own icon), *Repository (not a submodule)* for a repository inside this one that hasn't been added, *Symbolic link*, or the kind of file from its name or extension (*TypeScript*, *PNG image*, *Shell script (executable)*…).
   - **Last modified / Modified by:** when and by whom each file was last changed in a changeset. A folder shows its most recently changed file, and new files show *Not committed*. This takes one pass over the history, made after the tree appears and redone only when HEAD moves.
   - **Opening:** double-click a changed file, or press Enter on it, to open Pending Changes.
   - **Keys:** ↑/↓ move, ←/→ close and open folders, and ⌘F searches file paths (with `*` / `?`) as a flat list.

@@ -1,6 +1,6 @@
 /** Files view: the repository's working copy as a folder tree. */
 
-import type { FileList, Folder, LastChange } from "../git/files.ts";
+import { fileType, type FileList, type Folder, type LastChange } from "../git/files.ts";
 import { compileQuery } from "../model/search.ts";
 
 export type FileRow = { kind: "folder"; folder: Folder; depth: number } | { kind: "file"; path: string; depth: number };
@@ -42,6 +42,8 @@ const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text = "") 
 };
 
 const ICON_FOLDER = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5V12a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1H8L6.5 3.5H3A1 1 0 0 0 2 4.5Z" /></svg>';
+/** A package: another repository inside this one. */
+const ICON_REPO = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.8 13.5 4.6v6.8L8 14.2 2.5 11.4V4.6Z M2.5 4.6 8 7.4l5.5-2.8 M8 7.4v6.8" /></svg>';
 const ICON_FILE = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2h5l3 3v9H4z M9 2v3h3" /></svg>';
 
 /** The date and author columns: blank until history has loaded, "Not committed" for new files. */
@@ -61,7 +63,7 @@ export function renderFiles(host: HTMLElement, tree: Folder, list: FileList, opt
   const box = el("div", "file-tree");
   box.setAttribute("role", "tree");
   const header = el("div", "tree-row tree-head");
-  header.append(el("span", "tree-main", "Name"), el("span", "tree-col", "Last modified"), el("span", "tree-col", "Modified by"));
+  header.append(el("span", "tree-main", "Name"), el("span", "tree-col", "Type"), el("span", "tree-col", "Last modified"), el("span", "tree-col", "Modified by"));
   box.append(header);
   for (const r of rows) {
     const row = el("div", "tree-row");
@@ -81,11 +83,13 @@ export function renderFiles(host: HTMLElement, tree: Folder, list: FileList, opt
         badge.title = `${r.folder.changed} file${r.folder.changed === 1 ? "" : "s"} with pending changes`;
         main.append(badge);
       }
-      row.append(main, ...changeCells(r.folder.latest, loaded, false));
+      row.append(main, el("span", "tree-col tree-type", "Folder"), ...changeCells(r.folder.latest, loaded, false));
     } else {
       const status = list.status.get(r.path);
-      const icon = el("span", "tree-icon");
-      icon.innerHTML = ICON_FILE;
+      const kind = list.kinds.get(r.path);
+      const repo = kind === "submodule" || kind === "repository";
+      const icon = el("span", kind === "submodule" ? "tree-icon submodule" : "tree-icon");
+      icon.innerHTML = repo ? ICON_REPO : ICON_FILE;
       // While searching the rows are flat, so show the whole path.
       const name = opts.query.trim() ? r.path : r.path.slice(r.path.lastIndexOf("/") + 1);
       main.append(el("span", "twisty"), icon, el("span", "tree-name", name));
@@ -95,8 +99,9 @@ export function renderFiles(host: HTMLElement, tree: Folder, list: FileList, opt
         main.append(st);
         row.classList.add("changed");
       }
-      row.append(main, ...changeCells(list.last?.get(r.path), loaded, status?.letter === "?" || status?.letter === "A"));
-      row.title = r.path;
+      const type = fileType(r.path, kind);
+      row.append(main, el("span", "tree-col tree-type", type), ...changeCells(list.last?.get(r.path), loaded, status?.letter === "?" || status?.letter === "A"));
+      row.title = `${r.path} · ${type}`;
     }
     row.onclick = () => opts.onSelect(r);
     row.ondblclick = () => opts.onOpen(r);

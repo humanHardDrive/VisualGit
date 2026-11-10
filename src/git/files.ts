@@ -16,9 +16,18 @@ export interface LastChange {
   time: number;
 }
 
+/**
+ * What a listed path is when it isn't a plain file: a submodule (in the index
+ * as a link to another repository's changeset), a repository inside this one
+ * that isn't a submodule yet, a symbolic link, or an executable file.
+ */
+export type FileKind = "submodule" | "repository" | "symlink" | "executable";
+
 export interface FileList {
   /** Tracked files plus new files git isn't ignoring, sorted. */
   paths: string[];
+  /** The paths that aren't plain files. */
+  kinds: Map<string, FileKind>;
   /** Files with pending changes. */
   status: Map<string, FileStatus>;
   /** The changeset that last changed each file, once loaded (see `loadLastChanges`). */
@@ -59,20 +68,79 @@ export function statusOf(f: PendingFile): FileStatus {
   return { letter: c, title: NAMES[c] };
 }
 
+/** Index modes that aren't plain files. */
+const MODES: Record<string, FileKind> = { "160000": "submodule", "120000": "symlink", "100755": "executable" };
+
 export async function loadFiles(git: GitRunner): Promise<FileList> {
   const [tracked, untracked, pending] = await Promise.all([
-    git.run(["ls-files", "-z"]),
+    // With modes: "<mode> <id> <stage>\t<path>".
+    git.run(["ls-files", "-z", "--stage"]),
     git.run(["ls-files", "-z", "--others", "--exclude-standard"]),
     loadPendingChanges(git),
   ]);
-  const paths = new Set([...tracked.split("\0"), ...untracked.split("\0")].filter(Boolean));
+  const paths = new Set<string>();
+  const kinds = new Map<string, FileKind>();
+  for (const entry of tracked.split("\0")) {
+    const tab = entry.indexOf("\t");
+    if (tab < 0) continue;
+    const path = entry.slice(tab + 1);
+    paths.add(path);
+    const kind = MODES[entry.slice(0, entry.indexOf(" "))];
+    if (kind) kinds.set(path, kind);
+  }
+  for (const path of untracked.split("\0")) {
+    if (!path) continue;
+    // git lists a repository inside this one (not a submodule yet) as its folder, with a trailing slash.
+    if (path.endsWith("/")) {
+      paths.add(path.slice(0, -1));
+      kinds.set(path.slice(0, -1), "repository");
+    } else paths.add(path);
+  }
   const status = new Map<string, FileStatus>();
   for (const f of pending.files) {
-    status.set(f.path, statusOf(f));
+    // A repository inside this one is listed as its folder ("vendor/"); the tree shows it as "vendor".
+    const path = f.path.endsWith("/") ? f.path.slice(0, -1) : f.path;
+    status.set(path, statusOf(f));
     // Deleted with `git rm` (no longer in the index): still worth listing.
-    paths.add(f.path);
+    paths.add(path);
   }
-  return { paths: [...paths].sort(), status };
+  return { paths: [...paths].sort(), kinds, status };
+}
+
+/** Names for common extensions; anything else is "<EXT> file". */
+const TYPES: Record<string, string> = {
+  ts: "TypeScript", tsx: "TypeScript (JSX)", js: "JavaScript", mjs: "JavaScript module", cjs: "JavaScript (CommonJS)", jsx: "JavaScript (JSX)",
+  json: "JSON", jsonc: "JSON with comments", html: "HTML", htm: "HTML", css: "CSS", scss: "Sass", less: "Less",
+  md: "Markdown", mdx: "MDX", txt: "Text", rst: "reStructuredText", csv: "CSV", tsv: "TSV", xml: "XML", svg: "SVG image",
+  yml: "YAML", yaml: "YAML", toml: "TOML", ini: "INI", cfg: "Config", conf: "Config", env: "Environment",
+  rs: "Rust", go: "Go", py: "Python", rb: "Ruby", java: "Java", kt: "Kotlin", swift: "Swift", m: "Objective-C",
+  c: "C", h: "C header", cpp: "C++", cc: "C++", cxx: "C++", hpp: "C++ header", cs: "C#", fs: "F#", php: "PHP",
+  lua: "Lua", dart: "Dart", scala: "Scala", ex: "Elixir", exs: "Elixir script", erl: "Erlang", hs: "Haskell",
+  sh: "Shell script", bash: "Shell script", zsh: "Shell script", ps1: "PowerShell", bat: "Batch file", cmd: "Batch file",
+  sql: "SQL", graphql: "GraphQL", proto: "Protocol Buffers", vue: "Vue", svelte: "Svelte",
+  png: "PNG image", jpg: "JPEG image", jpeg: "JPEG image", gif: "GIF image", webp: "WebP image", ico: "Icon", icns: "Icon", bmp: "Bitmap image",
+  pdf: "PDF", zip: "ZIP archive", gz: "Gzip archive", tar: "Tar archive", lock: "Lock file", log: "Log",
+  woff: "Font", woff2: "Font", ttf: "Font", otf: "Font", mp3: "Audio", wav: "Audio", mp4: "Video", mov: "Video",
+};
+/** Well-known files by name. */
+const NAMED: Record<string, string> = {
+  ".gitignore": "Git ignore rules", ".gitmodules": "Git submodules", ".gitattributes": "Git attributes", ".gitkeep": "Placeholder",
+  dockerfile: "Dockerfile", makefile: "Makefile", license: "License", "license.md": "License", readme: "Text",
+  "cargo.toml": "Cargo manifest", "cargo.lock": "Cargo lock file", "package.json": "npm package", "package-lock.json": "npm lock file",
+};
+
+/** What a file is, for the Files view's Type column: "Submodule", "TypeScript", "PNG image", "File"… */
+export function fileType(path: string, kind: FileKind | undefined): string {
+  if (kind === "submodule") return "Submodule";
+  if (kind === "repository") return "Repository (not a submodule)";
+  if (kind === "symlink") return "Symbolic link";
+  const name = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
+  const named = NAMED[name];
+  if (named) return named;
+  const dot = name.lastIndexOf(".");
+  const ext = dot > 0 ? name.slice(dot + 1) : "";
+  const type = ext ? (TYPES[ext] ?? `${ext.toUpperCase()} file`) : kind === "executable" ? "Program" : "File";
+  return kind === "executable" && ext ? `${type} (executable)` : type;
 }
 
 export interface Folder {
