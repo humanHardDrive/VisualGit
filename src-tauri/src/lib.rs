@@ -4,12 +4,12 @@ mod files;
 mod hosting;
 mod menu;
 mod merge;
+mod os;
 mod pending;
 mod submodule;
 mod workspace;
 
 use std::path::Path;
-use std::process::Command;
 use workspace::RepoInfo;
 
 /// Subcommands the UI may run. Everything here is read-only once the
@@ -51,7 +51,7 @@ fn run_git(repo: &str, args: &[String]) -> Result<String, String> {
     if !Path::new(repo).is_dir() {
         return Err(format!("not a directory: {repo}"));
     }
-    let mut cmd = Command::new("git");
+    let mut cmd = os::command("git");
     cmd.arg("-C")
         .arg(repo)
         .args(["--no-pager", "-c", "core.quotepath=off"])

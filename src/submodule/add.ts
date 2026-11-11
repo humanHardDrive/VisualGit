@@ -10,6 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { message, open } from "@tauri-apps/plugin-dialog";
+import { shownPath } from "../platform.ts";
 import type { RepoInfo } from "../view/workspaceList.ts";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -82,12 +83,13 @@ async function showWorkspace() {
       const b = document.createElement("button");
       b.type = "button";
       b.setAttribute("role", "option");
-      b.dataset.path = r.path;
+      // As the folder box shows it, which is also how Browse… fills it in.
+      b.dataset.path = shownPath(r.path);
       const name = Object.assign(document.createElement("span"), { textContent: r.name });
-      const where = Object.assign(document.createElement("span"), { className: "sm-list-path", textContent: r.remote?.host ?? r.path });
+      const where = Object.assign(document.createElement("span"), { className: "sm-list-path", textContent: r.remote?.host ?? shownPath(r.path) });
       b.append(name, where);
       b.onclick = () => {
-        folderInput.value = r.path;
+        folderInput.value = shownPath(r.path);
         choose("local");
         markListed();
       };
@@ -104,7 +106,7 @@ function markListed() {
 }
 
 async function browse() {
-  const dir = await open({ directory: true, title: "Choose the repository to add", defaultPath: info?.workspace ?? undefined });
+  const dir = await open({ directory: true, title: "Choose the repository to add", defaultPath: info?.workspace ? shownPath(info.workspace) : undefined });
   if (typeof dir !== "string") return;
   folderInput.value = dir;
   choose("local");
@@ -170,7 +172,7 @@ async function start() {
     return;
   }
   $("sm-repo").textContent = info.repo.split(/[/\\]/).pop() ?? info.repo;
-  $("sm-repo").title = info.repo;
+  $("sm-repo").title = shownPath(info.repo);
   pathInput.value = info.folder ? `${info.folder}/` : "";
   choose("local");
   folderInput.focus();

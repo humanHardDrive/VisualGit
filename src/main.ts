@@ -17,6 +17,7 @@ import { filterRepos, renderWorkspaceList, type RepoInfo } from "./view/workspac
 import { createPendingView } from "./pending/view.ts";
 import { createSearchBox } from "./view/searchBox.ts";
 import { reportSubmoduleFailures, submodulesUpdated, type SubmoduleUpdate } from "./view/submoduleUpdate.ts";
+import { isMac, isWindows, localizeShortcuts, shownPath, slashPath, TRASH } from "./platform.ts";
 
 /** Selection saved across reloads; branches by name, since ids are reassigned. */
 type SavedSelection = { kind: "commit"; hash: string } | { kind: "branch"; name: string };
@@ -37,6 +38,8 @@ const reloadBtn = $<HTMLButtonElement>("reload");
 
 const LAST_REPO_KEY = "visualgit.lastRepo";
 const WORKSPACE_KEY = "visualgit.workspace";
+// Ctrl+Shift+O rather than ⇧⌘O off macOS; before the welcome text is copied.
+localizeShortcuts();
 const welcome = [...emptyState.childNodes].map((n) => n.cloneNode(true));
 
 let workspace: string | null = null;
@@ -534,7 +537,7 @@ async function loadRepoAt(path: string, opts: { reload?: boolean; remembered?: b
   }
   reloadBtn.disabled = true;
   try {
-    const root = (await tauriRunner(path).run(["rev-parse", "--show-toplevel"])).trim();
+    const root = slashPath((await tauriRunner(path).run(["rev-parse", "--show-toplevel"])).trim());
     const runner = tauriRunner(root);
     const next = inferModel(await loadRepo(runner));
     const layout = layoutModel(next);
@@ -551,7 +554,7 @@ async function loadRepoAt(path: string, opts: { reload?: boolean; remembered?: b
     // The name the Workspace view lists it under (`group/app`), else its folder name; the path is in the tooltip.
     const name = repos.find((r) => r.path === root)?.name ?? (root.split("/").pop() || root);
     repoNameEl.textContent = name;
-    repoNameEl.title = root;
+    repoNameEl.title = shownPath(root);
     document.title = `${name} · VisualGit`;
     pendingDot.hidden = !next.pendingChanges;
     void pendingView.setRepo(root);
@@ -600,7 +603,8 @@ async function loadRepoAt(path: string, opts: { reload?: boolean; remembered?: b
   }
 }
 
-async function openWorkspace(path: string, opts: { remembered?: boolean } = {}) {
+async function openWorkspace(chosen: string, opts: { remembered?: boolean } = {}) {
+  const path = slashPath(chosen);
   try {
     const found = await invoke<RepoInfo[]>("find_repos", { root: path });
     workspace = path;
@@ -629,7 +633,8 @@ const isInside = (path: string, root: string) => path === root || path.startsWit
 
 /** After opening a workspace: the last repository if it lives there, else ask the user to pick. */
 function openDefaultRepo() {
-  const last = recall(LAST_REPO_KEY);
+  const stored = recall(LAST_REPO_KEY);
+  const last = stored && slashPath(stored);
   const target = last && workspace && isInside(last, workspace) ? repos.find((r) => r.path === last) : undefined;
   if (target) void loadRepoAt(target.path, { remembered: true });
   else if (!repoPath) {
@@ -675,7 +680,7 @@ function listedRepos(): RepoInfo[] {
 
 function renderRepos() {
   workspaceName.textContent = workspace ? workspace.split("/").pop() || workspace : "No workspace open";
-  workspaceName.title = workspace ?? "";
+  workspaceName.title = workspace ? shownPath(workspace) : "";
   ($("rescan") as HTMLButtonElement).disabled = !workspace;
   const list = listedRepos();
   const shown = filterRepos(list, repoSearch.value).length;
@@ -762,7 +767,7 @@ async function showWorkspaceMenu(repo?: RepoInfo) {
 function openRepoDialog() {
   if (!workspace) return;
   $("repo-workspace").textContent = workspace.split("/").pop() || workspace;
-  $("repo-workspace").title = workspace;
+  $("repo-workspace").title = shownPath(workspace);
   repoName.value = "";
   repoBranch.value = "main";
   repoRemote.value = "";
@@ -776,7 +781,7 @@ function openRepoDialog() {
 /** The folder the new repository goes in, and anything wrong with the name that's quick to spot. */
 function updateRepoDialog() {
   const name = repoName.value.trim().replace(/\/+$/, "");
-  $("repo-location").textContent = workspace ? `${workspace}/${name || "…"}` : "";
+  $("repo-location").textContent = workspace ? shownPath(`${workspace}/${name || "…"}`) : "";
   const taken = repos.some((r) => r.name === name);
   const inside = repos.find((r) => name.startsWith(`${r.name}/`));
   repoError.textContent = taken
@@ -850,7 +855,7 @@ function folderFromUrl(url: string): string {
 function openCloneDialog() {
   if (!workspace || cloning) return;
   $("clone-workspace").textContent = workspace.split("/").pop() || workspace;
-  $("clone-workspace").title = workspace;
+  $("clone-workspace").title = shownPath(workspace);
   cloneUrl.value = "";
   cloneName.value = "";
   cloneNameTyped = false;
@@ -863,7 +868,7 @@ function openCloneDialog() {
 function updateCloneDialog() {
   if (!cloneNameTyped) cloneName.value = folderFromUrl(cloneUrl.value);
   const name = cloneName.value.trim().replace(/\/+$/, "");
-  $("clone-location").textContent = workspace ? `${workspace}/${name || "…"}` : "";
+  $("clone-location").textContent = workspace ? shownPath(`${workspace}/${name || "…"}`) : "";
   const taken = repos.some((r) => r.name === name);
   const inside = repos.find((r) => name.startsWith(`${r.name}/`));
   cloneError.textContent = taken
@@ -1337,15 +1342,13 @@ async function openFile(path: string) {
 async function openFileWith(path: string) {
   if (!repoPath) return;
   const repo = repoPath;
-  const platform = navigator.userAgent;
   let app: string | null = null;
   // Windows has its own "Open with" chooser; elsewhere, pick the application here.
-  if (!platform.includes("Windows")) {
-    const mac = platform.includes("Mac");
+  if (!isWindows) {
     const chosen = await open({
       title: `Open “${path.slice(path.lastIndexOf("/") + 1)}” With`,
-      defaultPath: mac ? "/Applications" : "/usr/bin",
-      filters: mac ? [{ name: "Applications", extensions: ["app"] }] : undefined,
+      defaultPath: isMac ? "/Applications" : "/usr/bin",
+      filters: isMac ? [{ name: "Applications", extensions: ["app"] }] : undefined,
     });
     if (typeof chosen !== "string") return;
     app = chosen;
@@ -1394,7 +1397,7 @@ async function removeSubmodule(path: string) {
   if (!w || !repoPath) return;
   const repo = repoPath;
   const KEEP = "Remove, Keep the Folder";
-  const BOTH = "Remove and Move to Trash";
+  const BOTH = `Remove and Move to ${TRASH}`;
   const choice = await message(
     `Remove the submodule “${path}”?
 
@@ -1404,7 +1407,7 @@ Nothing in it is lost. Its repository (with its history, and any changes not yet
 
 ${KEEP}: the folder stays where it is.
 
-${BOTH}: the folder goes to the Trash.
+${BOTH}: the folder goes to the ${TRASH}.
 
 The removal is a pending change: commit it to record it.`,
     { title: "Remove Submodule", kind: "warning", buttons: { yes: KEEP, no: BOTH, cancel: "Cancel" } },
@@ -1417,7 +1420,7 @@ The removal is a pending change: commit it to record it.`,
     await invoke("remove_submodule", { repo: w.repo, path: w.path, fromDisk });
     notify(
       fromDisk
-        ? `Removed the submodule ${path} and moved its folder to the Trash. Commit to record the removal.`
+        ? `Removed the submodule ${path} and moved its folder to the ${TRASH}. Commit to record the removal.`
         : `Removed the submodule ${path}; its folder is now a repository of its own. Commit to record the removal.`,
       "ok",
     );
@@ -1437,10 +1440,10 @@ async function deleteFile(path: string, untracked: boolean) {
   let fromDisk: boolean;
   if (untracked) {
     // Not in source control: the only thing to do is remove it from disk.
-    const ok = await ask(`“${name}” isn't in source control. Move it to the Trash?`, {
+    const ok = await ask(`“${name}” isn't in source control. Move it to the ${TRASH}?`, {
       title: "Delete",
       kind: "warning",
-      okLabel: "Move to Trash",
+      okLabel: `Move to ${TRASH}`,
       cancelLabel: "Cancel",
     });
     if (!ok) return;
@@ -1453,7 +1456,7 @@ async function deleteFile(path: string, untracked: boolean) {
 
 ${KEEP}: git stops tracking it; the file stays on disk as a new, untracked file.
 
-${BOTH}: also moves the file to the Trash.
+${BOTH}: also moves the file to the ${TRASH}.
 
 Either way the removal is a pending change: commit it to record it.`,
       { title: "Delete", kind: "warning", buttons: { yes: KEEP, no: BOTH, cancel: "Cancel" } },
@@ -1467,9 +1470,9 @@ Either way the removal is a pending change: commit it to record it.`,
     await invoke("remove_file", { repo: w.repo, path: w.path, fromDisk });
     notify(
       untracked
-        ? `Moved ${name} to the Trash.`
+        ? `Moved ${name} to the ${TRASH}.`
         : fromDisk
-          ? `Removed ${path} from source control and moved it to the Trash. Commit to record the removal.`
+          ? `Removed ${path} from source control and moved it to the ${TRASH}. Commit to record the removal.`
           : `Removed ${path} from source control; it's still on disk. Commit to record the removal.`,
       "ok",
     );
@@ -1573,8 +1576,9 @@ function stepRow(dir: 1 | -1) {
 // ---- commands ----------------------------------------------------------------------
 
 async function chooseWorkspace() {
-  const dir = await open({ directory: true, title: "Open workspace folder", defaultPath: workspace ?? undefined });
-  if (typeof dir !== "string") return;
+  const chosen = await open({ directory: true, title: "Open workspace folder", defaultPath: workspace ? shownPath(workspace) : undefined });
+  if (typeof chosen !== "string") return;
+  const dir = slashPath(chosen);
   if (await openWorkspace(dir)) {
     showView("workspace");
     // Stay on the current repository if it belongs to the new workspace.

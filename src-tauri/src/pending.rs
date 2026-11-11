@@ -6,10 +6,11 @@
 //! does a single, narrow thing, with its paths checked to stay inside the
 //! repository.
 
+use crate::os::{canonical, command, slash_path, TRASH};
 use crate::submodule::{update_all, SubmoduleFailure, SubmoduleUpdate};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
@@ -32,7 +33,7 @@ pub fn show_pending_changes(app: AppHandle, repo: String) -> Result<(), String> 
     main.unminimize().ok();
     main.show().map_err(|e| e.to_string())?;
     main.set_focus().map_err(|e| e.to_string())?;
-    main.emit("show-pending", ShowPending { repo: root.to_string_lossy().into_owned() }).map_err(|e| e.to_string())
+    main.emit("show-pending", ShowPending { repo: slash_path(&root) }).map_err(|e| e.to_string())
 }
 
 #[derive(Serialize)]
@@ -180,7 +181,7 @@ fn gitlinks(listing: &str) -> Vec<String> {
 }
 
 fn to_trash(files: &[&PathBuf]) -> Result<(), String> {
-    trash::delete_all(files).map_err(|e| format!("could not move new files to the Trash: {e}"))
+    trash::delete_all(files).map_err(|e| format!("could not move new files to the {TRASH}: {e}"))
 }
 
 /// `discard` gets rid of the new files (the Trash in the app; tests delete them).
@@ -282,7 +283,7 @@ fn push_named(root: &Path, branch: &str) -> Result<String, String> {
 }
 
 pub(crate) fn git(root: &Path, args: &[&str], paths: &[String], stdin: Option<&str>) -> Result<String, String> {
-    let mut cmd = Command::new("git");
+    let mut cmd = command("git");
     cmd.arg("-C")
         .arg(root)
         // Paths are file names, never glob patterns.
@@ -311,7 +312,7 @@ pub(crate) fn git(root: &Path, args: &[&str], paths: &[String], stdin: Option<&s
 
 /// The repository's top-level folder, canonicalised.
 pub(crate) fn repo_root(repo: &str) -> Result<PathBuf, String> {
-    let path = Path::new(repo).canonicalize().map_err(|_| format!("not a directory: {repo}"))?;
+    let path = canonical(Path::new(repo)).map_err(|_| format!("not a directory: {repo}"))?;
     if !path.join(".git").exists() {
         return Err(format!("not the top of a Git repository: {repo}"));
     }
@@ -341,10 +342,10 @@ pub(crate) fn resolve(repo: &str, path: &str) -> Result<PathBuf, String> {
     let root = repo_root(repo)?;
     check_relative(path)?;
     let file = root.join(path);
-    let real = match file.canonicalize() {
+    let real = match canonical(&file) {
         Ok(real) => real,
         // A deleted file: check the folder it was in instead.
-        Err(_) => match file.parent().and_then(|d| d.canonicalize().ok()) {
+        Err(_) => match file.parent().and_then(|d| canonical(d).ok()) {
             Some(dir) => dir.join(file.file_name().unwrap_or_default()),
             None => return Ok(file),
         },
@@ -358,6 +359,7 @@ pub(crate) fn resolve(repo: &str, path: &str) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     #[test]
     fn relative_paths() {
@@ -382,7 +384,7 @@ mod tests {
         run(&["config", "user.name", "Test"]);
         run(&["config", "user.email", "test@example.com"]);
         run(&["config", "commit.gpgsign", "false"]);
-        dir.canonicalize().unwrap()
+        canonical(&dir).unwrap()
     }
 
     #[test]

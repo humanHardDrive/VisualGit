@@ -3,17 +3,18 @@
 use serde::Serialize;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::SystemTime;
 
 use crate::hosting::{remote_of, Remote};
+use crate::os::{canonical, command, slash_path};
 
 #[derive(Serialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoInfo {
-    /// Absolute path of the working tree.
+    /// Absolute path of the working tree, with `/` between folders (see `os::slash_path`).
     pub path: String,
     /// Path relative to the workspace root (`group/repo`), or the folder name.
     pub name: String,
@@ -145,9 +146,9 @@ fn repo_info(root: &Path, dir: &Path) -> Option<RepoInfo> {
         .ok()
         .filter(|p| !p.as_os_str().is_empty())
         .or_else(|| dir.file_name().map(Path::new))
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| dir.to_string_lossy().into_owned());
-    Some(RepoInfo { path: dir.to_string_lossy().into_owned(), name, head: Some(head), detached, remote: None })
+        .map(slash_path)
+        .unwrap_or_else(|| slash_path(dir));
+    Some(RepoInfo { path: slash_path(dir), name, head: Some(head), detached, remote: None })
 }
 
 /// Creates a repository at `name` (a folder path such as `tools/app`)
@@ -171,7 +172,7 @@ pub async fn create_repo(workspace: String, name: String, branch: Option<String>
 /// a repository inside another one, and folders leading outside the
 /// workspace. The folder may already exist.
 fn new_repo_location(workspace: &Path, name: &str) -> Result<(Vec<String>, PathBuf), String> {
-    let root = workspace.canonicalize().map_err(|_| format!("The workspace folder {} doesn't exist", workspace.display()))?;
+    let root = canonical(workspace).map_err(|_| format!("The workspace folder {} doesn't exist", workspace.display()))?;
     let parts = folder_parts(name)?;
     // Repositories inside repositories aren't listed (or wanted): check the workspace and every folder on the way.
     let mut dir = root.clone();
@@ -183,7 +184,7 @@ fn new_repo_location(workspace: &Path, name: &str) -> Result<(Vec<String>, PathB
             break;
         }
         // A symlinked folder could lead out of the workspace.
-        if !dir.canonicalize().is_ok_and(|d| d.starts_with(&root)) {
+        if !canonical(&dir).is_ok_and(|d| d.starts_with(&root)) {
             return Err(format!("{} leads outside the workspace", parts[..i].join("/")));
         }
         if dir.join(".git").exists() {
@@ -195,7 +196,9 @@ fn new_repo_location(workspace: &Path, name: &str) -> Result<(Vec<String>, PathB
             });
         }
     }
-    let target = root.join(parts.join("/"));
+    // Joined folder by folder: `root.join("a/b")` would keep the `/`, and on Windows the
+    // path would then differ from the one the workspace scan finds (`root\a\b`).
+    let target: PathBuf = root.join(parts.iter().collect::<PathBuf>());
     if target.exists() && !target.is_dir() {
         return Err(format!("{name} is a file, not a folder"));
     }
@@ -205,7 +208,7 @@ fn new_repo_location(workspace: &Path, name: &str) -> Result<(Vec<String>, PathB
 /// The new repository as the Workspace view lists it: under the workspace
 /// path as given, like the scan does.
 fn listed(workspace: &Path, parts: &[String], target: &Path) -> Result<RepoInfo, String> {
-    let mut made = repo_info(workspace, &workspace.join(parts.join("/"))).ok_or_else(|| "git didn't create a repository".to_string())?;
+    let mut made = repo_info(workspace, &workspace.join(parts.iter().collect::<PathBuf>())).ok_or_else(|| "git didn't create a repository".to_string())?;
     made.remote = remote_of(target);
     Ok(made)
 }
@@ -217,13 +220,13 @@ fn create(workspace: &Path, name: &str, branch: Option<&str>, remote: Option<&st
         check_remote_url(remote)?;
     }
     if let Some(b) = branch {
-        let ok = Command::new("git").args(["check-ref-format", "--branch", b]).stdin(Stdio::null()).output().is_ok_and(|o| o.status.success());
+        let ok = command("git").args(["check-ref-format", "--branch", b]).stdin(Stdio::null()).output().is_ok_and(|o| o.status.success());
         if !ok {
             return Err(format!("“{b}” isn't a valid branch name"));
         }
     }
     fs::create_dir_all(&target).map_err(|e| format!("could not create {name}: {e}"))?;
-    let mut cmd = Command::new("git");
+    let mut cmd = command("git");
     cmd.arg("init").arg("-q");
     if let Some(b) = branch {
         cmd.args(["-b", b]);
@@ -268,7 +271,7 @@ fn clone(workspace: &Path, url: &str, name: &str, progress: &dyn Fn(&str)) -> Re
 /// `progress` as they come. On failure, says why in git's words.
 pub(crate) fn clone_with_progress(url: &str, target: &Path, extra: &[&str], progress: &dyn Fn(&str)) -> Result<(), String> {
     use std::io::Read;
-    let mut child = Command::new("git")
+    let mut child = command("git")
         .args(["clone", "--progress"])
         .args(extra)
         .args(["--", url])
@@ -378,6 +381,7 @@ fn folder_parts(name: &str) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     struct TempDir(PathBuf);
     impl Drop for TempDir {
@@ -436,7 +440,7 @@ mod tests {
         fake_repo(&tmp.0, "ref: refs/heads/main\n");
         let repos = find_repos(&tmp.0, MAX_DEPTH);
         assert_eq!(repos.len(), 1);
-        assert_eq!(repos[0].path, tmp.0.to_string_lossy());
+        assert_eq!(repos[0].path, slash_path(&tmp.0));
     }
 
     #[test]
@@ -447,7 +451,7 @@ mod tests {
         assert_eq!((made.name.as_str(), made.head.as_deref(), made.detached), ("tools/app", Some("trunk"), false));
         let url = Command::new("git").arg("-C").arg(root.join("tools/app")).args(["remote", "get-url", "origin"]).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&url.stdout).trim(), "git@github.com:me/app.git");
-        assert_eq!(made.path, root.join("tools/app").to_string_lossy());
+        assert_eq!(made.path, slash_path(&root.join("tools").join("app")));
         assert!(find_repos(root, MAX_DEPTH).contains(&made));
 
         // An existing folder of files becomes a repository; its files stay.
@@ -492,7 +496,7 @@ mod tests {
         fs::write(source.join("a.txt"), "a").unwrap();
         run(&source, &["add", "."]);
         run(&source, &["-c", "user.name=T", "-c", "user.email=t@e", "commit", "-q", "-m", "one"]);
-        let url = source.canonicalize().unwrap().to_string_lossy().into_owned();
+        let url = canonical(&source).unwrap().to_string_lossy().into_owned();
 
         let lines = std::cell::RefCell::new(Vec::new());
         let made = clone(root, &url, "copies/app", &|l| lines.borrow_mut().push(l.to_string())).unwrap();

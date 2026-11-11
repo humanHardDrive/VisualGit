@@ -5,52 +5,54 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::os::{self, OpenError, TRASH};
 use crate::pending::{git, repo_root, resolve};
 
-/// Opens a working-tree file with the system's default application.
+/// Opens a working-tree file with the system's default application. On
+/// Windows, a kind of file with no application gets the "Open with" chooser.
 #[tauri::command]
-pub fn open_file(repo: String, path: String) -> Result<(), String> {
-    let file = existing(&repo, &path)?;
-    let mut cmd = if cfg!(target_os = "macos") {
-        let mut c = Command::new("open");
-        c.arg(&file);
-        c
-    } else if cfg!(target_os = "windows") {
-        let mut c = Command::new("cmd");
-        c.args(["/C", "start", ""]).arg(&file);
-        c
-    } else {
-        let mut c = Command::new("xdg-open");
-        c.arg(&file);
-        c
-    };
-    spawn(&mut cmd)
+pub async fn open_file(repo: String, path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let file = existing(&repo, &path)?;
+        match os::open(windows_path(&file).as_os_str()) {
+            Ok(()) => Ok(()),
+            #[cfg(windows)]
+            Err(OpenError::NoApplication) => os::open_with_dialog(&windows_path(&file)),
+            #[cfg(not(windows))]
+            Err(OpenError::NoApplication) => Err(format!("No application opens {path}")),
+            Err(OpenError::Failed(e)) => Err(format!("could not open {path}: {e}")),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Opens a working-tree file with `app` (a macOS `.app` bundle or a program).
 /// Without `app` on Windows, shows the system's "Open with" chooser.
 #[tauri::command]
-pub fn open_file_with(repo: String, path: String, app: Option<String>) -> Result<(), String> {
-    let file = existing(&repo, &path)?;
-    let mut cmd = match app {
-        Some(app) if cfg!(target_os = "macos") => {
-            let mut c = Command::new("open");
-            c.arg("-a").arg(app).arg(&file);
-            c
-        }
-        Some(app) => {
-            let mut c = Command::new(app);
-            c.arg(&file);
-            c
-        }
-        None if cfg!(target_os = "windows") => {
-            let mut c = Command::new("rundll32.exe");
-            c.arg("shell32.dll,OpenAs_RunDLL").arg(&file);
-            c
-        }
-        None => return Err("Choose an application to open the file with".into()),
-    };
-    spawn(&mut cmd)
+pub async fn open_file_with(repo: String, path: String, app: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let file = existing(&repo, &path)?;
+        let mut cmd = match app {
+            Some(app) if cfg!(target_os = "macos") => {
+                let mut c = Command::new("open");
+                c.arg("-a").arg(app).arg(&file);
+                c
+            }
+            Some(app) => {
+                let mut c = Command::new(app);
+                c.arg(&file);
+                c
+            }
+            #[cfg(windows)]
+            None => return os::open_with_dialog(&windows_path(&file)),
+            #[cfg(not(windows))]
+            None => return Err("Choose an application to open the file with".into()),
+        };
+        cmd.spawn().map(|_| ()).map_err(|e| format!("could not open {path}: {e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn existing(repo: &str, path: &str) -> Result<PathBuf, String> {
@@ -61,8 +63,14 @@ fn existing(repo: &str, path: &str) -> Result<PathBuf, String> {
     Ok(file)
 }
 
-fn spawn(cmd: &mut Command) -> Result<(), String> {
-    cmd.spawn().map(|_| ()).map_err(|e| format!("could not open: {e}"))
+/// `file` with Windows' own `\` between folders: repository paths use `/`
+/// (`C:\repo` joined with `src/a.txt`), which not every application accepts.
+fn windows_path(file: &Path) -> PathBuf {
+    if cfg!(windows) {
+        PathBuf::from(file.to_string_lossy().replace('/', "\\"))
+    } else {
+        file.to_path_buf()
+    }
 }
 
 /// Appends `pattern` to the repository's top-level `.gitignore` (creating it),
@@ -93,7 +101,7 @@ fn add_pattern(root: &Path, pattern: &str) -> Result<bool, String> {
 /// git doesn't track, only `from_disk` does anything.
 #[tauri::command]
 pub fn remove_file(repo: String, path: String, from_disk: bool) -> Result<(), String> {
-    remove(&repo, &path, from_disk, &|f| trash::delete(f).map_err(|e| format!("could not move {path} to the Trash: {e}")))
+    remove(&repo, &path, from_disk, &|f| trash::delete(f).map_err(|e| format!("could not move {path} to the {TRASH}: {e}")))
 }
 
 fn remove(repo: &str, path: &str, from_disk: bool, discard: &dyn Fn(&Path) -> Result<(), String>) -> Result<(), String> {
@@ -122,7 +130,7 @@ mod tests {
         for args in [&["init", "-q", "-b", "main"][..], &["config", "user.name", "Test"], &["config", "user.email", "t@example.com"]] {
             assert!(Command::new("git").arg("-C").arg(&dir).args(args).status().unwrap().success());
         }
-        dir.canonicalize().unwrap()
+        os::canonical(&dir).unwrap()
     }
 
     #[test]

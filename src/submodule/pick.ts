@@ -17,10 +17,12 @@ import { tauriRunner } from "../git/tauriRunner.ts";
 import { inferModel, type Model } from "../model/infer.ts";
 import { layoutModel, type Layout } from "../model/layout.ts";
 import { laneNeighbour, nextOf, previousOf } from "../model/navigate.ts";
+import { localizeShortcuts, shownPath } from "../platform.ts";
 import { clearDetails, showBranch, showCommit } from "../view/details.ts";
 import { Explorer, type Selection } from "../view/explorer.ts";
 import { createSearchBox } from "../view/searchBox.ts";
 
+localizeShortcuts();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const status = $("pick-status");
 const searchInput = $<HTMLInputElement>("search");
@@ -253,14 +255,14 @@ async function start() {
   if (info.current) {
     HINT = "Double-click a changeset to move the submodule there";
     $("pick-title").textContent = `Edit the submodule ${info.path}`;
-    sub.textContent = `Now at ${info.current.slice(0, 8)} · from ${info.source}`;
+    sub.textContent = `Now at ${info.current.slice(0, 8)} · from ${shownPath(info.source)}`;
     $("pick-fetch").hidden = false;
     document.title = `Edit Submodule ${info.path}`;
   } else {
     $("pick-title").textContent = `Choose the changeset of ${name.replace(/\.git$/i, "")} for ${info.path}`;
-    sub.textContent = `From ${info.source}`;
+    sub.textContent = `From ${shownPath(info.source)}`;
   }
-  sub.title = info.source;
+  sub.title = shownPath(info.source);
   say("Reading its history…");
   if (!(await loadHistory())) return;
   say(HINT);

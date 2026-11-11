@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -672,16 +672,26 @@ describe("files", () => {
     git("update-index", "--chmod=+x", "run.sh");
     commit("base");
     git("-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.dir, "libs/lib");
-    symlinkSync("notes.md", join(dir, "link"));
+    // Windows only lets programs make symbolic links with Developer Mode on (or as administrator).
+    let links = true;
+    try {
+      symlinkSync("notes.md", join(dir, "link"));
+    } catch (err) {
+      if (process.platform !== "win32" || (err as NodeJS.ErrnoException).code !== "EPERM") throw err;
+      links = false;
+    }
     const nested = fixture(); // a repository inside, not added
     nested.commit("n");
-    execFileSync("mv", [nested.dir, join(dir, "vendor")]);
+    renameSync(nested.dir, join(dir, "vendor"));
 
     const list = await loadFiles(nodeRunner(dir));
-    expect(list.paths).toEqual([".gitmodules", "libs/lib", "link", "notes.md", "run.sh", "vendor"]);
+    const link = <T>(...xs: T[]) => (links ? xs : []);
+    expect(list.paths).toEqual([".gitmodules", "libs/lib", ...link("link"), "notes.md", "run.sh", "vendor"]);
     const types = list.paths.map((p) => fileType(p, list.kinds.get(p)));
-    expect(types).toEqual(["Git submodules", "Submodule", "File", "Markdown", "Shell script (executable)", "Repository (not a submodule)"]);
-    git("add", "link");
+    expect(types).toEqual(["Git submodules", "Submodule", ...link("File"), "Markdown", "Shell script (executable)", "Repository (not a submodule)"]);
+    if (links) git("add", "link");
+    // Without one on disk, record one in the index directly: that's what the Files view reads.
+    else git("update-index", "--add", "--cacheinfo", `120000,${git("hash-object", "-w", "notes.md")},link`);
     expect(fileType("link", (await loadFiles(nodeRunner(dir))).kinds.get("link"))).toBe("Symbolic link");
     expect(fileType("bin/tool", "executable")).toBe("Program");
     expect(fileType("a/Thing.XYZ", undefined)).toBe("XYZ file");

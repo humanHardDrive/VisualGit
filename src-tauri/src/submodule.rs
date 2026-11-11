@@ -18,6 +18,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent};
 
 use crate::branch::commit_id;
+use crate::os::{canonical, slash_path, TRASH};
 use crate::pending::{git, repo_root};
 use crate::workspace::{check_remote_url, clone_with_progress};
 
@@ -84,7 +85,7 @@ pub async fn open_add_submodule_window(
         return done;
     }
     let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let info = AddSubmoduleInfo { repo: root.to_string_lossy().into_owned(), folder, workspace };
+    let info = AddSubmoduleInfo { repo: slash_path(&root), folder, workspace };
     windows.add.lock().unwrap().insert(label.clone(), info);
     WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("submodule.html".into()))
         .title(format!("Add Submodule to {name}"))
@@ -133,7 +134,7 @@ fn submodule_target(root: &Path, path: &str) -> Result<PathBuf, String> {
     // Following a symbolic link out of the repository isn't allowed.
     let mut dir = target.parent();
     while let Some(d) = dir {
-        if let Ok(real) = d.canonicalize() {
+        if let Ok(real) = canonical(d) {
             if !real.starts_with(root) {
                 return Err(format!("{path} is outside the repository"));
             }
@@ -208,10 +209,11 @@ pub async fn choose_submodule_changeset(
     }
 
     let info = PickChangesetInfo {
-        repo: root.to_string_lossy().into_owned(),
+        repo: slash_path(&root),
         path: path.clone(),
-        source: if remote { source } else { history.to_string_lossy().into_owned() },
-        history: history.to_string_lossy().into_owned(),
+        // A folder on this computer goes into .gitmodules as git writes paths, with `/`.
+        source: if remote { source } else { slash_path(&history) },
+        history: slash_path(&history),
         remote,
         current: None,
     };
@@ -275,12 +277,12 @@ pub async fn open_edit_submodule_window(app: AppHandle, windows: State<'_, Submo
     let url = submodule_name(&root, &path)
         .and_then(|n| git(&root, &["config", "--file", &root.join(".gitmodules").to_string_lossy(), "--get", &format!("submodule.{n}.url")], &[], None).ok())
         .map(|u| u.trim().to_string())
-        .unwrap_or_else(|| folder.to_string_lossy().into_owned());
+        .unwrap_or_else(|| slash_path(&folder));
     let info = PickChangesetInfo {
-        repo: root.to_string_lossy().into_owned(),
+        repo: slash_path(&root),
         path: path.clone(),
         source: url,
-        history: folder.to_string_lossy().into_owned(),
+        history: slash_path(&folder),
         // Its own repository: never removed when the window closes.
         remote: false,
         current: Some(current),
@@ -482,16 +484,16 @@ pub(crate) fn update_all(root: &Path) -> SubmoduleUpdate {
 /// Each is removed if git can restore everything in it, moved to the Trash if
 /// it also holds ignored files, and otherwise left alone and reported.
 fn put_away_leftovers(root: &Path, current: &[String], result: &mut SubmoduleUpdate) {
-    let Ok(modules) = root.join(".git").join("modules").canonicalize() else { return };
-    let Ok(top) = root.canonicalize() else { return };
+    let Ok(modules) = canonical(&root.join(".git").join("modules")) else { return };
+    let Ok(top) = canonical(root) else { return };
     let mut gitdirs = Vec::new();
     find_gitdirs(&modules, &mut gitdirs, 0);
     for gitdir in gitdirs {
         let config = gitdir.join("config");
         let Ok(worktree) = git(root, &["config", "--file", &config.to_string_lossy(), "--get", "core.worktree"], &[], None) else { continue };
-        let Ok(folder) = gitdir.join(worktree.trim()).canonicalize() else { continue }; // not on disk: nothing left behind
+        let Ok(folder) = canonical(&gitdir.join(worktree.trim())) else { continue }; // not on disk: nothing left behind
         let Ok(rel) = folder.strip_prefix(&top) else { continue };
-        let path = rel.to_string_lossy().replace('\\', "/");
+        let path = slash_path(rel);
         if path.is_empty() || current.contains(&path) || current.iter().any(|c| path.starts_with(&format!("{c}/"))) {
             continue; // still a submodule here (or inside one, which its own repository looks after)
         }
@@ -499,7 +501,7 @@ fn put_away_leftovers(root: &Path, current: &[String], result: &mut SubmoduleUpd
         let points_back = std::fs::read_to_string(folder.join(".git"))
             .ok()
             .and_then(|t| t.trim().strip_prefix("gitdir:").map(|p| folder.join(p.trim())))
-            .and_then(|p| p.canonicalize().ok())
+            .and_then(|p| canonical(&p).ok())
             .is_some_and(|p| p == gitdir);
         if !points_back {
             continue;
@@ -580,7 +582,7 @@ pub async fn remove_submodule(repo: String, path: String, from_disk: bool) -> Re
     tauri::async_runtime::spawn_blocking(move || {
         let folder = remove(&root, &path)?;
         if from_disk && folder.symlink_metadata().is_ok() {
-            trash::delete(&folder).map_err(|e| format!("Removed the submodule, but could not move {path} to the Trash: {e}"))?;
+            trash::delete(&folder).map_err(|e| format!("Removed the submodule, but could not move {path} to the {TRASH}: {e}"))?;
         }
         Ok(())
     })
@@ -627,8 +629,8 @@ pub(crate) fn remove(root: &Path, path: &str) -> Result<PathBuf, String> {
     // First, where its repository is (under .git/modules), while the submodule still works.
     let gitdir = if folder.join(".git").is_file() {
         let dir = PathBuf::from(git(&folder, &["rev-parse", "--absolute-git-dir"], &[], None)?.trim());
-        let dir = dir.canonicalize().map_err(|e| format!("Could not find {path}'s repository: {e}"))?;
-        let m = modules.canonicalize().map_err(|_| format!("{path}'s repository isn't under .git/modules"))?;
+        let dir = canonical(&dir).map_err(|e| format!("Could not find {path}'s repository: {e}"))?;
+        let m = canonical(&modules).map_err(|_| format!("{path}'s repository isn't under .git/modules"))?;
         if !dir.starts_with(&m) || dir == m {
             return Err(format!("{path}'s repository isn't under .git/modules, so VisualGit won't move it"));
         }
@@ -664,7 +666,7 @@ pub(crate) fn remove(root: &Path, path: &str) -> Result<PathBuf, String> {
         // Not checked out: nothing of the user's to keep, just git's copy, if any.
         if let Some(n) = &name {
             let dir = modules.join(n);
-            if let (Ok(real), Ok(m)) = (dir.canonicalize(), modules.canonicalize()) {
+            if let (Ok(real), Ok(m)) = (canonical(&dir), canonical(&modules)) {
                 if real.starts_with(&m) && real != m {
                     std::fs::remove_dir_all(&real).map_err(|e| format!("Could not remove {}: {e}", real.display()))?;
                     prune_empty(real.parent(), &m);
@@ -710,9 +712,10 @@ fn make_standalone(folder: &Path, gitdir: &Path) -> Result<(), String> {
     for (worktree, old) in inner {
         let Ok(rest) = old.strip_prefix(gitdir) else { continue };
         let moved = target.join(rest);
-        std::fs::write(worktree.join(".git"), format!("gitdir: {}\n", relative(&worktree, &moved).display())).map_err(|e| e.to_string())?;
+        // With `/`, as git itself writes these.
+        std::fs::write(worktree.join(".git"), format!("gitdir: {}\n", slash_path(&relative(&worktree, &moved)))).map_err(|e| e.to_string())?;
         let config = moved.join("config");
-        git(outside, &["config", "--file", &config.to_string_lossy(), "core.worktree", &relative(&moved, &worktree).to_string_lossy()], &[], None)
+        git(outside, &["config", "--file", &config.to_string_lossy(), "core.worktree", &slash_path(&relative(&moved, &worktree))], &[], None)
             .map_err(|e| format!("Could not update the submodule in {}: {e}", worktree.display()))?;
     }
     Ok(())
@@ -733,7 +736,7 @@ fn find_gitfiles(dir: &Path, gitdir: &Path, out: &mut Vec<(PathBuf, PathBuf)>, d
         let gitfile = sub.join(".git");
         if let Ok(text) = std::fs::read_to_string(&gitfile) {
             if let Some(p) = text.trim().strip_prefix("gitdir:") {
-                if let Ok(real) = sub.join(p.trim()).canonicalize() {
+                if let Ok(real) = canonical(&sub.join(p.trim())) {
                     if real.starts_with(gitdir) {
                         out.push((sub.clone(), real));
                     }
@@ -850,9 +853,11 @@ mod tests {
         // Remote: through a clone made only to show its history, which can go afterwards.
         let peek = tmp.join("peek");
         clone_with_progress(lib.to_str().unwrap(), &peek, &["--bare"], &|_| {}).unwrap();
+        // file:///srv/lib, or on Windows file:///C:/Users/…/lib.
+        let lib_path = slash_path(&lib);
         let remote = PickChangesetInfo {
             path: "other".into(),
-            source: format!("file://{}", lib.display()),
+            source: format!("file://{}{lib_path}", if lib_path.starts_with('/') { "" } else { "/" }),
             history: peek.to_string_lossy().into(),
             remote: true,
             ..local
@@ -882,7 +887,7 @@ mod tests {
         assert!(folder.join(".git").is_dir());
         assert_eq!(run(&folder, &["rev-parse", "HEAD"]), first);
         assert!(run(&folder, &["status", "--porcelain"]).contains("work.txt"));
-        assert_eq!(run(&folder, &["rev-parse", "--show-toplevel"]), folder.to_string_lossy());
+        assert_eq!(run(&folder, &["rev-parse", "--show-toplevel"]), slash_path(&folder));
         assert!(remove(&root, "libs/lib").unwrap_err().contains("isn't a submodule"));
         // The last one: .gitmodules goes too, and the removals are staged.
         remove(&root, "other").unwrap();

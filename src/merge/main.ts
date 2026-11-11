@@ -23,6 +23,7 @@ import { stripConflicts, type ConflictRegion } from "../git/conflicts.ts";
 import { loadRepo } from "../git/load.ts";
 import { tauriRunner } from "../git/tauriRunner.ts";
 import { inferModel, type Model } from "../model/infer.ts";
+import { localizeShortcuts } from "../platform.ts";
 import { dark, lineEndings, readOnly, theme, themeSlot } from "../view/codemirror.ts";
 import { conflictRegions, dropRegion, regionsField, setRegions, sideHighlights } from "../view/conflictPanes.ts";
 import { branchColor } from "../view/explorer.ts";
@@ -46,6 +47,7 @@ interface MergePreview {
   messages: string[];
 }
 
+localizeShortcuts();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const fileList = $("file-list");
 const diffHost = $("diff");

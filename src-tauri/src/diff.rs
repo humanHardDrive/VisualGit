@@ -64,7 +64,7 @@ pub async fn open_diff_window(
             None => format!("Changeset {}", &changeset[..8]),
         },
     };
-    let info = DiffWindowInfo { repo: root.to_string_lossy().into_owned(), changeset, branch, base, file };
+    let info = DiffWindowInfo { repo: crate::os::slash_path(&root), changeset, branch, base, file };
     windows.0.lock().unwrap().insert(label.clone(), info);
     WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("diff.html".into()))
         .title(title)
