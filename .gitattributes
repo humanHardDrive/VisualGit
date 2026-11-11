@@ -1,0 +1,8 @@
+# Text is stored with LF and checked out with LF on every system, whatever
+# core.autocrlf says: the shell scripts only run with LF, and a Windows
+# checkout with CRLF shows every file as changed.
+* text=auto eol=lf
+
+*.png binary
+*.ico binary
+*.icns binary
