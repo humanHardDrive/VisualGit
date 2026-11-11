@@ -20,7 +20,18 @@ The reflog is local and expires, so a fresh clone falls back to heuristics. The 
 
 ## Running it
 
-Requirements: [Node.js](https://nodejs.org) 22+, [Rust](https://rustup.rs) (stable), and Git. On Linux you also need the [Tauri system dependencies](https://tauri.app/start/prerequisites/).
+Requirements: [Node.js](https://nodejs.org) 22+, [Rust](https://rustup.rs) (stable), and Git. On Linux you also need the [Tauri system dependencies](https://tauri.app/start/prerequisites/). On Windows you also need the Microsoft C++ Build Tools, with the Windows SDK (rustup's default toolchain there, `stable-x86_64-pc-windows-msvc`, links with them). WebView2 comes with Windows 10 and 11.
+
+On Windows, winget installs all of it. The Build Tools are a download of several GB and ask for administrator rights. Open a new terminal afterwards, so it finds `cargo`.
+
+```powershell
+winget install --id OpenJS.NodeJS.LTS -e
+winget install --id Git.Git -e
+winget install --id Rustlang.Rustup -e
+winget install --id Microsoft.VisualStudio.BuildTools -e --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
+
+Then:
 
 ```sh
 npm install
@@ -28,7 +39,11 @@ npm run app                             # desktop app, hot reload
 VISUALGIT_REPO=/path/to/repo npm run app  # open a repository straight away
 ```
 
-**Workspaces.** Choose *File › Open Workspace…* (or *Open Workspace…* in the Workspace view) and pick the folder you keep your repositories in, e.g. `~/Documents/GitHub`.
+In PowerShell, set the variable first: `$env:VISUALGIT_REPO = "C:\path\to\repo"; npm run app`.
+
+**Shortcuts** are written here as macOS shows them. On Windows and Linux, ⌘ is Ctrl, ⇧ is Shift and ↩ is Enter (⇧⌘O is Ctrl+Shift+O), as the app's own menus and tooltips say. Where this README says the Trash, on Windows it's the Recycle Bin.
+
+**Workspaces.** Choose *File › Open Workspace…* (or *Open Workspace…* in the Workspace view) and pick the folder you keep your repositories in, e.g. `~/Documents/GitHub` (or `C:\Users\you\source\repos` on Windows).
 
 - **Finding repositories:** VisualGit looks up to four levels down, skipping hidden folders and build folders such as `node_modules` and `target`.
 - **The Workspace view:** one of the entries under *View*. It lists every repository with what it has checked out, its remote and its path, and you can search their names with ⌘F.
@@ -37,7 +52,7 @@ VISUALGIT_REPO=/path/to/repo npm run app  # open a repository straight away
   - **Remote:** where the repository pushes to: the hosting service (*GitHub*, *GitLab*, …), or the server's name if it's self-hosted, or *Local folder* for a remote that's a path on disk. *Local only* means it has no remote. It's `origin` when there is one, otherwise the remote is named. Hover for the full URL (never including a password or token).
   - Right-click a repository for *Switch Active Repo* (the same as double-clicking it) and *Open on GitHub* (or GitLab, Bitbucket, Azure DevOps, Codeberg, SourceHut, or the server's name if it's self-hosted). The page comes from the repository's remote URL: `origin` first, then `upstream`, then any other. SSH host aliases from `~/.ssh/config` are followed to the real host, and any user name or token in the URL is left out of the address.
   - Right-click anywhere in the view and choose *Create New Repository…* to make one in the workspace. A name like `group/my-project` creates the folders too. You also choose the first branch (`main` unless you change it) and, optionally, a remote to push to, which becomes `origin`. Git can't create the repository on the server, so it must already exist there. The first *Commit & Push* publishes the branch to it and tracks it. Without a remote, the repository is local only. Only https://, http://, ssh://, git://, file:// and `git@host:path` remotes are accepted.
-  - Right-click anywhere in the view and choose *Clone Repository…* to `git clone` a URL into the workspace. The folder name comes from the URL (you can change it, `group/name` works too). The dialog closes and git's progress shows in the corner; the clone is listed, and opened if you asked, when it's done. There's no terminal to type a password into, so private repositories need credentials Git already has: a credential helper (such as the macOS Keychain) for https://, or an SSH key in your agent. A folder that already exists but isn't a repository yet becomes one, and its files are left as they are. VisualGit won't create a repository inside another one, or anywhere the workspace scan wouldn't find it: in a hidden or build folder, or more than four levels down.
+  - Right-click anywhere in the view and choose *Clone Repository…* to `git clone` a URL into the workspace. The folder name comes from the URL (you can change it, `group/name` works too). The dialog closes and git's progress shows in the corner; the clone is listed, and opened if you asked, when it's done. There's no terminal to type a password into, so private repositories need credentials Git already has: a credential helper for https:// (such as the macOS Keychain, or Git Credential Manager, which comes with Git for Windows), or an SSH key in your agent. A folder that already exists but isn't a repository yet becomes one, and its files are left as they are. VisualGit won't create a repository inside another one, or anywhere the workspace scan wouldn't find it: in a hidden or build folder, or more than four levels down.
 - **Remembered settings:** each repository keeps its own zoom, scroll position and selection while you switch. The workspace and the last repository reopen at the next launch.
 
 *File › Open Repository…* opens a single repository from anywhere.
@@ -63,7 +78,7 @@ The app opens whatever repository you pass as `visualgit /path/to/repo` or in `V
   - *Expand All* and *Collapse All* do what they say.
   - **Staying up to date:** while the Files view is showing, it checks every few seconds whether files were added or removed, pending changes changed, or HEAD moved (less often in a repository that's slow to list, and not while the window is hidden), and refreshes when they did. *Refresh* (or ⌘R) does it straight away.
   - **Right-click a file:**
-    - *Open* uses the default app. *Open With…* lets you pick an application on macOS; Windows shows its own chooser.
+    - *Open* uses the default app. *Open With…* lets you pick an application on macOS; Windows shows its own chooser. On Windows, *Open* on a kind of file that has no application shows that chooser too.
     - *View History* opens every changeset that changed the file, newest first and following renames, with the file's diff at each one. ↑/↓ step through them, and double-clicking one shows everything else that changeset changed.
     - *Ignore* adds the file's name (any folder), its extension (`*.ext`) or its exact path (`/path/to/file`) to the repository's `.gitignore`. Git keeps tracking a file that's already in source control until it's removed.
     - *Delete…* asks whether to *Remove from Source Control*, which keeps the file on disk as a new, untracked file, or *Remove from Source Control and Disk*, which also moves it to the Trash. Either way it's a pending change for you to commit. A file that isn't in source control is just moved to the Trash, after asking.
@@ -179,8 +194,10 @@ npm test                                # inference + layout tests against scrip
 npm run typecheck
 npm run inspect -- /path/to/repo        # print the inferred branch tree in the terminal
 scripts/make-demo-repo.sh /tmp/demo     # a repo exercising every explorer case
-cd src-tauri && cargo test              # backend tests: command validation, workspace scan
+cargo test --manifest-path src-tauri/Cargo.toml  # backend tests: command validation, workspace scan
 ```
+
+On Windows, run `scripts/make-demo-repo.sh` from Git Bash. Text files are checked out with LF on every system, whatever `core.autocrlf` says (see `.gitattributes`), so a Windows checkout doesn't show every file as changed.
 
 ### Layout of the code
 
@@ -200,6 +217,8 @@ cd src-tauri && cargo test              # backend tests: command validation, wor
 | [src-tauri/src/workspace.rs](src-tauri/src/workspace.rs) | Finds the repositories inside a workspace folder, and creates new ones there |
 | [src-tauri/src/hosting.rs](src-tauri/src/hosting.rs) | Where a repository is hosted, from its remote URL, and opening its page there |
 | [src-tauri/src/menu.rs](src-tauri/src/menu.rs) | Native menu bar (File › Open Workspace…, Open Repository…) |
+| [src-tauri/src/os.rs](src-tauri/src/os.rs) | What differs between operating systems: canonical paths without Windows' `\\?\` prefix (which git can't use), running git without a console window, opening files and web pages |
+| [src/platform.ts](src/platform.ts) | The pages' side of it: absolute paths kept with `/` as git prints them (shown with `\` on Windows), and each platform's names for shortcuts and the Trash |
 
 The About panel shows the version as major.minor.changeset, using the last 5 characters of the changeset the app was built from (for example `1.0.0bd3f`). It also shows the build date, the author and the copyright. The build stamps in the current `HEAD` ([src-tauri/build.rs](src-tauri/build.rs)). When building without a `.git` folder, set `VISUALGIT_CHANGESET` to provide it. The build date is in UTC; set `SOURCE_DATE_EPOCH` to fix it for a reproducible build.
 
