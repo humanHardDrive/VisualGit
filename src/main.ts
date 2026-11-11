@@ -12,7 +12,7 @@ import { clearDetails, showBranch, showCommit } from "./view/details.ts";
 import { buildTree, isRepoKind, loadFiles, loadLastChanges, nestList, ownerOf, type FileList, type Folder, type LastChange } from "./git/files.ts";
 import { fileRows, renderFiles, rowKey, type FileRow } from "./view/files.ts";
 import { ignorePatterns } from "./git/ignore.ts";
-import { branchColor, Explorer, type Selection, type View } from "./view/explorer.ts";
+import { branchColor, Explorer, pushLabel, type Selection, type View } from "./view/explorer.ts";
 import { filterRepos, renderWorkspaceList, type RepoInfo } from "./view/workspaceList.ts";
 import { createPendingView } from "./pending/view.ts";
 import { createSearchBox } from "./view/searchBox.ts";
@@ -154,9 +154,9 @@ async function showContextMenu(sel: Selection) {
     const local = b.refs.find((r) => r.startsWith("refs/heads/"));
     if (local) {
       const name = local.slice("refs/heads/".length);
-      // Offered while there is something to push: unpushed changesets, or a branch never pushed.
-      const text = !b.published ? "Push (new branch)" : b.unpushed ? `Push (↑${b.unpushed})` : "Push (up to date)";
-      items.push({ id: "push", text, enabled: !b.published || b.unpushed > 0, action: () => void pushBranch(name) });
+      // Offered while there is something to push: changesets its remote branch doesn't have, or a branch never pushed.
+      const text = !b.remote ? "Push (new branch)" : b.ahead ? `Push (${pushLabel(model!, b)})` : b.behind ? "Push (nothing to push)" : "Push (up to date)";
+      items.push({ id: "push", text, enabled: !b.remote || b.ahead > 0, action: () => void pushBranch(name) });
     }
   }
   const menu = await Menu.new({ items });
@@ -170,6 +170,16 @@ async function showContextMenu(sel: Selection) {
  * lane's own branch first), else the changeset itself as a detached HEAD.
  * `current` when that is what's checked out already.
  */
+/**
+ * " · 2 branches to push" for the toolbar: local branches whose remote
+ * branch is behind them. Their changesets can all be on the remote already
+ * (under another branch), so the "not pushed" count can miss them.
+ */
+function toPush(m: Model): string {
+  const n = m.branches.filter((b) => b.remote && b.ahead > 0).length;
+  return n ? ` · ${n} branch${n === 1 ? "" : "es"} to push` : "";
+}
+
 function switchTarget(m: Model, hash: string): { branch?: string; current: boolean } {
   const tipOf = (b: Model["branches"][number]) => {
     const local = b.refs.find((r) => r.startsWith("refs/heads/"));
@@ -548,6 +558,7 @@ async function loadRepoAt(path: string, opts: { reload?: boolean; remembered?: b
     stats.textContent =
       `${next.order.length.toLocaleString()} changeset${next.order.length === 1 ? "" : "s"} · ${next.branches.length} branch${next.branches.length === 1 ? "" : "es"}` +
       (next.unpushed.size ? ` · ${next.unpushed.size.toLocaleString()} not pushed` : "") +
+      toPush(next) +
       (next.truncated ? " · history truncated" : "");
     // A new repository still has its first branch (an empty lane with HEAD on it), so this is rare: e.g. a bare repository.
     if (next.branches.length === 0) showMessage("Empty repository", "This repository has no commits yet.");

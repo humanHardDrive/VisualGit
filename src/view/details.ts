@@ -91,13 +91,23 @@ export function showBranch(panel: HTMLElement, model: Model, id: number, go: Nav
   }
   if (b.refs.length) row(dl, "Refs", b.refs.join("\n"));
   const push = pushLabel(model, b);
-  if (push) {
-    const text = b.published
-      ? `${b.unpushed} changeset${b.unpushed === 1 ? "" : "s"} not pushed`
-      : `Never pushed${b.unpushed ? `; ${b.unpushed} changeset${b.unpushed === 1 ? "" : "s"} only here` : ""}`;
-    row(dl, "Pushed", el("span", { className: "unpushed" }, text));
-  } else if (model.hasRemotes && b.published && b.refs.some((r) => r.startsWith("refs/heads/"))) {
-    row(dl, "Pushed", "Up to date with the remote (as of the last fetch)");
+  const n = (k: number) => `${k} changeset${k === 1 ? "" : "s"}`;
+  if (push && !b.remote) {
+    row(dl, "Pushed", el("span", { className: "unpushed" }, `Never pushed${b.unpushed ? `; ${n(b.unpushed)} only here` : ""}`));
+  } else if (push) {
+    const lines: string[] = [];
+    if (b.ahead) {
+      // Some or all may already be on the remote under another branch (one created from this one, say).
+      const elsewhere = b.ahead - b.unpushed;
+      let text = `${n(b.ahead)} not on ${b.remote} yet`;
+      if (b.unpushed === 0) text += `. ${b.ahead === 1 ? "It's" : "They're"} on the remote under other branches, so pushing only moves ${b.remote} here`;
+      else if (elsewhere > 0) text += ` (${n(b.unpushed)} on no remote at all)`;
+      lines.push(text);
+    }
+    if (b.behind) lines.push(`${b.remote} has ${n(b.behind)} this branch doesn't, as of the last fetch`);
+    row(dl, "Pushed", el("span", { className: "unpushed" }, lines.join(". ") + "."));
+  } else if (model.hasRemotes && b.remote) {
+    row(dl, "Pushed", `Up to date with ${b.remote} (as of the last fetch)`);
   }
   if (b.children.length) {
     const kids = el("span");

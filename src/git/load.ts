@@ -26,6 +26,8 @@ export interface RawRef {
   name: string;
   /** The commit the ref points at (annotated tags are peeled). */
   hash: string;
+  /** A local branch's upstream (`refs/remotes/origin/main`), when one is set. */
+  upstream?: string;
 }
 
 export interface ReflogEntry {
@@ -73,7 +75,7 @@ export async function loadRepo(git: GitRunner, opts: { maxCommits?: number } = {
     tryRun(git, ["symbolic-ref", "-q", "refs/remotes/origin/HEAD"]),
     git.run([
       "for-each-ref",
-      "--format=%(refname)%00%(objectname)%00%(*objectname)",
+      "--format=%(refname)%00%(objectname)%00%(*objectname)%00%(upstream)",
       "refs/heads",
       "refs/remotes",
       "refs/tags",
@@ -94,9 +96,9 @@ export async function loadRepo(git: GitRunner, opts: { maxCommits?: number } = {
   const refs: RawRef[] = [];
   for (const line of refsOut.split("\n")) {
     if (!line) continue;
-    const [name, object, peeled] = line.split(NUL);
+    const [name, object, peeled, upstream] = line.split(NUL);
     if (name.startsWith("refs/remotes/") && name.endsWith("/HEAD")) continue;
-    refs.push({ name, hash: peeled || object });
+    refs.push(upstream ? { name, hash: peeled || object, upstream } : { name, hash: peeled || object });
   }
 
   let commits: RawCommit[] = [];

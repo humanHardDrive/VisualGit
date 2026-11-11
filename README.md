@@ -129,10 +129,11 @@ Cherry Pick is only offered on changesets that *aren't* part of what's checked o
 **What hasn't been pushed** is shown in orange, as of your last fetch:
 
 - A changeset that no remote-tracking branch contains gets a small up-arrow.
-- A branch shows ↑3 when three of its changesets aren't pushed, or *not pushed* if the branch itself has never been pushed. This appears on its lane, in the Branch List and in the details panel.
-- The toolbar shows how many changesets are waiting to be pushed in total.
+- A branch is compared with its own remote branch (its upstream, else the one of the same name). It shows ↑3 when that remote branch is missing three of its changesets, ↓2 when the remote branch has two it doesn't, or *not pushed* if the branch has never been pushed. This appears on its lane, in the Branch List and in the details panel.
+- A branch can show ↑ with no changeset marked. This happens when its changesets reached the remote under another branch, such as one created from it and pushed, but the branch itself wasn't pushed. A fresh clone then shows those changesets on that other branch. The details panel says so, and pushing the branch fixes it.
+- The toolbar shows how many changesets are waiting to be pushed in total, and how many branches are ahead of their remote branch.
 
-A repository with no remote-tracking branches shows none of this. To push a branch, right-click it (on its lane in the Branch Explorer, or its row in the Branch List) and choose *Push*. This is offered while the branch has changesets to push or has never been pushed. A branch with an upstream goes to it; a new branch is published to `origin` and tracks it from then on.
+A repository with no remote-tracking branches shows none of this. To push a branch, right-click it (on its lane in the Branch Explorer, or its row in the Branch List) and choose *Push*. This is offered while the branch has changesets its remote branch doesn't, or has never been pushed. A branch with an upstream goes to it; a new branch is published to `origin` and tracks it from then on.
 
 **Changeset diffs.** Double-click any committed changeset (or right-click it and choose *View Changes*) to open a window showing what it changed.
 

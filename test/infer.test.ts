@@ -17,6 +17,7 @@ import { laneNeighbour, nextOf, previousOf } from "../src/model/navigate.ts";
 import { compileQuery, searchModel } from "../src/model/search.ts";
 import { branchRows } from "../src/view/branchList.ts";
 import { fileRows, rowKey, type FileRow } from "../src/view/files.ts";
+import { pushLabel } from "../src/view/explorer.ts";
 
 const dirs: string[] = [];
 afterAll(() => dirs.forEach((d) => rmSync(d, { recursive: true, force: true })));
@@ -523,6 +524,45 @@ describe("unpushed", () => {
     expect(m.unpushed.size).toBe(0);
     expect(branch(m, "local-only").published).toBe(true);
     expect(branch(m, "local-only").unpushed).toBe(0);
+  });
+
+  it("compares a branch with its own remote branch, not just any", async () => {
+    const { git, commit, model } = fixture();
+    commit("m1");
+    const remote = mkdtempSync(join(tmpdir(), "visualgit-remote-"));
+    dirs.push(remote);
+    execFileSync("git", ["init", "-q", "--bare", remote]);
+    git("remote", "add", "origin", remote);
+    git("push", "-q", "-u", "origin", "main");
+
+    // Two changesets on main, then a branch from them that's pushed: they reach
+    // the remote under feature's name, but origin/main doesn't move.
+    commit("m2");
+    commit("m3");
+    git("checkout", "-q", "-b", "feature");
+    commit("f1");
+    git("push", "-q", "-u", "origin", "feature");
+    let m = await model();
+    let main = branch(m, "main");
+    expect(m.unpushed.size).toBe(0);
+    expect(main.unpushed).toBe(0);
+    expect(main.remote).toBe("origin/main");
+    expect([main.ahead, main.behind]).toEqual([2, 0]);
+    expect(pushLabel(m, main)).toBe("↑2");
+    expect(pushLabel(m, branch(m, "feature"))).toBeNull();
+
+    // Pushing main brings it level; then the remote moves on without it.
+    git("push", "-q", "origin", "main");
+    git("checkout", "-q", "main");
+    commit("m4");
+    git("push", "-q", "origin", "main");
+    git("reset", "-q", "--hard", "HEAD~1");
+    commit("m4 again");
+    m = await model();
+    main = branch(m, "main");
+    expect([main.ahead, main.behind]).toEqual([1, 1]);
+    expect(pushLabel(m, main)).toBe("↑1 ↓1");
+    expect(pushLabel(m, branch(m, "feature"))).toBeNull();
   });
 });
 

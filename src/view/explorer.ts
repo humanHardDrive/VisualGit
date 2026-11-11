@@ -36,14 +36,17 @@ export interface View {
 }
 
 /**
- * How a local branch stands against its remote: "↑3" (three changesets not
- * pushed), "not pushed" (never pushed), or null when it's up to date or
- * there's no remote to compare with.
+ * How a local branch stands against its own remote branch: "↑3" (three
+ * changesets the remote branch doesn't have yet, even if they're on the
+ * remote under another branch), "↓2" (two it has that this branch doesn't),
+ * both, "not pushed" (never pushed), or null when it's up to date or there's
+ * no remote to compare with.
  */
 export function pushLabel(model: Model, b: Branch): string | null {
   if (!model.hasRemotes || !b.refs.some((r) => r.startsWith("refs/heads/"))) return null;
-  if (!b.published) return b.unpushed ? `not pushed · ↑${b.unpushed}` : "not pushed";
-  return b.unpushed ? `↑${b.unpushed}` : null;
+  if (!b.remote) return b.unpushed ? `not pushed · ↑${b.unpushed}` : "not pushed";
+  const parts = [b.ahead ? `↑${b.ahead}` : "", b.behind ? `↓${b.behind}` : ""].filter(Boolean);
+  return parts.length ? parts.join(" ") : null;
 }
 
 export function branchColor(model: Model, id: number): string {

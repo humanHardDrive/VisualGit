@@ -47,6 +47,15 @@ export interface Branch {
   published: boolean;
   /** Changesets reachable from the local branch that are on no remote-tracking branch. */
   unpushed: number;
+  /**
+   * The remote-tracking branch a local branch is compared with: its upstream,
+   * else the one of the same name (`origin/main`). Unset for a branch never pushed.
+   */
+  remote?: string;
+  /** Changesets the local branch has that `remote` doesn't (some may be on other remote branches). */
+  ahead: number;
+  /** Changesets `remote` has that the local branch doesn't, as of the last fetch. */
+  behind: number;
 }
 
 export interface Model {
@@ -196,6 +205,8 @@ export function inferModel(raw: RawRepo): Model {
       isHead: cand.kind === "detached" || (cand.kind === "local" && cand.name === raw.headBranch),
       published: cand.refs.some((r) => r.startsWith("refs/remotes/")),
       unpushed: 0,
+      ahead: 0,
+      behind: 0,
     };
     branches.push(b);
     return b;
@@ -329,6 +340,7 @@ export function inferModel(raw: RawRepo): Model {
   for (const b of branches) if (b.parent !== null) branches[b.parent].children.push(b.id);
 
   const { hasRemotes, unpushed } = findUnpushed(raw, commits, branches);
+  compareWithRemotes(raw, commits, index, branches);
 
   return {
     commits,
@@ -398,6 +410,92 @@ function findUnpushed(raw: RawRepo, commits: Map<string, RawCommit>, branches: B
   }
   if (!raw.headBranch && raw.headHash) walk(raw.headHash);
   return { hasRemotes: true, unpushed };
+}
+
+/**
+ * Sets each local branch's `remote`, `ahead` and `behind`: how it compares
+ * with its own remote-tracking branch, which `unpushed` doesn't tell. A
+ * branch whose changesets were pushed under another branch's name (a branch
+ * created from it, say) has nothing unpushed, but its own remote branch is
+ * still behind until the branch itself is pushed.
+ */
+function compareWithRemotes(raw: RawRepo, commits: Map<string, RawCommit>, index: Map<string, number>, branches: Branch[]) {
+  const hashOf = new Map(raw.refs.map((r) => [r.name, r.hash] as const));
+  const upstreamOf = new Map(raw.refs.filter((r) => r.upstream).map((r) => [r.name, r.upstream!] as const));
+  for (const b of branches) {
+    const local = b.refs.find((r) => r.startsWith("refs/heads/"));
+    if (!local) continue;
+    const configured = upstreamOf.get(local);
+    const remote = configured?.startsWith("refs/remotes/") && hashOf.has(configured) ? configured : b.refs.find((r) => r.startsWith("refs/remotes/"));
+    if (!remote) continue;
+    b.remote = remote.slice("refs/remotes/".length);
+    const [ahead, behind] = aheadBehind(commits, index, hashOf.get(local)!, hashOf.get(remote)!);
+    b.ahead = ahead;
+    b.behind = behind;
+  }
+}
+
+/**
+ * Changesets reachable from `a` and not `b`, and from `b` and not `a`. Walks
+ * newest first (parents always have a lower index) and stops once every
+ * changeset still to visit is reachable from both.
+ */
+function aheadBehind(commits: Map<string, RawCommit>, index: Map<string, number>, a: string, b: string): [number, number] {
+  if (a === b) return [0, 0];
+  const flags = new Map<string, number>();
+  const heap: string[] = []; // max-heap by index: a changeset comes off only after everything above it
+  const at = (k: number) => index.get(heap[k])!;
+  const push = (h: string) => {
+    heap.push(h);
+    for (let k = heap.length - 1; k > 0; ) {
+      const up = (k - 1) >> 1;
+      if (at(up) >= at(k)) break;
+      [heap[up], heap[k]] = [heap[k], heap[up]];
+      k = up;
+    }
+  };
+  const pop = () => {
+    const top = heap[0];
+    const last = heap.pop()!;
+    if (heap.length) {
+      heap[0] = last;
+      for (let k = 0; ; ) {
+        const l = 2 * k + 1;
+        const r = l + 1;
+        let big = k;
+        if (l < heap.length && at(l) > at(big)) big = l;
+        if (r < heap.length && at(r) > at(big)) big = r;
+        if (big === k) break;
+        [heap[big], heap[k]] = [heap[k], heap[big]];
+        k = big;
+      }
+    }
+    return top;
+  };
+  let open = 0; // queued changesets reachable from only one side
+  const mark = (h: string, f: number) => {
+    if (!index.has(h)) return; // beyond a truncated history
+    const before = flags.get(h) ?? 0;
+    const after = before | f;
+    if (after === before) return;
+    flags.set(h, after);
+    if (before === 0) push(h);
+    if (before === 0 && after !== 3) open++;
+    else if (before !== 0 && after === 3) open--;
+  };
+  mark(a, 1);
+  mark(b, 2);
+  let ahead = 0;
+  let behind = 0;
+  while (open > 0 && heap.length) {
+    const h = pop();
+    const f = flags.get(h)!;
+    if (f === 1) ahead++;
+    else if (f === 2) behind++;
+    if (f !== 3) open--;
+    for (const p of commits.get(h)?.parents ?? []) mark(p, f);
+  }
+  return [ahead, behind];
 }
 
 /**
