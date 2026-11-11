@@ -6,11 +6,13 @@
 //! in a remote URL (`https://user:token@host/…`) never make it into the
 //! address.
 
+use std::ffi::OsStr;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde::Serialize;
 
+use crate::os::{self, OpenError};
 use crate::pending::{git, repo_root};
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -107,17 +109,13 @@ pub async fn open_repo_web_page(repo: String) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())??
         .ok_or("This repository has no remote on a hosting service")?;
-    let mut cmd = if cfg!(target_os = "macos") {
-        Command::new("open")
-    } else if cfg!(target_os = "windows") {
-        // Not `cmd /C start`: cmd would interpret characters like & in the address.
-        let mut c = Command::new("rundll32.exe");
-        c.arg("url.dll,FileProtocolHandler");
-        c
-    } else {
-        Command::new("xdg-open")
-    };
-    cmd.arg(&page.url).spawn().map(|_| ()).map_err(|e| format!("could not open the browser: {e}"))
+    tauri::async_runtime::spawn_blocking(move || match os::open(OsStr::new(&page.url)) {
+        Ok(()) => Ok(()),
+        Err(OpenError::NoApplication) => Err("There's no web browser to open it in".to_string()),
+        Err(OpenError::Failed(e)) => Err(format!("could not open the browser: {e}")),
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn find(repo: &str) -> Result<Option<WebPage>, String> {
@@ -129,7 +127,7 @@ fn find(repo: &str) -> Result<Option<WebPage>, String> {
 /// `~/.ssh/config` (`Host work` → `HostName github.com`). `ssh -G` only reads
 /// the configuration; it doesn't connect.
 fn ssh_hostname(host: &str) -> String {
-    Command::new("ssh")
+    os::command("ssh")
         .args(["-G", "--", host])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
@@ -244,6 +242,7 @@ fn service_name(host: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     fn page(url: &str) -> Option<(String, String)> {
         // `work` stands in for an alias in ~/.ssh/config.
@@ -290,7 +289,7 @@ mod tests {
         run(&["remote", "add", "origin", "https://me:secret@github.com/me/app.git"]);
         let page = find(&repo).unwrap().unwrap();
         assert_eq!((page.host.as_str(), page.url.as_str(), page.remote.as_str()), ("GitHub", "https://github.com/me/app", "origin"));
-        let shown = remote_of(&dir.canonicalize().unwrap()).unwrap();
+        let shown = remote_of(&os::canonical(&dir).unwrap()).unwrap();
         assert_eq!(shown.url, "https://github.com/me/app.git", "no credentials in what's shown");
 
         // A remote that isn't on a hosting service is still shown, just without a page.
@@ -298,7 +297,7 @@ mod tests {
         run(&["remote", "remove", "mirror"]);
         run(&["remote", "add", "backup", "/Volumes/Backup/app.git"]);
         assert_eq!(find(&repo).unwrap(), None);
-        let shown = remote_of(&dir.canonicalize().unwrap()).unwrap();
+        let shown = remote_of(&os::canonical(&dir).unwrap()).unwrap();
         assert_eq!((shown.name.as_str(), shown.url.as_str(), shown.host.is_none()), ("backup", "/Volumes/Backup/app.git", true));
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -1,6 +1,7 @@
 /** Workspace view: the repositories in the open workspace, as a table. */
 
 import { compileQuery } from "../model/search.ts";
+import { shownPath } from "../platform.ts";
 
 /** Mirrors `Remote` in src-tauri/src/hosting.rs. */
 export interface Remote {
@@ -90,8 +91,8 @@ export function renderWorkspaceList(host: HTMLElement, repos: RepoInfo[], opts: 
     name.append(el("span", "name", r.name));
     const headCell = el("td", "col-head");
     if (r.head) headCell.append(el("span", r.detached ? "mono muted" : "mono", r.detached ? `detached at ${r.head}` : r.head));
-    const path = el("td", "col-path muted", r.path);
-    path.title = r.path;
+    const path = el("td", "col-path muted", shownPath(r.path));
+    path.title = shownPath(r.path);
     tr.append(name, headCell, remoteCell(r.remote), path);
     tr.onclick = () => opts.onOpen(r);
     tr.ondblclick = () => opts.onActivate(r);

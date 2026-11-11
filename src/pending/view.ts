@@ -19,6 +19,7 @@ import { basicSetup } from "codemirror";
 import { loadPendingChanges, type PendingChanges, type PendingFile } from "../git/status.ts";
 import { submoduleChange } from "../git/submoduleChange.ts";
 import { tauriRunner } from "../git/tauriRunner.ts";
+import { TRASH } from "../platform.ts";
 import { dark, lineEndings, readOnly, theme, themeSlot } from "../view/codemirror.ts";
 import { reportSubmoduleFailures, submodulesUpdated, type SubmoduleUpdate } from "../view/submoduleUpdate.ts";
 
@@ -558,9 +559,9 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     const submodules = listings.some((l) => /(^|\0)160000 /.test(l));
     const ok = await ask(
       `Undo the changes to ${what}? Their content goes back to the checked-out changeset and your edits are lost.` +
-        (created.length ? `\n\nNew files (${created.length}) are moved to the Trash.` : "") +
+        (created.length ? `\n\nNew files (${created.length}) are moved to the ${TRASH}.` : "") +
         (submodules
-          ? "\n\nSubmodules go back too: a moved one is checked out at the changeset recorded for it, a removed one is set up again, and a new one is taken out of .gitmodules and git's records, its folder moved to the Trash."
+          ? `\n\nSubmodules go back too: a moved one is checked out at the changeset recorded for it, a removed one is set up again, and a new one is taken out of .gitmodules and git's records, its folder moved to the ${TRASH}.`
           : ""),
       { title: "Undo Changes", kind: "warning", okLabel: "Undo Changes", cancelLabel: "Cancel" },
     );

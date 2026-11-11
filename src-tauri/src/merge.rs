@@ -11,13 +11,14 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Mutex;
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder, Window};
 
 use crate::branch::commit_id;
+use crate::os::{command, slash_path};
 use crate::pending::{git, repo_root};
 use crate::submodule::{update_all, SubmoduleUpdate};
 
@@ -45,7 +46,7 @@ pub async fn open_merge_window(app: AppHandle, windows: State<'_, MergeWindows>,
         existing.show().map_err(|e| e.to_string())?;
         return existing.set_focus().map_err(|e| e.to_string());
     }
-    let info = MergeWindowInfo { repo: root.to_string_lossy().into_owned(), from: from.clone() };
+    let info = MergeWindowInfo { repo: slash_path(&root), from: from.clone() };
     windows.0.lock().unwrap().insert(label.clone(), info);
     WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("merge.html".into()))
         .title(format!("Merge from {}", &from[..8]))
@@ -130,7 +131,7 @@ fn preview(repo: &str, from: &str) -> Result<MergePreview, String> {
 
 /// Runs `git merge-tree --write-tree`: the merged tree, the conflicted paths, and git's messages.
 fn merge_tree(root: &Path, to: &str, from: &str) -> Result<(String, HashSet<String>, Vec<String>), String> {
-    let out = Command::new("git")
+    let out = command("git")
         .arg("-C")
         .arg(root)
         .args(["-c", "core.quotepath=off", "merge-tree", "--write-tree", "--name-only", "--messages", "--allow-unrelated-histories", to, from])
@@ -399,6 +400,7 @@ pub fn abort_operation(repo: String) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::process::Command;
 
     fn repo() -> (PathBuf, impl Fn(&[&str]) -> String) {
         let dir = std::env::temp_dir().join(format!("visualgit-merge-{}-{:?}", std::process::id(), std::thread::current().id()));
@@ -414,7 +416,7 @@ mod tests {
         run(&["config", "user.name", "Test"]);
         run(&["config", "user.email", "test@example.com"]);
         run(&["config", "commit.gpgsign", "false"]);
-        (dir.canonicalize().unwrap(), run)
+        (crate::os::canonical(&dir).unwrap(), run)
     }
 
     #[test]

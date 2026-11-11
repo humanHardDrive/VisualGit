@@ -142,7 +142,7 @@ mod tests {
         let first = run(&["rev-parse", "HEAD"]);
         run(&["commit", "-q", "--allow-empty", "-m", "two"]);
         let second = run(&["rev-parse", "HEAD"]);
-        (dir.canonicalize().unwrap(), first, second)
+        (crate::os::canonical(&dir).unwrap(), first, second)
     }
 
     #[test]

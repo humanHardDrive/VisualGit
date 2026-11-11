@@ -1,7 +1,11 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 
 // Tauri expects a fixed dev-server port and does not want the console cleared.
 export default defineConfig({
+  // The tests build scratch repositories with dozens of git commands each, and
+  // starting a process is slow on Windows: vitest's 5-second default is too tight there.
+  test: { testTimeout: 30_000 },
   clearScreen: false,
   server: {
     port: 1420,

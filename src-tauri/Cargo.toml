@@ -19,3 +19,9 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 trash = "5"
+# Canonical paths without Windows' `\\?\` prefix, which git can't use (see os.rs).
+dunce = "1"
+
+[target.'cfg(windows)'.dependencies]
+# ShellExecuteEx and the "Open with" dialog, for opening files and web pages (see os.rs).
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Registry", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
