@@ -642,17 +642,11 @@ export class Explorer {
         const lx = Math.max(left + 2, Math.min(view.x0 + 8, right - tw - 2));
         ctx.fillStyle = ghost ? t.muted : t.text;
         ctx.fillText(label, lx, rowTop(span.row) + 15);
-        let after = lx + tw + 8;
-        ctx.font = "700 10px -apple-system, system-ui, sans-serif";
-        if (b.isHead) {
-          ctx.fillStyle = t.accent;
-          ctx.fillText("HEAD", after, rowTop(span.row) + 15);
-          after += ctx.measureText("HEAD").width + 8;
-        }
         const push = pushLabel(model, b);
         if (push) {
+          ctx.font = "700 10px -apple-system, system-ui, sans-serif";
           ctx.fillStyle = t.unpushed;
-          ctx.fillText(push, after, rowTop(span.row) + 15);
+          ctx.fillText(push, lx + tw + 8, rowTop(span.row) + 15);
         }
       }
     }
