@@ -1,0 +1,31 @@
+/* The Add Submodule window (a dialog filling the window) and the Choose Changeset window (a Branch Explorer). */
+
+.submodule-window { overflow: auto; }
+.submodule-window .sm-form { width: auto; margin: 0; border: none; border-radius: 0; box-shadow: none; flex: 1; display: flex; flex-direction: column; }
+.sm-source { margin: 0 0 4px; padding: 8px 12px 10px; border: 1px solid var(--border); border-radius: 8px; }
+.sm-source legend { padding: 0 4px; color: var(--muted); font-size: 12px; }
+.sm-choice { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-weight: 500; }
+.sm-sub { margin: 6px 0 4px 22px; }
+.sm-sub.off { opacity: 0.5; }
+.sm-row { flex-direction: row !important; gap: 6px; }
+.sm-row input { flex: 1; min-width: 0; }
+.sm-sub.field input { width: 100%; box-sizing: border-box; }
+.sm-list { margin-top: 6px; max-height: 150px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
+.sm-list button { display: flex; width: 100%; justify-content: space-between; gap: 8px; border: none; border-radius: 0; background: none; padding: 4px 8px; text-align: left; }
+.sm-list button[aria-selected="true"] { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.sm-list .sm-list-path { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sm-form .dialog-actions { margin-top: auto; padding-top: 12px; }
+
+/* Above the canvas, so the search results can drop down over it. */
+.pick-head { position: relative; z-index: 5; display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--panel); }
+.pick-text { flex: 1; min-width: 0; }
+.pick-head .search { flex: 0 1 340px; }
+/* Near the window's right edge: open the (wider) list leftwards. */
+.pick-head .search-results { left: auto; right: 0; }
+.pick-head h1 { font-size: 15px; margin: 0; }
+.pick-sub { margin: 2px 0 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-body { flex: 1; display: grid; grid-template-columns: 1fr 320px; min-height: 0; }
+.pick-use { margin-top: 4px; width: 100%; padding: 6px 12px; }
+.pick-status { position: absolute; left: 12px; bottom: 12px; max-width: calc(100% - 220px); padding: 5px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-status:empty { display: none; }
+.pick-status.error { color: #d1242f; }

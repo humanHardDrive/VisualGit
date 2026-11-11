@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Choose Changeset</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <link rel="stylesheet" href="/src/submodule/submodule.css" />
+  </head>
+  <body class="pick-window">
+    <header class="pick-head">
+      <div class="pick-text">
+        <h1 id="pick-title">Choose the changeset</h1>
+        <p id="pick-sub" class="pick-sub"></p>
+      </div>
+      <div class="search" title="Search branch names, changesets and commit messages (⌘F). * matches anything, ? matches one character.">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="m10.5 10.5 3 3" /></svg>
+        <input id="search" type="search" placeholder="Search branches, changesets, comments" spellcheck="false" autocomplete="off" aria-label="Search" disabled />
+        <div id="search-results" class="search-results" role="listbox" hidden></div>
+      </div>
+      <button type="button" id="pick-fetch" title="Get the changesets made on its remote since the last fetch" hidden>Fetch</button>
+      <button type="button" id="pick-cancel">Cancel</button>
+    </header>
+    <div class="pick-body">
+      <div class="canvas-wrap">
+        <canvas id="explorer"></canvas>
+        <div id="tooltip" class="tooltip" hidden></div>
+        <div id="pick-status" class="pick-status" role="status"></div>
+        <div class="zoom" role="group" aria-label="Zoom">
+          <button id="zoom-out" title="Zoom out (−)" aria-label="Zoom out">−</button>
+          <button id="zoom-fit" title="Fit history (0)">Fit</button>
+          <button id="zoom-latest" title="Latest changesets (L)">Latest</button>
+          <button id="zoom-in" title="Zoom in (+)" aria-label="Zoom in">+</button>
+        </div>
+      </div>
+      <aside id="details" class="details">
+        <div class="placeholder">Select a changeset or branch</div>
+      </aside>
+    </div>
+    <script type="module" src="/src/submodule/pick.ts"></script>
+  </body>
+</html>

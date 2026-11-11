@@ -17,8 +17,10 @@ import { Menu } from "@tauri-apps/api/menu";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { basicSetup } from "codemirror";
 import { loadPendingChanges, type PendingChanges, type PendingFile } from "../git/status.ts";
+import { submoduleChange } from "../git/submoduleChange.ts";
 import { tauriRunner } from "../git/tauriRunner.ts";
 import { dark, lineEndings, readOnly, theme, themeSlot } from "../view/codemirror.ts";
+import { reportSubmoduleFailures, submodulesUpdated, type SubmoduleUpdate } from "../view/submoduleUpdate.ts";
 
 /** Mirrors `FileText` in src-tauri/src/pending.rs. */
 interface FileText {
@@ -26,6 +28,8 @@ interface FileText {
   missing: boolean;
   binary: boolean;
   tooLarge: boolean;
+  /** A submodule: the changeset it has checked out ("" if none). */
+  submodule: string | null;
 }
 
 /** Mirrors `Operation` in src-tauri/src/merge.rs. */
@@ -108,6 +112,8 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
   const diffSides = $("diff-sides");
   const sideA = $("side-a");
   const sideB = $("side-b");
+  /** The left side's usual label, from the page. */
+  const SIDE_A = sideA.textContent ?? "";
 
   let repo = "";
   let visible = false;
@@ -130,6 +136,8 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     base: string;
     /** Working-copy text as last loaded or saved; the editor is dirty when it differs. */
     saved: string;
+    /** A submodule: what the two sides are, and a summary of the move, instead of a file's labels. */
+    submodule?: { a: string; b: string; summary: string };
   }
   let open: Open | null = null;
 
@@ -231,6 +239,13 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     const [base, work] = await Promise.all([baseText(f), invoke<FileText>("read_worktree_file", { repo, path: f.path })]);
     if (current?.path !== f.path || repo !== at) return; // the user moved on meanwhile
     if (work.tooLarge) return showMessage("This file is too large to show.");
+    // A submodule (its folder, or one being removed): its old and new changesets, described.
+    if (work.submodule !== null || work.missing) {
+      const change = await submoduleChange(at, f.path, tauriRunner).catch(() => null);
+      if (current?.path !== f.path || repo !== at) return;
+      if (change) return showSubmodule(f, change, keepIfSame);
+      if (work.submodule !== null) return showMessage("A submodule, with nothing checked out yet.");
+    }
     if (base === null || work.binary) return showMessage("Binary file. There is no text to compare.");
 
     const text = work.text ?? "";
@@ -282,6 +297,38 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     if (merge.chunks.length) goToNextChunk({ state: merge.b.state, dispatch: merge.b.dispatch });
   }
 
+  /** A submodule's change: what's recorded now and what committing records, side by side, read-only. */
+  function showSubmodule(f: PendingFile, c: Awaited<ReturnType<typeof submoduleChange>> & object, keepIfSame: boolean) {
+    const short = (id: string | null) => (id ? id.slice(0, 8) : "");
+    const labels = {
+      a: `Recorded now · ${short(c.from)}`,
+      // One pane for a new or removed submodule: say which.
+      b: !c.from ? `New submodule · committing records ${short(c.to)}` : !c.to ? `Removed · was recorded at ${short(c.from)}` : `Committing records · ${short(c.to)}`,
+      summary: c.summary,
+    };
+    if (keepIfSame && open?.path === f.path && open.base === c.before && open.saved === c.after) return;
+    closeEditor();
+    diffMessage.hidden = true;
+    diffHost.hidden = false;
+    const common = [basicSetup, themeSlot.of(theme()), readOnly, EditorView.lineWrapping];
+    if (!c.from || !c.to) {
+      // New or removed: one side only.
+      const editor = new EditorView({ doc: c.from ? c.before : c.after, extensions: common, parent: diffHost });
+      open = { path: f.path, editor, merge: null, editable: false, base: c.before, saved: c.after, submodule: labels };
+      updateDiffBar();
+      return;
+    }
+    const merge = new MergeView({
+      a: { doc: c.before, extensions: common },
+      b: { doc: c.after, extensions: common },
+      parent: diffHost,
+      highlightChanges: true,
+      gutter: true,
+    });
+    open = { path: f.path, editor: merge.b, merge, editable: false, base: c.before, saved: c.after, submodule: labels };
+    updateDiffBar();
+  }
+
   dark.addEventListener("change", () => {
     if (!open) return;
     for (const v of open.merge ? [open.merge.a, open.merge.b] : [open.editor]) v.dispatch({ effects: themeSlot.reconfigure(theme()) });
@@ -291,7 +338,8 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     diffTitle.replaceChildren(current ? current.path : "");
     if (current?.origPath) diffTitle.prepend(`${current.origPath} → `);
     if (isDirty()) diffTitle.append(span("dirty", "●"));
-    if (open && !open.editable) diffTitle.append(span("dirty", " (deleted)"));
+    if (open && !open.editable && !open.submodule) diffTitle.append(span("dirty", " (deleted)"));
+    if (open?.submodule) diffTitle.append(" (submodule)");
     saveBtn.disabled = !isDirty();
     const chunks = open?.merge?.chunks ?? [];
     prevBtn.disabled = nextBtn.disabled = chunks.length === 0;
@@ -299,9 +347,14 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     const single = !!open && !open.merge;
     diffSides.classList.toggle("single", single);
     sideA.hidden = single;
-    sideB.textContent = single ? "Added file" : "Working copy";
+    sideA.textContent = open?.submodule?.a ?? SIDE_A;
+    sideB.textContent = open?.submodule?.b ?? (single ? "Added file" : "Working copy");
     if (!open) {
       changeCount.textContent = "";
+      return;
+    }
+    if (open.submodule) {
+      changeCount.textContent = open.submodule.summary;
       return;
     }
     if (single) {
@@ -458,9 +511,13 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     updateCommitButton();
     setStatus("Committing…");
     try {
-      const hash = await invoke<string>("commit_changes", { repo: at, message, paths });
+      // Finishing a merge (or cherry pick) also brings the submodules to the changesets it records.
+      const finishing = operation?.kind;
+      const done = await invoke<{ hash: string; submodules: SubmoduleUpdate }>("commit_changes", { repo: at, message, paths });
+      const hash = done.hash;
       messageBox.value = "";
-      setStatus(`Committed ${hash.slice(0, 8)}`, "ok");
+      setStatus(`Committed ${hash.slice(0, 8)}.${submodulesUpdated(done.submodules)}`, "ok");
+      void reportSubmoduleFailures(done.submodules, finishing ?? "commit");
       opts.onChanged();
       if (andPush) {
         setStatus(`Committed ${hash.slice(0, 8)}. Pushing…`);
@@ -491,9 +548,20 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     // Tracked files go back to their committed content; a rename also restores its old path.
     const tracked = files.flatMap((f) => (isNew(f) ? (f.staged === "R" && f.origPath ? [f.origPath] : []) : [f.path]));
     const what = files.length === 1 ? files[0].path : `${files.length} files`;
+    // Submodules are put back too: a moved one to its recorded changeset, a new one taken out entirely.
+    const paths = files.map((f) => f.path);
+    const runner = tauriRunner(repo);
+    const listings = await Promise.all([
+      runner.run(["ls-files", "--stage", "-z", "--", ...paths]).catch(() => ""),
+      runner.run(["ls-tree", "-z", "HEAD", "--", ...paths]).catch(() => ""),
+    ]);
+    const submodules = listings.some((l) => /(^|\0)160000 /.test(l));
     const ok = await ask(
       `Undo the changes to ${what}? Their content goes back to the checked-out changeset and your edits are lost.` +
-        (created.length ? `\n\nNew files (${created.length}) are moved to the Trash.` : ""),
+        (created.length ? `\n\nNew files (${created.length}) are moved to the Trash.` : "") +
+        (submodules
+          ? "\n\nSubmodules go back too: a moved one is checked out at the changeset recorded for it, a removed one is set up again, and a new one is taken out of .gitmodules and git's records, its folder moved to the Trash."
+          : ""),
       { title: "Undo Changes", kind: "warning", okLabel: "Undo Changes", cancelLabel: "Cancel" },
     );
     if (!ok) return;
@@ -502,8 +570,11 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     busy = true;
     updateCommitButton();
     try {
-      await invoke("undo_changes", { repo, tracked, created });
-      setStatus(`Undid changes to ${what}`, "ok");
+      const subs = await invoke<SubmoduleUpdate>("undo_changes", { repo, tracked, created });
+      const back = subs.updated.length ? ` Put back ${subs.updated.length === 1 ? `the submodule ${subs.updated[0]}` : `${subs.updated.length} submodules`} at the recorded changeset.` : "";
+      const out = subs.putAway.length ? ` Took out the new submodule${subs.putAway.length === 1 ? "" : "s"} ${subs.putAway.join(", ")}.` : "";
+      setStatus(`Undid changes to ${what}.${back}${out}`, "ok");
+      void reportSubmoduleFailures(subs, "undo");
       opts.onChanged();
     } catch (err) {
       setStatus(String(err), "error");

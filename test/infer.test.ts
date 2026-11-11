@@ -1,17 +1,19 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { loadChangesetFiles } from "../src/git/changeset.ts";
-import { buildTree, loadFiles, loadLastChanges } from "../src/git/files.ts";
+import { buildTree, fileType, lastChangeOf, loadFiles, loadLastChanges, nestList, ownerOf } from "../src/git/files.ts";
 import { loadFileHistory } from "../src/git/history.ts";
 import { ignorePatterns } from "../src/git/ignore.ts";
 import { loadRepo } from "../src/git/load.ts";
 import { loadPendingChanges } from "../src/git/status.ts";
+import { submoduleChange } from "../src/git/submoduleChange.ts";
 import { nodeRunner } from "../src/git/nodeRunner.ts";
 import { branchNameFromMerge, inferModel, pendingChangesOn, uncommittedHead, type Model } from "../src/model/infer.ts";
 import { layoutModel } from "../src/model/layout.ts";
+import { laneNeighbour, nextOf, previousOf } from "../src/model/navigate.ts";
 import { compileQuery, searchModel } from "../src/model/search.ts";
 import { branchRows } from "../src/view/branchList.ts";
 import { fileRows, rowKey, type FileRow } from "../src/view/files.ts";
@@ -227,6 +229,92 @@ describe("layoutModel", () => {
     expect(row("one")).toBe(1);
     expect(row("two")).toBe(1);
     expect(row("nested")).toBe(2);
+  });
+});
+
+describe("submoduleChange", () => {
+  it("describes a submodule's recorded and new changesets, and what's between", async () => {
+    const { dir, git, commit } = fixture();
+    const lib = fixture();
+    const one = lib.commit("one");
+    lib.commit("two: the fix");
+    const three = lib.commit("three\n\nWith a longer explanation.");
+    writeFileSync(join(dir, "a.txt"), "a\n");
+    git("add", ".");
+    commit("base");
+    git("-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.dir, "libs/lib");
+    const sub = (...args: string[]) => execFileSync("git", ["-C", join(dir, "libs/lib"), ...args], { encoding: "utf8" });
+    sub("checkout", "-q", "--detach", one);
+    git("add", "libs/lib");
+
+    // New: only an after side.
+    let c = (await submoduleChange(dir, "libs/lib", nodeRunner))!;
+    expect(c.from).toBeNull();
+    expect(c.to).toBe(one);
+    expect(c.before).toBe("");
+    expect(c.after).toContain(`Changeset  ${one}`);
+    expect(c.summary).toBe(`New submodule, at ${one.slice(0, 8)}`);
+
+    // Moved forward two changesets: both described, with what it brings in.
+    commit("add lib");
+    sub("checkout", "-q", "--detach", three);
+    c = (await submoduleChange(dir, "libs/lib", nodeRunner))!;
+    expect([c.from, c.to]).toEqual([one, three]);
+    expect(c.before).toContain(`Changeset  ${one}`);
+    expect(c.before).toContain("\none\n");
+    expect(c.after).toContain(`Changeset  ${three}`);
+    expect(c.after).toContain("With a longer explanation.");
+    expect(c.after).toContain("Author     Test <test@example.com>");
+    expect(c.after).toMatch(/On {9}main/);
+    expect(c.after).toContain("Brings in 2 changesets, newest first:");
+    expect(c.after).toContain("two: the fix");
+    expect(c.summary).toBe("Moves forward 2 changesets");
+    // Back again, with a change of its own in it: what it leaves out, and a note.
+    sub("checkout", "-q", "--detach", one);
+    git("add", "libs/lib");
+    commit("lib to one");
+    sub("checkout", "-q", "--detach", three);
+    git("add", "libs/lib");
+    commit("lib to three");
+    sub("checkout", "-q", "--detach", one);
+    writeFileSync(join(dir, "libs/lib/x"), "x");
+    sub("add", "x");
+    c = (await submoduleChange(dir, "libs/lib", nodeRunner))!;
+    expect(c.summary).toBe("Moves back 2 changesets");
+    expect(c.after).toContain("Leaves out 2 changesets the recorded one has");
+    expect(c.after).toContain("1 uncommitted change of its own");
+
+    // Not a submodule: nothing to say.
+    expect(await submoduleChange(dir, "a.txt", nodeRunner)).toBeNull();
+  });
+});
+
+describe("keyboard navigation", () => {
+  it("steps along a branch with ←/→ and between lanes with ↑/↓", async () => {
+    const { git, commit, model } = fixture();
+    const m1 = commit("m1");
+    git("checkout", "-q", "-b", "one");
+    const o1 = commit("o1");
+    const o2 = commit("o2");
+    git("checkout", "-q", "main");
+    const m2 = commit("m2");
+    git("checkout", "-q", "-b", "deep", "one");
+    const d1 = commit("d1");
+    const m = await model();
+    const l = layoutModel(m);
+
+    expect(previousOf(m, o1)).toBe(m1); // off the start of a branch: where it was created
+    expect(nextOf(m, o1)).toBe(o2);
+    expect(nextOf(m, o2)).toBeNull();
+    expect(previousOf(m, m1)).toBeNull();
+
+    // Down from main's m2 to the lane below, then further down, and back up.
+    const below = laneNeighbour(m, l, m2, 1);
+    expect([o1, o2]).toContain(below);
+    expect(laneNeighbour(m, l, o2, 1)).toBe(d1);
+    expect(laneNeighbour(m, l, d1, -1)).toBe(o2);
+    expect(laneNeighbour(m, l, m1, -1)).toBeNull();
+    expect(laneNeighbour(m, l, d1, 1)).toBeNull();
   });
 });
 
@@ -532,6 +620,76 @@ describe("files", () => {
     expect(keys(fileRows(tree, list, new Set(), ""))).toEqual(["src/", ".gitignore", "README.md"]);
     expect(keys(fileRows(tree, list, new Set(["src"]), ""))).toEqual(["src/", "  src/view/", "  src/a.ts", "  src/new.ts", ".gitignore", "README.md"]);
     expect(keys(fileRows(tree, list, new Set(), "*.ts"))).toEqual(["src/a.ts", "src/new.ts", "src/view/b.ts"]);
+  });
+
+  it("says what each file is: submodules, repositories inside, links and programs", async () => {
+    const { dir, git, commit } = fixture();
+    const lib = fixture();
+    lib.commit("lib");
+    writeFileSync(join(dir, "run.sh"), "#!/bin/sh\n");
+    writeFileSync(join(dir, "notes.md"), "n\n");
+    git("add", ".");
+    git("update-index", "--chmod=+x", "run.sh");
+    commit("base");
+    git("-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.dir, "libs/lib");
+    symlinkSync("notes.md", join(dir, "link"));
+    const nested = fixture(); // a repository inside, not added
+    nested.commit("n");
+    execFileSync("mv", [nested.dir, join(dir, "vendor")]);
+
+    const list = await loadFiles(nodeRunner(dir));
+    expect(list.paths).toEqual([".gitmodules", "libs/lib", "link", "notes.md", "run.sh", "vendor"]);
+    const types = list.paths.map((p) => fileType(p, list.kinds.get(p)));
+    expect(types).toEqual(["Git submodules", "Submodule", "File", "Markdown", "Shell script (executable)", "Repository (not a submodule)"]);
+    git("add", "link");
+    expect(fileType("link", (await loadFiles(nodeRunner(dir))).kinds.get("link"))).toBe("Symbolic link");
+    expect(fileType("bin/tool", "executable")).toBe("Program");
+    expect(fileType("a/Thing.XYZ", undefined)).toBe("XYZ file");
+  });
+
+  it("opens a submodule like a folder, onto its own files", async () => {
+    const { dir, git, commit } = fixture();
+    const lib = fixture();
+    mkdirSync(join(lib.dir, "src"));
+    writeFileSync(join(lib.dir, "src", "lib.ts"), "l\n");
+    writeFileSync(join(lib.dir, "README.md"), "r\n");
+    lib.git("add", ".");
+    const libCommit = lib.commit("lib");
+    writeFileSync(join(dir, "app.ts"), "a\n");
+    git("add", ".");
+    commit("base");
+    git("-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.dir, "libs/lib");
+    writeFileSync(join(dir, "libs/lib/README.md"), "changed\n"); // a pending change inside the submodule
+
+    const list = await loadFiles(nodeRunner(dir));
+    // Closed: a folder with nothing listed inside yet.
+    let tree = buildTree(list);
+    const libs = tree.folders.find((f) => f.name === "libs")!;
+    expect(libs.folders.map((f) => [f.name, f.repo])).toEqual([["lib", "submodule"]]);
+    expect(libs.files).toEqual([]);
+
+    // Opened: its own listing, from its own repository, under its path.
+    const sub = await loadFiles(nodeRunner(join(dir, "libs/lib")));
+    sub.last = await loadLastChanges(nodeRunner(join(dir, "libs/lib")));
+    nestList(list, "libs/lib", join(dir, "libs/lib"), sub);
+    tree = buildTree(list);
+    const keys = (rows: FileRow[]) => rows.map((r) => `${"  ".repeat(r.depth)}${rowKey(r)}`);
+    expect(keys(fileRows(tree, list, new Set(["libs", "libs/lib", "libs/lib/src"]), ""))).toEqual([
+      "libs/",
+      "  libs/lib/",
+      "    libs/lib/src/",
+      "      libs/lib/src/lib.ts",
+      "    libs/lib/README.md",
+      ".gitmodules",
+      "app.ts",
+    ]);
+    expect(list.status.get("libs/lib/README.md")?.letter).toBe("M");
+    expect(lastChangeOf(list, "libs/lib/src/lib.ts")?.hash).toBe(libCommit);
+    // Inside it, actions belong to its repository, with paths relative to it.
+    expect(ownerOf(list, "libs/lib/src/lib.ts")).toEqual({ at: "libs/lib", root: join(dir, "libs/lib"), path: "src/lib.ts" });
+    expect(ownerOf(list, "libs/lib")?.path).toBe("");
+    expect(ownerOf(list, "app.ts")).toBeNull();
+    expect(ownerOf(list, "libs/library.ts")).toBeNull();
   });
 
   it("finds who last changed each file, and when, with folders taking their newest file", async () => {

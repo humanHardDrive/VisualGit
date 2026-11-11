@@ -5,6 +5,7 @@ mod hosting;
 mod menu;
 mod merge;
 mod pending;
+mod submodule;
 mod workspace;
 
 use std::path::Path;
@@ -15,7 +16,7 @@ use workspace::RepoInfo;
 /// argument checks in `validate` pass.
 /// `status` would refresh the index's stat cache, but GIT_OPTIONAL_LOCKS=0
 /// (set in `run_git`) makes it skip that write.
-const ALLOWED: &[&str] = &["log", "show", "for-each-ref", "rev-parse", "reflog", "symbolic-ref", "status", "diff-tree", "ls-files"];
+const ALLOWED: &[&str] = &["log", "show", "for-each-ref", "rev-parse", "reflog", "symbolic-ref", "status", "diff-tree", "ls-files", "ls-tree"];
 
 /// Rejects anything that could modify the repository or write files.
 fn validate(args: &[String]) -> Result<(), String> {
@@ -108,6 +109,7 @@ pub fn run() {
         .on_menu_event(menu::handle)
         .manage(merge::MergeWindows::default())
         .manage(diff::DiffWindows::default())
+        .manage(submodule::SubmoduleWindows::default())
         .invoke_handler(tauri::generate_handler![
             git,
             find_repos,
@@ -141,6 +143,15 @@ pub fn run() {
             merge::subtractive_merge,
             merge::operation_in_progress,
             merge::abort_operation,
+            submodule::open_add_submodule_window,
+            submodule::add_submodule_info,
+            submodule::choose_submodule_changeset,
+            submodule::pick_changeset_info,
+            submodule::add_submodule,
+            submodule::remove_submodule,
+            submodule::open_edit_submodule_window,
+            submodule::fetch_submodule,
+            submodule::move_submodule,
         ])
         .run(tauri::generate_context!())
         .expect("error while running VisualGit");

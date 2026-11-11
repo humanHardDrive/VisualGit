@@ -26,6 +26,7 @@ import { inferModel, type Model } from "../model/infer.ts";
 import { dark, lineEndings, readOnly, theme, themeSlot } from "../view/codemirror.ts";
 import { conflictRegions, dropRegion, regionsField, setRegions, sideHighlights } from "../view/conflictPanes.ts";
 import { branchColor } from "../view/explorer.ts";
+import { reportSubmoduleFailures, submodulesUpdated, type SubmoduleUpdate } from "../view/submoduleUpdate.ts";
 
 /** Mirrors `MergeFile` / `MergePreview` in src-tauri/src/merge.rs. */
 interface MergeFile {
@@ -118,6 +119,8 @@ function closeView() {
 let operation: { kind: string; from: string | null } | null = null;
 /** The merge changeset this window made, once it has. */
 let mergedAs: string | null = null;
+/** What the merge did to the submodules: brought to the changesets it records. */
+let mergedSubmodules: SubmoduleUpdate | undefined;
 let merging = false;
 
 const span = (cls: string, text: string) => Object.assign(document.createElement("span"), { className: cls, textContent: text });
@@ -172,7 +175,7 @@ function renderHeader(p: MergePreview) {
   const files = `${p.files.length} file${p.files.length === 1 ? "" : "s"}`;
   if (p.kind === "up-to-date") {
     summary.textContent = mergedAs
-      ? `Merged as ${mergedAs.slice(0, 8)}.`
+      ? `Merged as ${mergedAs.slice(0, 8)}.${submodulesUpdated(mergedSubmodules)}`
       : "Already merged: everything in this changeset is already in the checked-out changeset.";
     summary.className = "clean";
   } else if (operation) {
@@ -249,10 +252,16 @@ async function runMerge() {
   merging = true;
   updateMergeButton(p, p.files.filter((f) => f.conflict).length);
   try {
-    const result = await invoke<{ committed: string | null; conflicts: string[] }>("merge", { repo, from: p.from, branch: mergedBranch(p.from) ?? null });
+    const result = await invoke<{ committed: string | null; conflicts: string[]; submodules: SubmoduleUpdate }>("merge", {
+      repo,
+      from: p.from,
+      branch: mergedBranch(p.from) ?? null,
+    });
     void emit("repo-changed", { repo });
     if (result.committed) {
       mergedAs = result.committed;
+      mergedSubmodules = result.submodules;
+      void reportSubmoduleFailures(result.submodules, "merge");
     } else {
       // Stopped for the conflicts: write the results resolved here over git's,
       // then finish the merge with git's message. Anything left over (a binary
@@ -271,7 +280,10 @@ async function runMerge() {
         try {
           const op = await invoke<{ message: string | null } | null>("operation_in_progress", { repo });
           const message = op?.message ?? `Merge ${mergedBranch(p.from) ? `branch '${mergedBranch(p.from)}'` : `changeset ${p.from.slice(0, 8)}`} into ${p.toBranch ?? p.to.slice(0, 8)}`;
-          mergedAs = await invoke<string>("commit_changes", { repo, message, paths: result.conflicts });
+          const done = await invoke<{ hash: string; submodules: SubmoduleUpdate }>("commit_changes", { repo, message, paths: result.conflicts });
+          mergedAs = done.hash;
+          mergedSubmodules = done.submodules;
+          void reportSubmoduleFailures(done.submodules, "merge");
         } catch (err) {
           appliedError = `Your results are in place, but the merge couldn't be committed: ${err}`;
         }

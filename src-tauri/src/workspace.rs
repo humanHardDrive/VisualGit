@@ -254,16 +254,25 @@ pub async fn clone_repo(window: tauri::Window, workspace: String, url: String, n
 }
 
 fn clone(workspace: &Path, url: &str, name: &str, progress: &dyn Fn(&str)) -> Result<RepoInfo, String> {
-    use std::io::Read;
     check_remote_url(url).map_err(|e| e.replace("the remote to push to", "the URL of the repository to clone"))?;
     let (parts, target) = new_repo_location(workspace, name)?;
     // git clones into a new or empty folder only.
     if target.read_dir().is_ok_and(|mut d| d.next().is_some()) {
         return Err(format!("{name} already exists and isn't empty; choose another name"));
     }
+    clone_with_progress(url, &target, &[], progress)?;
+    listed(workspace, &parts, &target)
+}
+
+/// `git clone [extra] -- url target`, passing git's progress lines to
+/// `progress` as they come. On failure, says why in git's words.
+pub(crate) fn clone_with_progress(url: &str, target: &Path, extra: &[&str], progress: &dyn Fn(&str)) -> Result<(), String> {
+    use std::io::Read;
     let mut child = Command::new("git")
-        .args(["clone", "--progress", "--", url])
-        .arg(&target)
+        .args(["clone", "--progress"])
+        .args(extra)
+        .args(["--", url])
+        .arg(target)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -306,7 +315,7 @@ fn clone(workspace: &Path, url: &str, name: &str, progress: &dyn Fn(&str)) -> Re
         let text = if why.is_empty() { recent.join("\n") } else { why.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n") };
         return Err(if text.is_empty() { "git clone failed".to_string() } else { text });
     }
-    listed(workspace, &parts, &target)
+    Ok(())
 }
 
 /// A URL (or path) git can push to. Only the transports people host

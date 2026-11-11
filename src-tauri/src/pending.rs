@@ -6,6 +6,7 @@
 //! does a single, narrow thing, with its paths checked to stay inside the
 //! repository.
 
+use crate::submodule::{update_all, SubmoduleFailure, SubmoduleUpdate};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -42,15 +43,21 @@ pub struct FileText {
     missing: bool,
     binary: bool,
     too_large: bool,
+    /// For a submodule (a folder with its own repository): the changeset it has checked out.
+    submodule: Option<String>,
 }
 
 /// Reads a working-tree file for the diff editor.
 #[tauri::command]
 pub fn read_worktree_file(repo: String, path: String) -> Result<FileText, String> {
     let file = resolve(&repo, &path)?;
-    let none = FileText { text: None, missing: false, binary: false, too_large: false };
+    let none = FileText { text: None, missing: false, binary: false, too_large: false, submodule: None };
     let meta = match std::fs::metadata(&file) {
         Ok(m) if m.is_file() => m,
+        Ok(m) if m.is_dir() && file.join(".git").exists() => {
+            let at = git(&file, &["rev-parse", "--verify", "-q", "HEAD"], &[], None).map(|s| s.trim().to_string()).unwrap_or_default();
+            return Ok(FileText { submodule: Some(at), ..none });
+        }
         Ok(_) | Err(_) => return Ok(FileText { missing: true, ..none }),
     };
     if meta.len() > MAX_FILE_BYTES {
@@ -80,10 +87,32 @@ pub fn write_worktree_file(repo: String, path: String, text: String) -> Result<(
 /// Commits the given files as they are in the working tree, with `message`,
 /// and returns the new changeset id. Other staged files are left staged.
 #[tauri::command]
-pub async fn commit_changes(repo: String, message: String, paths: Vec<String>) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || commit(&repo, &message, &paths))
-        .await
-        .map_err(|e| e.to_string())?
+pub async fn commit_changes(repo: String, message: String, paths: Vec<String>) -> Result<Committed, String> {
+    tauri::async_runtime::spawn_blocking(move || commit_and_follow(&repo, &message, &paths)).await.map_err(|e| e.to_string())?
+}
+
+/// `commit`, and when that finishes a merge (or cherry pick, or subtractive
+/// merge) that stopped for conflicts, the submodules follow: git left them
+/// where they were while it was in progress.
+pub(crate) fn commit_and_follow(repo: &str, message: &str, paths: &[String]) -> Result<Committed, String> {
+    let root = repo_root(repo)?;
+    let finishing = finishing_operation(&root);
+    let hash = commit(repo, message, paths)?;
+    let submodules = if finishing { update_all(&root) } else { SubmoduleUpdate::default() };
+    Ok(Committed { hash, submodules })
+}
+
+#[derive(Serialize)]
+pub struct Committed {
+    /// The new changeset.
+    pub hash: String,
+    /// For a commit that finished a merge: the submodules brought to the changesets it records.
+    pub submodules: SubmoduleUpdate,
+}
+
+/// Whether a merge, cherry pick or subtractive merge (revert) is in progress, to be committed whole.
+fn finishing_operation(root: &Path) -> bool {
+    ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"].iter().any(|r| git(root, &["rev-parse", "-q", "--verify", r], &[], None).is_ok())
 }
 
 pub(crate) fn commit(repo: &str, message: &str, paths: &[String]) -> Result<String, String> {
@@ -99,10 +128,30 @@ pub(crate) fn commit(repo: &str, message: &str, paths: &[String]) -> Result<Stri
     }
     // Stage the selected files exactly as they are on disk, including deletions.
     git(&root, &["add", "-A", "--"], paths, None)?;
+    // A repository inside this one that isn't a submodule (no .gitmodules entry, so nobody could
+    // clone it) would be committed as a dangling link: take it back out and say why. This is
+    // what a submodule's folder looks like when it's left behind by switching to a changeset without it.
+    let staged = git(&root, &["ls-files", "--stage", "-z", "--"], paths, None)?;
+    let nested: Vec<String> = staged
+        .split('\0')
+        .filter(|e| e.starts_with("160000 "))
+        .filter_map(|e| e.split_once('\t').map(|(_, p)| p.to_string()))
+        .filter(|p| crate::submodule::submodule_name(&root, p).is_none())
+        .collect();
+    if !nested.is_empty() {
+        let committed = git(&root, &["ls-tree", "-r", "--name-only", "HEAD", "--"], &nested, None).unwrap_or_default();
+        for p in nested.iter().filter(|p| !committed.lines().any(|c| c == p.as_str())) {
+            let _ = git(&root, &["rm", "--quiet", "--cached", "--force", "--"], &[p.clone()], None);
+        }
+        let list = nested.join(", ");
+        return Err(format!(
+            "{list} {} a separate repository inside this one, not a submodule, so {} wasn't committed. Add it with Add Submodule… in the Files view, or move the folder out of the repository. Nothing was committed.",
+            if nested.len() == 1 { "is" } else { "are" },
+            if nested.len() == 1 { "it" } else { "they" },
+        ));
+    }
     // A merge or cherry pick in progress must be committed whole; otherwise commit only the selection.
-    let merging = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"]
-        .iter()
-        .any(|r| git(&root, &["rev-parse", "-q", "--verify", r], &[], None).is_ok());
+    let merging = finishing_operation(&root);
     let selection: &[String] = if merging { &[] } else { paths };
     let only: &[&str] = if merging { &["commit", "-F", "-"] } else { &["commit", "-F", "-", "--"] };
     git(&root, only, selection, Some(message))?;
@@ -112,12 +161,22 @@ pub(crate) fn commit(repo: &str, message: &str, paths: &[String]) -> Result<Stri
 /// Undoes pending changes. `tracked` paths (in the checked-out changeset) get
 /// their committed content back, in the working tree and the index. `created`
 /// paths (new files) are unstaged and moved to the Trash, so they can still be
-/// recovered.
+/// recovered. Submodules among them are put back properly (see `undo`); the
+/// result says which, and which couldn't be.
 #[tauri::command]
-pub async fn undo_changes(repo: String, tracked: Vec<String>, created: Vec<String>) -> Result<(), String> {
+pub async fn undo_changes(repo: String, tracked: Vec<String>, created: Vec<String>) -> Result<SubmoduleUpdate, String> {
     tauri::async_runtime::spawn_blocking(move || undo(&repo, &tracked, &created, &to_trash))
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// Of `paths`, the ones that are submodules in `tree_or_index` (an `ls-tree HEAD` or `ls-files --stage` listing).
+fn gitlinks(listing: &str) -> Vec<String> {
+    listing
+        .split('\0')
+        .filter(|e| e.starts_with("160000 "))
+        .filter_map(|e| e.split_once('\t').map(|(_, p)| p.to_string()))
+        .collect()
 }
 
 fn to_trash(files: &[&PathBuf]) -> Result<(), String> {
@@ -125,23 +184,48 @@ fn to_trash(files: &[&PathBuf]) -> Result<(), String> {
 }
 
 /// `discard` gets rid of the new files (the Trash in the app; tests delete them).
-fn undo(repo: &str, tracked: &[String], created: &[String], discard: &dyn Fn(&[&PathBuf]) -> Result<(), String>) -> Result<(), String> {
+///
+/// Submodules need more than their entry in the index put back. A new one is
+/// removed from everything git keeps about it (as Remove Submodule does) and
+/// its folder discarded. A moved or removed one is checked out (or set up)
+/// again at the changeset HEAD records, just that one.
+pub(crate) fn undo(repo: &str, tracked: &[String], created: &[String], discard: &dyn Fn(&[&PathBuf]) -> Result<(), String>) -> Result<SubmoduleUpdate, String> {
     let root = repo_root(repo)?;
     for p in tracked.iter().chain(created) {
         check_relative(p)?;
     }
+    let mut result = SubmoduleUpdate::default();
+    // New submodules: cleaned up first (this edits .gitmodules, which may itself be among the files).
+    let new_links = if created.is_empty() { vec![] } else { gitlinks(&git(&root, &["ls-files", "--stage", "-z", "--"], created, None)?) };
+    let mut gone: Vec<PathBuf> = Vec::new();
+    for p in &new_links {
+        match crate::submodule::remove(&root, p) {
+            Ok(folder) => gone.push(folder),
+            Err(error) => result.failed.push(SubmoduleFailure { path: p.clone(), error }),
+        }
+    }
+    let created: Vec<String> = created.iter().filter(|p| !new_links.contains(p)).cloned().collect();
     let files: Vec<PathBuf> = created.iter().map(|p| resolve(repo, p)).collect::<Result<_, _>>()?;
     if !created.is_empty() {
-        git(&root, &["rm", "--cached", "--quiet", "--ignore-unmatch", "-r", "--"], created, None)?;
+        git(&root, &["rm", "--cached", "--quiet", "--ignore-unmatch", "-r", "--"], &created, None)?;
     }
+    // Moved or removed submodules: their folders follow the restored entries, after .gitmodules is back.
+    let old_links = if tracked.is_empty() { vec![] } else { gitlinks(&git(&root, &["ls-tree", "-z", "HEAD", "--"], tracked, None).unwrap_or_default()) };
     if !tracked.is_empty() {
         git(&root, &["restore", "--source=HEAD", "--staged", "--worktree", "--"], tracked, None)?;
     }
-    let existing: Vec<&PathBuf> = files.iter().filter(|f| f.symlink_metadata().is_ok()).collect();
+    for p in &old_links {
+        match crate::submodule::restore_submodule(&root, p) {
+            Ok(()) => result.updated.push(p.clone()),
+            Err(error) => result.failed.push(SubmoduleFailure { path: p.clone(), error }),
+        }
+    }
+    let existing: Vec<&PathBuf> = files.iter().chain(&gone).filter(|f| f.symlink_metadata().is_ok()).collect();
     if !existing.is_empty() {
         discard(&existing)?;
     }
-    Ok(())
+    result.put_away = new_links.into_iter().filter(|p| !result.failed.iter().any(|f| &f.path == p)).collect();
+    Ok(result)
 }
 
 /// Pushes the checked-out branch and returns a summary like "Pushed main to origin".

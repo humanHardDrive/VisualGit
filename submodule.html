@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Add Submodule</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <link rel="stylesheet" href="/src/submodule/submodule.css" />
+  </head>
+  <body class="submodule-window">
+    <form id="sm-form" class="dialog sm-form">
+      <h2>Add Submodule</h2>
+      <p class="dialog-sub">To <b id="sm-repo"></b></p>
+
+      <fieldset class="sm-source">
+        <legend>Repository</legend>
+        <label class="sm-choice"><input type="radio" name="where" value="local" checked /> On this computer</label>
+        <div id="sm-local" class="sm-sub">
+          <div class="sm-row field">
+            <input id="sm-folder" type="text" spellcheck="false" autocomplete="off" placeholder="The repository's folder" aria-label="The repository's folder" />
+            <button type="button" id="sm-browse">Browse…</button>
+          </div>
+          <div id="sm-workspace" class="sm-list" role="listbox" aria-label="Repositories in the workspace" hidden></div>
+        </div>
+        <label class="sm-choice"><input type="radio" name="where" value="remote" /> Remote</label>
+        <div id="sm-remote" class="sm-sub field">
+          <input id="sm-url" type="text" spellcheck="false" autocomplete="off" placeholder="https://host/owner/project.git or git@host:owner/project.git" aria-label="Remote URL" />
+        </div>
+      </fieldset>
+
+      <label class="field field-gap">Path in this repository
+        <input id="sm-path" type="text" spellcheck="false" autocomplete="off" placeholder="libs/project" required />
+      </label>
+      <p id="sm-note" class="dialog-note"></p>
+      <div id="sm-progress" class="dialog-note mono" aria-live="polite"></div>
+      <div id="sm-error" class="dialog-error" role="alert"></div>
+      <div class="dialog-actions">
+        <button type="button" id="sm-cancel">Cancel</button>
+        <button type="submit" id="sm-next" class="primary">Choose Changeset…</button>
+      </div>
+    </form>
+    <script type="module" src="/src/submodule/add.ts"></script>
+  </body>
+</html>

@@ -6,15 +6,17 @@ import { loadRepo, type GitRunner } from "./git/load.ts";
 import { inTauri, tauriRunner } from "./git/tauriRunner.ts";
 import { inferModel, pendingChangesOn, uncommittedHead, type Model } from "./model/infer.ts";
 import { layoutModel, type Edge } from "./model/layout.ts";
-import { searchModel, type SearchResults } from "./model/search.ts";
+import { nextOf, previousOf } from "./model/navigate.ts";
 import { branchRows, renderBranchList, type BranchSort } from "./view/branchList.ts";
 import { clearDetails, showBranch, showCommit } from "./view/details.ts";
-import { buildTree, loadFiles, loadLastChanges, type FileList, type Folder, type LastChange } from "./git/files.ts";
+import { buildTree, isRepoKind, loadFiles, loadLastChanges, nestList, ownerOf, type FileList, type Folder, type LastChange } from "./git/files.ts";
 import { fileRows, renderFiles, rowKey, type FileRow } from "./view/files.ts";
 import { ignorePatterns } from "./git/ignore.ts";
 import { branchColor, Explorer, type Selection, type View } from "./view/explorer.ts";
 import { filterRepos, renderWorkspaceList, type RepoInfo } from "./view/workspaceList.ts";
 import { createPendingView } from "./pending/view.ts";
+import { createSearchBox } from "./view/searchBox.ts";
+import { reportSubmoduleFailures, submodulesUpdated, type SubmoduleUpdate } from "./view/submoduleUpdate.ts";
 
 /** Selection saved across reloads; branches by name, since ids are reassigned. */
 type SavedSelection = { kind: "commit"; hash: string } | { kind: "branch"; name: string };
@@ -181,8 +183,14 @@ function switchTarget(m: Model, hash: string): { branch?: string; current: boole
   return { branch: lane ?? names[0], current: false };
 }
 
+/** Mirrors `Switched` in src-tauri/src/branch.rs. */
+interface Switched {
+  message: string;
+  submodules: SubmoduleUpdate;
+}
+
 function switchTo(hash: string, branch: string | undefined) {
-  void runSwitch(branch ?? hash.slice(0, 8), (repo) => invoke<string>("switch_to_changeset", { repo, at: hash, branch: branch ?? null }));
+  void runSwitch(branch ?? hash.slice(0, 8), (repo) => invoke<Switched>("switch_to_changeset", { repo, at: hash, branch: branch ?? null }));
 }
 
 /**
@@ -190,16 +198,16 @@ function switchTo(hash: string, branch: string | undefined) {
  * remote-only one gets a local tracking branch; a deleted or unnamed lane's
  * last changeset is checked out as a detached HEAD.
  */
-function switchToBranchCall(b: Model["branches"][number]): ((repo: string) => Promise<string>) | null {
+function switchToBranchCall(b: Model["branches"][number]): ((repo: string) => Promise<Switched>) | null {
   const local = b.refs.find((r) => r.startsWith("refs/heads/"));
   if (local) {
     const name = local.slice("refs/heads/".length);
-    return (repo) => invoke<string>("switch_to_changeset", { repo, at: b.tips[0], branch: name });
+    return (repo) => invoke<Switched>("switch_to_changeset", { repo, at: b.tips[0], branch: name });
   }
   const remote = b.refs.find((r) => r.startsWith("refs/remotes/"));
-  if (remote) return (repo) => invoke<string>("switch_to_remote_branch", { repo, remoteRef: remote });
+  if (remote) return (repo) => invoke<Switched>("switch_to_remote_branch", { repo, remoteRef: remote });
   const last = b.commits[b.commits.length - 1];
-  return last ? (repo) => invoke<string>("switch_to_changeset", { repo, at: last, branch: null }) : null;
+  return last ? (repo) => invoke<Switched>("switch_to_changeset", { repo, at: last, branch: null }) : null;
 }
 
 /** Applies a changeset on top of HEAD; on conflicts, Pending Changes takes over. */
@@ -234,15 +242,17 @@ async function applyChangeset(hash: string, how: "pick" | "subtract") {
   if (await hasPendingChanges(doing)) return;
   notify(how === "pick" ? `Cherry picking ${short}…` : `Taking ${short}'s changes out…`);
   try {
-    const result = await invoke<{ committed: string | null; conflicts: string[] }>(how === "pick" ? "cherry_pick" : "subtractive_merge", {
+    const result = await invoke<{ committed: string | null; conflicts: string[]; submodules: SubmoduleUpdate }>(how === "pick" ? "cherry_pick" : "subtractive_merge", {
       repo: path,
       at: hash,
     });
     if (result.committed) {
       notify(
-        how === "pick" ? `Cherry picked ${short} as ${result.committed.slice(0, 8)}.` : `Took ${short}'s changes out in ${result.committed.slice(0, 8)}.`,
+        (how === "pick" ? `Cherry picked ${short} as ${result.committed.slice(0, 8)}.` : `Took ${short}'s changes out in ${result.committed.slice(0, 8)}.`) +
+          submodulesUpdated(result.submodules),
         "ok",
       );
+      void reportSubmoduleFailures(result.submodules, how === "pick" ? "cherry pick" : "subtractive merge");
     } else {
       const n = result.conflicts.length;
       const what = how === "pick" ? `Cherry picking ${short}` : `The subtractive merge of ${short}`;
@@ -272,17 +282,21 @@ async function hasPendingChanges(doing: string): Promise<boolean> {
 }
 
 /** Runs a switch unless there are pending changes, then reloads and shows the new HEAD. */
-async function runSwitch(label: string, call: (repo: string) => Promise<string>) {
+async function runSwitch(label: string, call: (repo: string) => Promise<Switched>) {
   if (!repoPath || !git) return;
   const path = repoPath;
   if (await hasPendingChanges("switching")) return;
   notify(`Switching to ${label}…`);
+  let done: Switched;
   try {
-    notify(`${await call(path)}.`, "ok");
+    done = await call(path);
   } catch (err) {
     notify(`Could not switch: ${err}`, "error");
     return;
   }
+  // Submodules follow the switch (checked out at the changesets it records); any that didn't get a message box.
+  notify(`${done.message}.${submodulesUpdated(done.submodules)}`, "ok");
+  void reportSubmoduleFailures(done.submodules, "switch");
   if (repoPath !== path) return;
   await loadRepoAt(path, { reload: true });
   goHome();
@@ -328,7 +342,7 @@ $("branch-form").addEventListener("submit", async (e) => {
   const name = branchName.value.trim();
   branchCreate.disabled = true;
   try {
-    const result = await invoke<{ switched: boolean; switchError: string | null }>("create_branch", {
+    const result = await invoke<{ switched: boolean; switchError: string | null; submodules: SubmoduleUpdate }>("create_branch", {
       repo: path,
       name,
       at: branchAt,
@@ -336,7 +350,8 @@ $("branch-form").addEventListener("submit", async (e) => {
     });
     branchDialog.close();
     if (result.switchError) notify(`Created ${name}, but could not switch to it: ${result.switchError}`, "error");
-    else notify(result.switched ? `Created ${name} and switched to it.` : `Created ${name}.`, "ok");
+    else notify(result.switched ? `Created ${name} and switched to it.${submodulesUpdated(result.submodules)}` : `Created ${name}.`, "ok");
+    void reportSubmoduleFailures(result.submodules, "switch");
     if (repoPath !== path) return;
     await loadRepoAt(path, { reload: true });
     const created = model?.branches.find((b) => b.name === name);
@@ -414,146 +429,18 @@ function openPendingChanges(path?: string) {
 
 // ---- search ---------------------------------------------------------------------
 
-const MAX_BRANCH_RESULTS = 50;
-const MAX_COMMIT_RESULTS = 200;
-
-let results: SearchResults | null = null;
-/** Result rows in display order, for keyboard navigation. */
-let resultRows: { sel: Selection; el: HTMLElement }[] = [];
-let activeResult = -1;
-
-/** Re-runs the query against the current model; `open` shows the results list. */
-function runSearch(open: boolean) {
-  results = model ? searchModel(model, searchInput.value) : null;
-  explorer.setMatches(results && { commits: new Set(results.commits), branches: new Set(results.branches) });
-  activeResult = -1;
-  renderResults();
-  searchPanel.hidden = !open || !results;
-  renderBranchView();
-}
-
-/** After a reload or repository switch: same query, new history. */
-function refreshSearch() {
-  runSearch(!searchPanel.hidden);
-}
-
-function clearSearch() {
-  searchInput.value = "";
-  runSearch(false);
-}
-
-function renderResults() {
-  if (!results || !model) {
-    resultRows = [];
-    searchPanel.replaceChildren();
-    return;
-  }
-  const m = model;
-  const rows: { sel: Selection; el: HTMLElement }[] = [];
-  const nodes: HTMLElement[] = [];
-  const div = (cls: string, text = "") => {
-    const d = document.createElement("div");
-    d.className = cls;
-    d.textContent = text;
-    return d;
-  };
-  const addRow = (sel: Selection, ...kids: HTMLElement[]) => {
-    const el = div("result");
-    el.setAttribute("role", "option");
-    el.append(...kids);
-    const i = rows.length;
-    // Keep focus in the search box, so the list doesn't close before the click lands.
-    el.onmousedown = (e) => e.preventDefault();
-    el.onclick = () => chooseResult(i, true);
-    rows.push({ sel, el });
-    nodes.push(el);
-  };
-  const more = (n: number, what: string) => {
-    if (n > 0) nodes.push(div("result-more", `and ${n.toLocaleString()} more ${what}; refine the search to see them`));
-  };
-
-  const { branches, commits } = results;
-  const plural = (n: number, one: string, many: string) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
-  nodes.push(
-    div(
-      "result-summary",
-      branches.length || commits.length
-        ? `${plural(branches.length, "branch", "branches")} · ${plural(commits.length, "changeset", "changesets")}`
-        : "No matches",
-    ),
-  );
-
-  if (branches.length) {
-    nodes.push(div("result-head", "Branches"));
-    for (const id of branches.slice(0, MAX_BRANCH_RESULTS)) {
-      const b = m.branches[id];
-      const swatch = div("swatch");
-      swatch.style.background = branchColor(m, id);
-      addRow({ kind: "branch", id }, swatch, div("result-text", b.name));
-    }
-    more(branches.length - MAX_BRANCH_RESULTS, "branches");
-  }
-  if (commits.length) {
-    nodes.push(div("result-head", "Changesets"));
-    for (const hash of commits.slice(0, MAX_COMMIT_RESULTS)) {
-      const c = m.commits.get(hash)!;
-      const owner = m.owner.get(hash)!;
-      const branch = div("result-meta", m.branches[owner].name);
-      branch.style.color = branchColor(m, owner);
-      addRow({ kind: "commit", hash }, div("result-id", hash.slice(0, 8)), div("result-text", c.subject || "(no message)"), branch);
-    }
-    more(commits.length - MAX_COMMIT_RESULTS, "changesets");
-  }
-  nodes.push(div("result-hint", "* matches anything · ? matches one character · ↑↓ to browse · Enter to go"));
-  resultRows = rows;
-  searchPanel.replaceChildren(...nodes);
-}
-
-function setActiveResult(i: number) {
-  resultRows[activeResult]?.el.classList.remove("active");
-  activeResult = i;
-  const row = resultRows[i];
-  if (!row) return;
-  row.el.classList.add("active");
-  row.el.scrollIntoView({ block: "nearest" });
-}
-
-/** Shows a result in the explorer; `close` also hands the keyboard back to the explorer. */
-function chooseResult(i: number, close: boolean) {
-  const row = resultRows[i];
-  if (!row) return;
-  setActiveResult(i);
-  applySelection(row.sel, true);
-  if (close) {
-    searchPanel.hidden = true;
-    searchInput.blur();
-  }
-}
-
-searchInput.addEventListener("input", () => runSearch(true));
-searchInput.addEventListener("focus", () => {
-  if (results) searchPanel.hidden = false;
+const search = createSearchBox({
+  input: searchInput,
+  panel: searchPanel,
+  model: () => model,
+  onResults: (results) => {
+    explorer.setMatches(results && { commits: new Set(results.commits), branches: new Set(results.branches) });
+    renderBranchView();
+  },
+  onChoose: (sel) => applySelection(sel, true),
 });
-searchInput.addEventListener("blur", () => {
-  searchPanel.hidden = true;
-});
-searchInput.addEventListener("keydown", (e) => {
-  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-    e.preventDefault();
-    if (!results) return;
-    searchPanel.hidden = false;
-    const n = resultRows.length;
-    if (n) chooseResult(e.key === "ArrowDown" ? (activeResult + 1) % n : (activeResult - 1 + n) % n, false);
-  } else if (e.key === "Enter") {
-    e.preventDefault();
-    chooseResult(Math.max(activeResult, 0), true);
-  } else if (e.key === "Escape") {
-    e.preventDefault();
-    e.stopPropagation();
-    clearSearch();
-    searchInput.blur();
-  }
-});
+const refreshSearch = () => search.refresh();
+const clearSearch = () => search.clear();
 
 // ---- changeset navigation --------------------------------------------------------
 
@@ -571,18 +458,6 @@ function navAnchor(m: Model): string | null {
     return b.commits[b.commits.length - 1] ?? b.base;
   }
   return m.headHash && m.commits.has(m.headHash) ? m.headHash : null;
-}
-
-/** The changeset before `hash`: its first parent, which leaves a branch at the changeset it was created from. */
-function previousOf(m: Model, hash: string): string | null {
-  const p = m.commits.get(hash)?.parents[0];
-  return p && m.commits.has(p) ? p : null;
-}
-
-/** The next changeset on the same branch lane. */
-function nextOf(m: Model, hash: string): string | null {
-  const b = m.branches[m.owner.get(hash)!];
-  return b.commits[b.commits.indexOf(hash) + 1] ?? null;
 }
 
 function navTarget(dir: -1 | 1): string | null {
@@ -1079,7 +954,10 @@ function showView(view: ViewName, opts: { pendingPath?: string } = {}) {
   }
   renderBranchView();
   renderRepos();
-  if (view === "files") void showFiles();
+  if (view === "files") {
+    void showFiles();
+    scheduleFilesCheck();
+  }
 }
 
 for (const item of document.querySelectorAll<HTMLButtonElement>(".view-item")) {
@@ -1141,6 +1019,101 @@ branchSearch.addEventListener("keydown", (e) => {
 const filesView = $("files-view");
 const fileSearch = $<HTMLInputElement>("file-search");
 let files: { repo: string; list: FileList; tree: Folder } | null = null;
+
+/** Last changes inside submodules, by the submodule's folder, kept while its HEAD stays put. */
+const nestedLastChanges = new Map<string, { head: string; map: Map<string, LastChange> }>();
+
+/**
+ * The Files view's listing: this repository's files, plus the files of each
+ * submodule (or repository inside) that's open in the tree, listed from that
+ * repository itself — and so on for submodules inside those.
+ */
+async function loadListing(runner: GitRunner, root: string, open: Set<string>): Promise<FileList> {
+  const list = await loadFiles(runner);
+  list.nested = new Map();
+  const listed = new Set<string>();
+  for (;;) {
+    const next = [...open].filter((p) => !listed.has(p) && isRepoKind(list.kinds.get(p)));
+    if (next.length === 0) return list;
+    await Promise.all(
+      next.map(async (at) => {
+        listed.add(at);
+        const dir = `${root}/${at}`;
+        const sub = tauriRunner(dir);
+        // A submodule that hasn't been checked out is an empty folder, where git would find this repository instead.
+        const top = (await sub.run(["rev-parse", "--show-toplevel"]).catch(() => "")).trim();
+        if (top !== dir) {
+          list.nested!.set(at, { root: dir, checkedOut: false });
+          return;
+        }
+        let inner: FileList;
+        let head: string;
+        try {
+          [inner, head] = await Promise.all([loadFiles(sub), sub.run(["rev-parse", "-q", "--verify", "HEAD"]).then((h) => h.trim(), () => "")]);
+        } catch {
+          list.nested!.set(at, { root: dir, checkedOut: false }); // unreadable: shown with nothing inside
+          return;
+        }
+        const cached = nestedLastChanges.get(dir);
+        if (cached?.head === head) inner.last = cached.map;
+        else {
+          inner.last = head ? await loadLastChanges(sub).catch(() => new Map()) : new Map();
+          nestedLastChanges.set(dir, { head, map: inner.last });
+        }
+        nestList(list, at, dir, inner);
+      }),
+    );
+  }
+}
+
+/** What the Files view shows, to tell whether a fresh listing changed anything. */
+const filesFingerprint = (list: FileList) =>
+  JSON.stringify([list.paths, [...list.kinds], [...list.status].map(([path, s]) => [path, s.letter])]);
+
+/**
+ * While the Files view is showing, it keeps itself up to date: every few
+ * seconds it lists the files again and, if anything changed (files added or
+ * removed, pending changes, HEAD moving), reloads everything that shows
+ * them. A repository that's slow to list is checked less often. Nothing runs
+ * while the window is hidden.
+ */
+const FILES_CHECK_MS = 3000;
+let filesCheck = 0;
+let filesChecking = false;
+
+function scheduleFilesCheck(delay = FILES_CHECK_MS) {
+  clearTimeout(filesCheck);
+  filesCheck = window.setTimeout(() => void checkFiles(), delay);
+}
+
+async function checkFiles() {
+  if (currentView !== "files") return; // showView starts it again
+  const runner = git;
+  const shown = files;
+  if (document.hidden || !runner || !shown || !model || filesChecking || loadingPath !== null || shown.repo !== repoPath) {
+    scheduleFilesCheck();
+    return;
+  }
+  filesChecking = true;
+  const started = performance.now();
+  try {
+    const [list, head] = await Promise.all([
+      loadListing(runner, shown.repo, expanded()),
+      runner.run(["rev-parse", "-q", "--verify", "HEAD"]).catch(() => ""),
+    ]);
+    const unchanged = files === shown && filesFingerprint(list) === filesFingerprint(shown.list) && (head.trim() || null) === (model?.headHash ?? null);
+    if (!unchanged && currentView === "files" && git === runner) reload();
+  } catch {
+    // e.g. the repository went away; the next reload says so
+  } finally {
+    filesChecking = false;
+    scheduleFilesCheck(Math.max(FILES_CHECK_MS, (performance.now() - started) * 10));
+  }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && currentView === "files") scheduleFilesCheck(0);
+});
 /** Expanded folders, per repository. */
 const expandedFolders = new Map<string, Set<string>>();
 /** The selected row in the Files view: a file path, or a folder path ending in "/". */
@@ -1167,7 +1140,7 @@ async function showFiles() {
   const seq = ++filesSeq;
   const path = repoPath;
   try {
-    const list = await loadFiles(git);
+    const list = await loadListing(git, path, expanded());
     if (seq !== filesSeq || repoPath !== path) return;
     if (files?.repo !== path) selectedFile = null;
     const key = `${path}\0${model?.headHash ?? ""}`;
@@ -1194,7 +1167,7 @@ async function fillLastChanges(seq: number, path: string) {
   }
   lastChanges = { key, map };
   if (seq !== filesSeq || files?.repo !== path) return;
-  files.list.last = map;
+  files.list.last = map; // this repository's own; submodules' are in nestedLast
   files.tree = buildTree(files.list);
   renderFileView();
 }
@@ -1202,9 +1175,11 @@ async function fillLastChanges(seq: number, path: string) {
 function renderFileView() {
   if (currentView !== "files" || !files) return;
   const { list, tree } = files;
-  const changed = list.status.size;
-  $("file-count").textContent =
-    `${list.paths.length.toLocaleString()} file${list.paths.length === 1 ? "" : "s"}` + (changed ? ` · ${changed} with pending changes` : "");
+  // This repository's own files (an open submodule's are counted in it, not here).
+  const own = (p: string) => !ownerOf(list, p);
+  const count = list.paths.filter(own).length;
+  const changed = [...list.status.keys()].filter(own).length;
+  $("file-count").textContent = `${count.toLocaleString()} file${count === 1 ? "" : "s"}` + (changed ? ` · ${changed} with pending changes` : "");
   renderFiles(filesView, tree, list, {
     expanded: expanded(),
     query: fileSearch.value,
@@ -1217,8 +1192,88 @@ function renderFileView() {
         renderFileView();
       }
       if (r.kind === "file") void showFileMenu(r.path);
+      else void showFolderMenu(r.folder.path);
     },
   });
+}
+
+/** Right-click on the Files view's empty space: things for the top folder. */
+filesView.addEventListener("contextmenu", (e) => {
+  if (e.defaultPrevented) return; // a row's own menu
+  e.preventDefault();
+  void showFolderMenu("");
+});
+
+/**
+ * The repository a Files view path belongs to, and the path within it: an
+ * open submodule's for its files, otherwise the open repository.
+ */
+function whereIs(path: string): { repo: string; path: string; submodule: string | null } | null {
+  if (!repoPath) return null;
+  const o = files ? ownerOf(files.list, path) : null;
+  return o ? { repo: o.root, path: o.path, submodule: o.at } : { repo: repoPath, path, submodule: null };
+}
+
+/**
+ * The repository that has the submodule at `path` (the open repository, or
+ * an open submodule it's inside), and its path there. Unlike `whereIs`, an
+ * opened submodule's own row belongs to the repository around it.
+ */
+function submoduleHome(path: string): { repo: string; path: string } | null {
+  const slash = path.lastIndexOf("/");
+  const w = whereIs(slash < 0 ? "" : path.slice(0, slash));
+  if (!w) return null;
+  const name = path.slice(slash + 1);
+  return { repo: w.repo, path: w.path ? `${w.path}/${name}` : name };
+}
+
+/** Opens the Choose Changeset window on a submodule's own history, to move it to another changeset. */
+function editSubmodule(path: string) {
+  const home = submoduleHome(path);
+  if (!home) return;
+  void invoke("open_edit_submodule_window", { repo: home.repo, path: home.path }).catch((err) =>
+    message(String(err), { title: `Could not edit the submodule ${path}`, kind: "error" }),
+  );
+}
+
+/** Opens the Add Submodule window, for a submodule in `folder` ("" for the top of the repository). */
+function openAddSubmodule(folder: string) {
+  // Inside an open submodule, the new one goes into that submodule's repository.
+  const w = whereIs(folder);
+  if (!w) return;
+  void invoke("open_add_submodule_window", { repo: w.repo, folder: w.path, workspace }).catch((err) =>
+    message(String(err), { title: "Could not add a submodule", kind: "error" }),
+  );
+}
+
+/** Makes a submodule (or repository inside) the open repository, e.g. to commit in it; then `then`. */
+async function openNested(root: string, then?: () => void) {
+  await loadRepoAt(root);
+  if (repoPath !== root) return; // couldn't open it (loadRepoAt said why)
+  notify(`Switched to ${root.split("/").pop()}, a repository inside the one you were in. Switch back from the Workspace view.`, "ok");
+  then?.();
+}
+
+async function showFolderMenu(folder: string) {
+  const name = folder.slice(folder.lastIndexOf("/") + 1);
+  const kind = files?.list.kinds.get(folder);
+  const items: ({ id: string; text: string; enabled?: boolean; action: () => void } | { item: "Separator" })[] = [];
+  if (isRepoKind(kind) && repoPath) {
+    // Its folder on disk; listed or not, that's where its repository is.
+    const root = files?.list.nested?.get(folder)?.root ?? `${repoPath}/${folder}`;
+    const checkedOut = files?.list.nested?.get(folder)?.checkedOut !== false;
+    items.push({ id: "open-nested", text: kind === "submodule" ? "Open Submodule as Repository" : "Open as Repository", enabled: checkedOut, action: () => void openNested(root) });
+    if (kind === "submodule") {
+      items.push(
+        { id: "edit-submodule", text: "Edit Submodule…", enabled: checkedOut, action: () => editSubmodule(folder) },
+        { id: "remove-submodule", text: "Remove Submodule…", action: () => void removeSubmodule(folder) },
+      );
+    }
+    items.push({ item: "Separator" });
+  }
+  items.push({ id: "add-submodule", text: folder ? `Add Submodule in “${name}”…` : "Add Submodule…", action: () => openAddSubmodule(folder) });
+  const menu = await Menu.new({ items });
+  await menu.popup();
 }
 
 // ---- file right-click menu -------------------------------------------------------------
@@ -1229,7 +1284,9 @@ async function showFileMenu(path: string) {
   const name = path.slice(path.lastIndexOf("/") + 1);
   const untracked = status?.letter === "?";
   const onDisk = status?.letter !== "D";
-  const patterns = ignorePatterns(path);
+  // Inside an open submodule, its own .gitignore, with paths relative to it.
+  const inner = whereIs(path)?.path ?? path;
+  const patterns = ignorePatterns(inner);
   const dot = name.lastIndexOf(".");
   const ext = patterns.extension ? `*${name.slice(dot)}` : null;
   const menu = await Menu.new({
@@ -1237,7 +1294,7 @@ async function showFileMenu(path: string) {
       { id: "open", text: "Open", enabled: onDisk, action: () => void openFile(path) },
       { id: "open-with", text: "Open With…", enabled: onDisk, action: () => void openFileWith(path) },
       { item: "Separator" },
-      { id: "history", text: "View History", enabled: !untracked, action: () => openHistory(path) },
+      { id: "history", text: "View History", enabled: !untracked, action: () => void openHistory(path) },
       { item: "Separator" },
       {
         text: "Ignore",
@@ -1249,10 +1306,13 @@ async function showFileMenu(path: string) {
             enabled: !!ext,
             action: () => void ignoreFile(path, patterns.extension!, `every ${ext} file`),
           },
-          { id: "ignore-path", text: `Ignore “/${path}”`, action: () => void ignoreFile(path, patterns.path, `/${path}`) },
+          { id: "ignore-path", text: `Ignore “/${inner}”`, action: () => void ignoreFile(path, patterns.path, `/${inner}`) },
         ],
       },
       { id: "delete", text: "Delete…", action: () => void deleteFile(path, untracked) },
+      { item: "Separator" },
+      // Next to this file, in its folder.
+      { id: "add-submodule", text: "Add Submodule…", action: () => openAddSubmodule(path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "") },
     ],
   });
   await menu.popup();
@@ -1283,33 +1343,84 @@ async function openFileWith(path: string) {
 }
 
 /** The file's history in the diff window: every changeset that changed it. */
-function openHistory(path: string) {
-  if (!repoPath || !model?.headHash) return;
-  void invoke("open_diff_window", { repo: repoPath, at: model.headHash, file: path }).catch((err) =>
-    notify(`Could not open the history of ${path}: ${err}`, "error"),
-  );
+async function openHistory(path: string) {
+  const w = whereIs(path);
+  if (!w || !model?.headHash) return;
+  // A file inside a submodule: that repository's history, from its checked-out changeset.
+  const at = w.submodule === null ? model.headHash : (await tauriRunner(w.repo).run(["rev-parse", "HEAD"]).catch(() => "")).trim();
+  if (!at) return notify(`${w.submodule} has no changesets checked out, so ${path} has no history to show.`, "error");
+  void invoke("open_diff_window", { repo: w.repo, at, file: w.path }).catch((err) => notify(`Could not open the history of ${path}: ${err}`, "error"));
 }
 
 async function ignoreFile(path: string, pattern: string, what: string) {
-  if (!repoPath) return;
+  const w = whereIs(path);
+  if (!w) return;
+  const gitignore = w.submodule === null ? ".gitignore" : `${w.submodule}/.gitignore`;
   try {
-    const added = await invoke<boolean>("add_to_gitignore", { repo: repoPath, pattern });
+    const added = await invoke<boolean>("add_to_gitignore", { repo: w.repo, pattern });
     const tracked = files?.list.status.get(path)?.letter !== "?";
     notify(
-      (added ? `Added ${pattern} to .gitignore, so git ignores ${what}.` : `.gitignore already ignores ${what}.`) +
+      (added ? `Added ${pattern} to ${gitignore}, so git ignores ${what}.` : `${gitignore} already ignores ${what}.`) +
         // gitignore only affects files git doesn't track yet.
         (tracked ? ` ${path} is already in source control, so git keeps tracking it until it's removed (Delete… › Remove from Source Control).` : ""),
       tracked ? "" : "ok", // the tracked-file note stays until read
     );
   } catch (err) {
-    notify(`Could not update .gitignore: ${err}`, "error");
+    notify(`Could not update ${gitignore}: ${err}`, "error");
     return;
   }
   reload();
 }
 
+/**
+ * Removes a submodule from everything git keeps about it (the index,
+ * .gitmodules, .git/config, .git/modules), keeping its folder as a
+ * standalone repository on disk, or moving that to the Trash.
+ */
+async function removeSubmodule(path: string) {
+  // The repository around it (not its own, which an opened submodule's row would otherwise give).
+  const w = submoduleHome(path);
+  if (!w || !repoPath) return;
+  const repo = repoPath;
+  const KEEP = "Remove, Keep the Folder";
+  const BOTH = "Remove and Move to Trash";
+  const choice = await message(
+    `Remove the submodule “${path}”?
+
+Git forgets it entirely: it's taken out of the index, .gitmodules and .git/config, and its repository leaves .git/modules.
+
+Nothing in it is lost. Its repository (with its history, and any changes not yet committed or pushed) moves into its folder, which becomes an ordinary repository.
+
+${KEEP}: the folder stays where it is.
+
+${BOTH}: the folder goes to the Trash.
+
+The removal is a pending change: commit it to record it.`,
+    { title: "Remove Submodule", kind: "warning", buttons: { yes: KEEP, no: BOTH, cancel: "Cancel" } },
+  );
+  let fromDisk: boolean;
+  if (choice === "Yes" || choice === KEEP) fromDisk = false;
+  else if (choice === "No" || choice === BOTH) fromDisk = true;
+  else return;
+  try {
+    await invoke("remove_submodule", { repo: w.repo, path: w.path, fromDisk });
+    notify(
+      fromDisk
+        ? `Removed the submodule ${path} and moved its folder to the Trash. Commit to record the removal.`
+        : `Removed the submodule ${path}; its folder is now a repository of its own. Commit to record the removal.`,
+      "ok",
+    );
+  } catch (err) {
+    await message(String(err), { title: `Could not remove the submodule ${path}`, kind: "error" });
+  }
+  if (repoPath === repo) reload();
+}
+
 async function deleteFile(path: string, untracked: boolean) {
-  if (!repoPath) return;
+  // A submodule is more than its entry in the index: clean up everything git keeps about it.
+  if (files?.list.kinds.get(path) === "submodule") return removeSubmodule(path);
+  const w = whereIs(path);
+  if (!w || !repoPath) return;
   const repo = repoPath;
   const name = path.slice(path.lastIndexOf("/") + 1);
   let fromDisk: boolean;
@@ -1341,7 +1452,8 @@ Either way the removal is a pending change: commit it to record it.`,
     else return;
   }
   try {
-    await invoke("remove_file", { repo, path, fromDisk });
+    // Inside an open submodule, it's that repository's file to remove.
+    await invoke("remove_file", { repo: w.repo, path: w.path, fromDisk });
     notify(
       untracked
         ? `Moved ${name} to the Trash.`
@@ -1365,14 +1477,21 @@ function selectFileRow(r: FileRow) {
 
 /** Folders open and close; a file with pending changes opens Pending Changes. */
 function openFileRow(r: FileRow) {
-  if (r.kind === "file" && files?.list.status.has(r.path)) openPendingChanges(r.path);
+  if (r.kind !== "file" || !files?.list.status.has(r.path)) return;
+  const w = whereIs(r.path);
+  // A change inside a submodule is that repository's to commit: open it, then its Pending Changes.
+  if (w?.submodule != null) void openNested(w.repo, () => openPendingChanges(w.path));
+  else openPendingChanges(r.path);
 }
 
 function toggleFolder(path: string, open?: boolean) {
   const set = expanded();
-  if (open ?? !set.has(path)) set.add(path);
+  const opening = open ?? !set.has(path);
+  if (opening) set.add(path);
   else set.delete(path);
   renderFileView();
+  // A submodule opened for the first time: list its files.
+  if (opening && files && isRepoKind(files.list.kinds.get(path)) && !files.list.nested?.has(path)) void showFiles();
 }
 
 /** Keyboard in the Files view: ↑/↓ move, ←/→ close/open folders, Enter opens. */
@@ -1420,7 +1539,8 @@ fileSearch.addEventListener("keydown", (e) => {
 $("expand-all").addEventListener("click", () => {
   if (!files) return;
   const set = expanded();
-  const all = (f: Folder) => f.folders.forEach((s) => (set.add(s.path), all(s)));
+  // Submodules stay as they are: opening one lists a whole other repository.
+  const all = (f: Folder) => f.folders.forEach((s) => s.repo || (set.add(s.path), all(s)));
   all(files.tree);
   renderFileView();
 });
@@ -1479,6 +1599,7 @@ function reload() {
 }
 
 $("rescan").addEventListener("click", () => void rescanWorkspace());
+$("files-refresh").addEventListener("click", reload);
 reloadBtn.addEventListener("click", reload);
 navPrev.addEventListener("click", () => step(-1));
 navNext.addEventListener("click", () => step(1));
@@ -1570,6 +1691,22 @@ if (inTauri()) {
   // A merge made in a merge window.
   void listen<{ repo: string }>("repo-changed", (e) => {
     if (e.payload.repo === repoPath) reload();
+  });
+  // A submodule added from the Choose Changeset window: it's a pending change now.
+  void listen<{ repo: string; path: string; changeset: string }>("submodule-added", (e) => {
+    if (e.payload.repo !== repoPath) return;
+    reload();
+    notify(`Added the submodule ${e.payload.path} at ${e.payload.changeset.slice(0, 8)}. It's staged, with .gitmodules, for your next commit.`, "ok");
+  });
+  // A submodule moved to another changeset from its Edit Submodule window: staged in the repository that has it.
+  void listen<{ repo: string; path: string; changeset: string; submodules: SubmoduleUpdate }>("submodule-moved", (e) => {
+    const p = e.payload;
+    const inOpen = p.repo === repoPath || [...(files?.list.nested?.values() ?? [])].some((n) => n.root === p.repo);
+    if (!inOpen) return;
+    reload();
+    const where = p.repo === repoPath ? "" : ` in ${p.repo.split("/").pop()}`;
+    notify(`Moved the submodule ${p.path}${where} to ${p.changeset.slice(0, 8)}. It's staged for your next commit.${submodulesUpdated(p.submodules)}`, "ok");
+    void reportSubmoduleFailures(p.submodules, "move");
   });
   // A merge window that stopped for conflicts (or found pending changes) hands over to Pending Changes.
   void listen<{ repo: string }>("show-pending", async (e) => {
