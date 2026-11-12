@@ -148,6 +148,8 @@ Cherry Pick is only offered on changesets that *aren't* part of what's checked o
 - A branch can show ↑ with no changeset marked. This happens when its changesets reached the remote under another branch, such as one created from it and pushed, but the branch itself wasn't pushed. A fresh clone then shows those changesets on that other branch. The details panel says so, and pushing the branch fixes it.
 - The toolbar shows how many changesets are waiting to be pushed in total, and how many branches are ahead of their remote branch.
 
+**Getting the latest.** *Fetch*, next to *Reload* in the Branch Explorer, gets the latest from the remote (`git fetch --all --prune`). It brings in new changesets and branches, and drops branches deleted on the remote. Branches the remote has moved past then show ↓. Your local branches and files stay as they are. *Reload* only re-reads what's already on disk. Remotes that run a command (`ext::`) are refused.
+
 A repository with no remote-tracking branches shows none of this. To push a branch, right-click it (on its lane in the Branch Explorer, or its row in the Branch List) and choose *Push*. This is offered while the branch has changesets its remote branch doesn't, or has never been pushed. A branch with an upstream goes to it; a new branch is published to `origin` and tracks it from then on.
 
 **Changeset diffs.** Double-click any committed changeset (or right-click it and choose *View Changes*) to open a window showing what it changed.

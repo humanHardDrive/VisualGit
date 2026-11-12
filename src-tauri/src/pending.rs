@@ -241,6 +241,48 @@ pub async fn push_branch(repo: String, branch: String) -> Result<String, String>
     tauri::async_runtime::spawn_blocking(move || push_named(&repo_root(&repo)?, &branch)).await.map_err(|e| e.to_string())?
 }
 
+/// Gets the latest from every remote and returns a summary like "Fetched: 2 branches updated".
+#[tauri::command]
+pub async fn fetch_remotes(repo: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || fetch(&repo_root(&repo)?)).await.map_err(|e| e.to_string())?
+}
+
+/// `git fetch --all --prune`: updates the remote branches (and drops ones
+/// deleted on the remote), never local branches or the working tree. `ext::`
+/// remotes, which run a command, are refused whatever the user's git config says.
+pub(crate) fn fetch(root: &Path) -> Result<String, String> {
+    if git(root, &["remote"], &[], None)?.trim().is_empty() {
+        return Err("This repository has no remote to fetch from.".into());
+    }
+    let remotes = |root: &Path| -> Result<std::collections::HashMap<String, String>, String> {
+        Ok(git(root, &["for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes"], &[], None)?
+            .lines()
+            .filter_map(|l| l.split_once(' '))
+            .filter(|(name, _)| !name.ends_with("/HEAD"))
+            .map(|(n, h)| (n.to_string(), h.to_string()))
+            .collect())
+    };
+    let before = remotes(root)?;
+    git(root, &["-c", "protocol.ext.allow=never", "fetch", "--all", "--prune", "--quiet"], &[], None).map_err(|e| format!("Could not fetch: {e}"))?;
+    let after = remotes(root)?;
+
+    let updated = after.iter().filter(|(n, h)| before.get(*n).is_some_and(|b| b != *h)).count();
+    let added = after.keys().filter(|n| !before.contains_key(*n)).count();
+    let removed = before.keys().filter(|n| !after.contains_key(*n)).count();
+    let n = |k: usize, what: &str| format!("{k} {what}{}", if k == 1 { "" } else if what.ends_with('h') { "es" } else { "s" });
+    let mut parts = Vec::new();
+    if updated > 0 {
+        parts.push(format!("{} updated", n(updated, "branch")));
+    }
+    if added > 0 {
+        parts.push(format!("{} new", n(added, "branch")));
+    }
+    if removed > 0 {
+        parts.push(format!("{} deleted on the remote", n(removed, "branch")));
+    }
+    Ok(if parts.is_empty() { "Already up to date with the remote".into() } else { format!("Fetched: {}", parts.join(", ")) })
+}
+
 fn push(repo: &str) -> Result<String, String> {
     let root = repo_root(repo)?;
     let branch = git(&root, &["symbolic-ref", "-q", "--short", "HEAD"], &[], None)
@@ -440,6 +482,44 @@ mod tests {
         assert!(push_named(&dir, "--force").is_err());
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&remote).ok();
+    }
+
+    #[test]
+    fn fetches_what_others_pushed_without_moving_local_branches() {
+        let dir = scratch_repo();
+        let repo = dir.to_string_lossy().into_owned();
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        let mine = commit(&repo, "first", &["a.txt".into()]).unwrap();
+        assert!(fetch(&dir).unwrap_err().contains("no remote"));
+
+        let remote = dir.with_extension("fetch-remote.git");
+        let other = dir.with_extension("fetch-other");
+        for d in [&remote, &other] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+        assert!(Command::new("git").args(["init", "-q", "--bare", "-b", "main"]).arg(&remote).status().unwrap().success());
+        git(&dir, &["remote", "add", "origin", &remote.to_string_lossy()], &[], None).unwrap();
+        git(&dir, &["push", "-q", "-u", "origin", "main", "main:old"], &[], None).unwrap();
+        fetch(&dir).unwrap();
+        assert_eq!(fetch(&dir).unwrap(), "Already up to date with the remote");
+
+        // Someone else moves main, adds a branch and deletes one.
+        assert!(Command::new("git").arg("clone").arg("-q").arg(&remote).arg(&other).status().unwrap().success());
+        let run = |args: &[&str]| assert!(Command::new("git").arg("-C").arg(&other).args(["-c", "user.name=O", "-c", "user.email=o@e"]).args(args).status().unwrap().success());
+        run(&["commit", "-q", "--allow-empty", "-m", "theirs"]);
+        run(&["push", "-q", "origin", "main", "main:new", ":old"]);
+
+        assert_eq!(fetch(&dir).unwrap(), "Fetched: 1 branch updated, 1 branch new, 1 branch deleted on the remote");
+        assert_eq!(git(&dir, &["rev-parse", "main"], &[], None).unwrap().trim(), mine, "the local branch stays where it was");
+        assert_ne!(git(&dir, &["rev-parse", "origin/main"], &[], None).unwrap().trim(), mine);
+
+        // A remote that runs a command is refused, even if git is configured to allow it.
+        git(&dir, &["config", "protocol.ext.allow", "always"], &[], None).unwrap();
+        git(&dir, &["remote", "set-url", "origin", "ext::sh -c false"], &[], None).unwrap();
+        assert!(fetch(&dir).is_err());
+        for d in [&dir, &remote, &other] {
+            std::fs::remove_dir_all(d).ok();
+        }
     }
 
     #[test]

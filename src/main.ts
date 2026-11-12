@@ -35,6 +35,9 @@ const emptyState = $("empty-state");
 const stats = $("stats");
 const repoNameEl = $("repo-name");
 const reloadBtn = $<HTMLButtonElement>("reload");
+const fetchBtn = $<HTMLButtonElement>("fetch");
+/** A fetch is running (Fetch stays disabled through reloads meanwhile). */
+let fetching = false;
 
 const LAST_REPO_KEY = "visualgit.lastRepo";
 const WORKSPACE_KEY = "visualgit.workspace";
@@ -598,6 +601,7 @@ async function loadRepoAt(path: string, opts: { reload?: boolean; remembered?: b
     if (seq === loadSeq) {
       loadingPath = null;
       reloadBtn.disabled = repoPath === null;
+      fetchBtn.disabled = repoPath === null || fetching;
       renderRepos();
     }
   }
@@ -1607,6 +1611,29 @@ async function chooseRepo() {
   if (typeof dir === "string") await loadRepoAt(dir);
 }
 
+/**
+ * Gets the latest from the remote (`git fetch --all --prune`), then reloads:
+ * new changesets and branches appear, ones deleted there go, and branches the
+ * remote has moved past show ↓. Nothing local moves.
+ */
+async function fetchLatest() {
+  if (!repoPath || fetching) return;
+  const path = repoPath;
+  fetching = true;
+  fetchBtn.disabled = true;
+  fetchBtn.textContent = "Fetching…";
+  try {
+    notify(`${await invoke<string>("fetch_remotes", { repo: path })}.`, "ok");
+  } catch (err) {
+    await message(String(err), { title: "Could not fetch", kind: "error" });
+  } finally {
+    fetching = false;
+    fetchBtn.textContent = "Fetch";
+    fetchBtn.disabled = repoPath === null;
+  }
+  if (repoPath === path) reload();
+}
+
 function reload() {
   if (repoPath && loadingPath === null) void loadRepoAt(repoPath, { reload: true });
   void rescanWorkspace();
@@ -1616,6 +1643,7 @@ function reload() {
 $("rescan").addEventListener("click", () => void rescanWorkspace());
 $("files-refresh").addEventListener("click", reload);
 reloadBtn.addEventListener("click", reload);
+fetchBtn.addEventListener("click", () => void fetchLatest());
 navPrev.addEventListener("click", () => step(-1));
 navNext.addEventListener("click", () => step(1));
 navHome.addEventListener("click", goHome);
