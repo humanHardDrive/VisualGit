@@ -146,6 +146,7 @@ pub fn run() {
             merge::operation_in_progress,
             merge::abort_operation,
             merge::sync_branch,
+            merge::remote_moved,
             submodule::open_add_submodule_window,
             submodule::add_submodule_info,
             submodule::choose_submodule_changeset,

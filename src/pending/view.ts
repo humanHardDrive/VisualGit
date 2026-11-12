@@ -18,6 +18,7 @@ import { ask, message as alert } from "@tauri-apps/plugin-dialog";
 import { basicSetup } from "codemirror";
 import { loadPendingChanges, type PendingChanges, type PendingFile } from "../git/status.ts";
 import { pushBranch } from "../view/push.ts";
+import { remoteMoved, remoteMovedBanner } from "../view/remoteMoved.ts";
 import { submoduleChange } from "../git/submoduleChange.ts";
 import { tauriRunner } from "../git/tauriRunner.ts";
 import { TRASH } from "../platform.ts";
@@ -435,6 +436,15 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     }
   }
 
+  /** Says when the remote branch has moved on under the pending changes (view/remoteMoved.ts). */
+  async function refreshRemoteMoved() {
+    const at = repo;
+    const moved = at ? await remoteMoved(at) : null;
+    if (repo !== at) return;
+    $("remote-moved").hidden = !moved;
+    if (moved) $("remote-moved-text").textContent = remoteMovedBanner(moved);
+  }
+
   $("abort").addEventListener("click", async () => {
     if (!operation) return;
     const ok = await ask(`Abort the ${operation.kind}? Its changes, including any conflict resolutions, are discarded.`, {
@@ -466,6 +476,7 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
       pending = { files: [] };
       current = null;
       $("operation").hidden = true;
+      $("remote-moved").hidden = true;
       branchInfo.textContent = "";
       renderFiles();
       showMessage("Open a repository to see its pending changes.");
@@ -473,6 +484,7 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     }
     const at = repo;
     void refreshOperation();
+    void refreshRemoteMoved();
     let next: PendingChanges;
     try {
       next = await loadPendingChanges(tauriRunner(at));

@@ -480,6 +480,62 @@ pub(crate) fn diverged(root: &Path, branch: &str) -> Result<Option<Diverged>, St
     Ok(Some(Diverged { branch: branch.into(), remote, ahead, behind, checked_out }))
 }
 
+/// The checked-out branch's remote branch has changesets the branch doesn't (as last
+/// fetched) while there are pending changes: committing them adds to a branch that will
+/// need merging with the remote before it can be pushed.
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteMoved {
+    pub branch: String,
+    /// "origin/main".
+    pub remote: String,
+    /// Changesets the remote branch has that the branch doesn't.
+    pub behind: usize,
+    /// Pending files the remote's changesets also change: likely conflicts when merging.
+    pub overlap: Vec<String>,
+}
+
+/// Whether the remote moved on under the pending changes; see `RemoteMoved`. None when
+/// there are no pending changes, no remote branch, or nothing new on it.
+#[tauri::command]
+pub async fn remote_moved(repo: String) -> Result<Option<RemoteMoved>, String> {
+    tauri::async_runtime::spawn_blocking(move || remote_moved_at(&repo_root(&repo)?)).await.map_err(|e| e.to_string())?
+}
+
+pub(crate) fn remote_moved_at(root: &Path) -> Result<Option<RemoteMoved>, String> {
+    let Ok(branch) = git(root, &["symbolic-ref", "-q", "--short", "HEAD"], &[], None) else { return Ok(None) };
+    let branch = branch.trim().to_string();
+    let Some((tracking, remote)) = upstream(root, &branch) else { return Ok(None) };
+    if git(root, &["rev-parse", "--verify", "-q", &format!("{tracking}^{{commit}}")], &[], None).is_err() {
+        return Ok(None);
+    }
+    let behind: usize = git(root, &["rev-list", "--count", &format!("HEAD..{tracking}")], &[], None)?.trim().parse().map_err(|e| format!("{e}"))?;
+    if behind == 0 {
+        return Ok(None);
+    }
+    // Pending paths, a rename's old path too ("R  new\0old\0" in -z output).
+    let status = git(root, &["status", "--porcelain=v1", "-z", "--untracked-files=all"], &[], None)?;
+    let mut pending = HashSet::new();
+    let mut entries = status.split('\0').filter(|e| !e.is_empty());
+    while let Some(entry) = entries.next() {
+        let (xy, path) = (entry.get(..2).unwrap_or(""), entry.get(3..).unwrap_or(""));
+        pending.insert(path.to_string());
+        if xy.contains('R') || xy.contains('C') {
+            if let Some(orig) = entries.next() {
+                pending.insert(orig.to_string());
+            }
+        }
+    }
+    if pending.is_empty() {
+        return Ok(None);
+    }
+    // What the remote's changesets change, since where the branch and the remote branch part.
+    let theirs = git(root, &["diff", "--name-only", "-z", &format!("HEAD...{tracking}")], &[], None)?;
+    let mut overlap: Vec<String> = theirs.split('\0').filter(|p| pending.contains(*p)).map(String::from).collect();
+    overlap.sort();
+    Ok(Some(RemoteMoved { branch, remote, behind, overlap }))
+}
+
 /// The sync merge in progress, if the merge in progress is one: (branch, its own changeset).
 fn sync_in_progress(root: &Path) -> Option<(String, String)> {
     let branch = git(root, &["symbolic-ref", "-q", "--short", "HEAD"], &[], None).ok()?.trim().to_string();
@@ -993,6 +1049,51 @@ mod tests {
         std::fs::write(mine.join("f.txt"), "dirty\n").unwrap();
         assert!(sync(&mine, "main").unwrap_err().contains("pending changes"));
         assert!(sync(&mine, "other").unwrap_err().contains("Switch to other"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn says_when_the_remote_moved_on_under_pending_changes() {
+        let tmp = std::env::temp_dir().join(format!("visualgit-moved-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp = crate::os::canonical(&tmp).unwrap();
+        let (remote, mine, theirs) = (tmp.join("remote.git"), tmp.join("mine"), tmp.join("theirs"));
+        let run = |dir: &Path, args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(dir).args(["-c", "user.name=T", "-c", "user.email=t@e", "-c", "commit.gpgsign=false"]).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        run(&tmp, &["init", "-q", "--bare", "-b", "main", remote.to_str().unwrap()]);
+        run(&tmp, &["clone", "-q", remote.to_str().unwrap(), mine.to_str().unwrap()]);
+        std::fs::write(mine.join("a.txt"), "a\n").unwrap();
+        std::fs::write(mine.join("b.txt"), "b\n").unwrap();
+        run(&mine, &["add", "."]);
+        run(&mine, &["commit", "-q", "-m", "base"]);
+        run(&mine, &["push", "-q", "-u", "origin", "main"]);
+        run(&tmp, &["clone", "-q", remote.to_str().unwrap(), theirs.to_str().unwrap()]);
+
+        // Pending changes, and the remote level: nothing to say.
+        std::fs::write(mine.join("a.txt"), "mine\n").unwrap();
+        std::fs::write(mine.join("new.txt"), "new\n").unwrap();
+        assert_eq!(remote_moved_at(&mine).unwrap(), None);
+
+        // Someone pushes changes to a.txt and c.txt; after a fetch, a.txt is in both.
+        std::fs::write(theirs.join("a.txt"), "theirs\n").unwrap();
+        std::fs::write(theirs.join("c.txt"), "c\n").unwrap();
+        run(&theirs, &["add", "."]);
+        run(&theirs, &["commit", "-q", "-m", "theirs"]);
+        run(&theirs, &["push", "-q", "origin", "main"]);
+        assert_eq!(remote_moved_at(&mine).unwrap(), None, "not known until fetched");
+        crate::pending::fetch(&mine).unwrap();
+        assert_eq!(
+            remote_moved_at(&mine).unwrap(),
+            Some(RemoteMoved { branch: "main".into(), remote: "origin/main".into(), behind: 1, overlap: vec!["a.txt".into()] })
+        );
+
+        // No pending changes: nothing to warn about before committing.
+        run(&mine, &["checkout", "-q", "--", "a.txt"]);
+        std::fs::remove_file(mine.join("new.txt")).unwrap();
+        assert_eq!(remote_moved_at(&mine).unwrap(), None);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

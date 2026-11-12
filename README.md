@@ -163,6 +163,8 @@ A repository with no remote-tracking branches shows none of this. To push a bran
 - **Abort** (in Pending Changes) puts the branch back on your changesets, exactly as before.
 - **Afterwards:** the merge's first parent is what the remote had, so the branch's lane keeps the remote's line, and your changesets stay visible as *main (local)*.
 
+**Pending changes when the remote moves on.** If a Fetch brings in changesets for the checked-out branch while you have pending changes, VisualGit says so before you commit. A message box names the remote branch, how many changesets it has that yours doesn't, and any pending files it also changes (likely conflicts). Pending Changes shows the same in a banner until the branch is level again. Committing still works as usual: the push afterwards offers the merge above.
+
 Only the checked-out branch can be merged this way, with no pending changes. For another branch, VisualGit explains and asks you to switch to it first.
 
 **Changeset diffs.** Double-click any committed changeset (or right-click it and choose *View Changes*) to open a window showing what it changed.

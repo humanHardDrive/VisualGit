@@ -14,6 +14,7 @@ import { fileRows, renderFiles, rowKey, type FileRow } from "./view/files.ts";
 import { ignorePatterns } from "./git/ignore.ts";
 import { branchColor, Explorer, pushLabel, type Selection, type View } from "./view/explorer.ts";
 import { pushBranch as pushBranchChecked } from "./view/push.ts";
+import { remoteMoved, remoteMovedAlert } from "./view/remoteMoved.ts";
 import { filterRepos, renderWorkspaceList, type RepoInfo } from "./view/workspaceList.ts";
 import { createPendingView } from "./pending/view.ts";
 import { createSearchBox } from "./view/searchBox.ts";
@@ -1628,8 +1629,10 @@ async function fetchLatest() {
   fetching = true;
   fetchBtn.disabled = true;
   fetchBtn.textContent = "Fetching…";
+  let fetched = false;
   try {
     notify(`${await invoke<string>("fetch_remotes", { repo: path })}.`, "ok");
+    fetched = true;
   } catch (err) {
     await message(String(err), { title: "Could not fetch", kind: "error" });
   } finally {
@@ -1637,7 +1640,14 @@ async function fetchLatest() {
     fetchBtn.textContent = "Fetch";
     fetchBtn.disabled = repoPath === null;
   }
-  if (repoPath === path) reload();
+  if (repoPath !== path) return;
+  reload();
+  // Pending changes the remote has moved on under: say so before they're committed.
+  const moved = fetched ? await remoteMoved(path) : null;
+  if (moved && repoPath === path) {
+    const { title, text } = remoteMovedAlert(moved);
+    await message(text, { title, kind: "warning" });
+  }
 }
 
 function reload() {
