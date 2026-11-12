@@ -152,6 +152,17 @@ Cherry Pick is only offered on changesets that *aren't* part of what's checked o
 
 A repository with no remote-tracking branches shows none of this. To push a branch, right-click it (on its lane in the Branch Explorer, or its row in the Branch List) and choose *Push*. This is offered while the branch has changesets its remote branch doesn't, or has never been pushed. A branch with an upstream goes to it; a new branch is published to `origin` and tracks it from then on.
 
+**When the remote has moved on.** Pushing checks the remote first (a fetch). If someone has pushed to the branch since you last got its changes, nothing is pushed: git would refuse it. Instead VisualGit explains, and offers to merge:
+
+- **Before merging:** the branch's own changesets get a lane of their own, *main (local)*, starting where the two split. The *main* lane shows what the remote has. This lane appears whenever a branch and its remote branch have both moved on, for example after a Fetch.
+- **Merging** moves the branch to what the remote has and merges your changesets into it (never a fast-forward), without committing. Your changesets are kept aside under `refs/visualgit/sync/<branch>` while this happens. That's not a branch, so it's never pushed.
+- **No conflicts:** the result waits in Pending Changes, so you can build and test it. Then commit it ("Merge local changes into main") and push.
+- **Conflicts:** the merge window opens. Resolve them there and choose *Use These Results*, which writes them into the working copy and carries on in Pending Changes, still without committing.
+- **Abort** (in Pending Changes) puts the branch back on your changesets, exactly as before.
+- **Afterwards:** the merge's first parent is what the remote had, so the branch's lane keeps the remote's line, and your changesets stay visible as *main (local)*.
+
+Only the checked-out branch can be merged this way, with no pending changes. For another branch, VisualGit explains and asks you to switch to it first.
+
 **Changeset diffs.** Double-click any committed changeset (or right-click it and choose *View Changes*) to open a window showing what it changed.
 
 - **Header:** its message, id, branch, author, date and release.

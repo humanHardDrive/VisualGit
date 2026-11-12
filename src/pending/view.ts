@@ -14,9 +14,10 @@ import { EditorView, keymap } from "@codemirror/view";
 import { invoke } from "@tauri-apps/api/core";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
 import { Menu } from "@tauri-apps/api/menu";
-import { ask } from "@tauri-apps/plugin-dialog";
+import { ask, message as alert } from "@tauri-apps/plugin-dialog";
 import { basicSetup } from "codemirror";
 import { loadPendingChanges, type PendingChanges, type PendingFile } from "../git/status.ts";
+import { pushBranch } from "../view/push.ts";
 import { submoduleChange } from "../git/submoduleChange.ts";
 import { tauriRunner } from "../git/tauriRunner.ts";
 import { TRASH } from "../platform.ts";
@@ -38,6 +39,8 @@ interface Operation {
   kind: "merge" | "cherry pick" | "subtractive merge";
   from: string | null;
   message: string | null;
+  /** A merge bringing a branch's own changesets into what its remote branch has (see view/push.ts). */
+  sync: { branch: string; remote: string } | null;
 }
 
 export interface PendingViewOptions {
@@ -422,8 +425,10 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     $("operation").hidden = !operation;
     if (!operation) return;
     const what = { merge: "Merging", "cherry pick": "Cherry picking", "subtractive merge": "Taking out the changes of" }[operation.kind];
-    $("operation-text").textContent =
-      `${what} ${operation.from?.slice(0, 8) ?? ""}. Resolve any conflicts, then commit; the commit includes every changed file. Or abort to put everything back as it was.`;
+    const sync = operation.sync;
+    $("operation-text").textContent = sync
+      ? `Merging your changesets into ${sync.remote}, which ${sync.branch} now matches. Resolve any conflicts, build and test, then commit (every changed file is included) and push. Or abort to put ${sync.branch} back as it was.`
+      : `${what} ${operation.from?.slice(0, 8) ?? ""}. Resolve any conflicts, then commit; the commit includes every changed file. Or abort to put everything back as it was.`;
     if (operation.message && !messageBox.value.trim() && prefilled !== operation.message) {
       messageBox.value = prefilled = operation.message;
       updateCommitButton();
@@ -521,13 +526,13 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
       void reportSubmoduleFailures(done.submodules, finishing ?? "commit");
       opts.onChanged();
       if (andPush) {
-        setStatus(`Committed ${hash.slice(0, 8)}. Pushing…`);
+        setStatus(`Committed ${hash.slice(0, 8)}. Checking the remote…`);
         try {
-          const pushed = await invoke<string>("push_current_branch", { repo: at });
-          setStatus(`Committed ${hash.slice(0, 8)}. ${pushed}.`, "ok");
+          setStatus(`Committed ${hash.slice(0, 8)}. ${await pushBranch(at, null)}`, "ok");
         } catch (err) {
           // The commit stands; only the push needs another go.
-          setStatus(`Committed ${hash.slice(0, 8)}, but the push failed: ${err}`, "error");
+          setStatus(`Committed ${hash.slice(0, 8)}, but the push failed.`, "error");
+          await alert(String(err), { title: "Could not push", kind: "error" });
         }
         opts.onChanged();
       }

@@ -79,6 +79,8 @@ export async function loadRepo(git: GitRunner, opts: { maxCommits?: number } = {
       "refs/heads",
       "refs/remotes",
       "refs/tags",
+      // A branch's own changesets, kept aside while they're merged with its remote branch's.
+      "refs/visualgit/sync",
     ]),
     tryRun(git, ["reflog", "show", "--all", "--date=unix", "--format=%gD%x00%H%x00%gs"]),
     // Any output at all means pending changes. Fails harmlessly in a bare repository.
@@ -109,6 +111,7 @@ export async function loadRepo(git: GitRunner, opts: { maxCommits?: number } = {
       "--branches",
       "--remotes",
       "--tags",
+      "--glob=refs/visualgit/sync/*",
       "--date-order",
       `--max-count=${maxCommits + 1}`,
       "--format=%H%x00%P%x00%an%x00%ae%x00%at%x00%s%x00%b%x1e",

@@ -181,12 +181,16 @@ function renderHeader(p: MergePreview) {
       : "Already merged: everything in this changeset is already in the checked-out changeset.";
     summary.className = "clean";
   } else if (operation) {
-    summary.textContent =
-      operation.kind === "merge" && operation.from === p.from
-        ? (applied ? `This merge is in progress, with your result for ${applied} file${applied === 1 ? "" : "s"} in place. ` : "This merge is in progress. ") +
+    const left = unresolved(p).length;
+    summary.textContent = !finishing(p)
+      ? `A ${operation.kind} is in progress. Finish or abort it in Pending Changes before merging.`
+      : !applied && conflicts
+        ? `This merge is in progress, with ${conflicts} conflicted file${conflicts === 1 ? "" : "s"}` +
+          (left ? `: resolve ${left === conflicts ? (conflicts === 1 ? "it" : "them") : `the ${left} left`} here, then Use These Results.` : `, all resolved: Use These Results to carry on in Pending Changes.`) +
+          " Or abort it in Pending Changes."
+        : (applied ? `This merge is in progress, with your result for ${applied} file${applied === 1 ? "" : "s"} in place. ` : "This merge is in progress. ") +
           "Finish it in Pending Changes and commit, or abort it there." +
-          (appliedError ? ` ${appliedError}` : "")
-        : `A ${operation.kind} is in progress. Finish or abort it in Pending Changes before merging.`;
+          (appliedError ? ` ${appliedError}` : "");
     summary.className = "conflicts";
   } else if (conflicts) {
     const left = unresolved(p).length;
@@ -224,12 +228,25 @@ function mergedBranch(hash: string): string | undefined {
 let applied = 0;
 let appliedError = "";
 
+/** The merge in progress is this one (left for its conflicts, e.g. by pushing a branch the remote had moved on): results chosen here finish it. */
+function finishing(p: MergePreview) {
+  return operation?.kind === "merge" && operation.from === p.from;
+}
+
 function updateMergeButton(p: MergePreview, conflicts: number) {
   const left = unresolved(p).length;
+  const into = p.toBranch ?? p.to.slice(0, 8);
+  if (finishing(p)) {
+    mergeBtn.disabled = merging || left > 0 || conflicts === 0 || applied > 0;
+    mergeBtn.textContent = merging ? "Writing…" : "Use These Results";
+    mergeBtn.title = left
+      ? `Resolve ${left === conflicts ? "every conflict" : `the ${left} conflicted file${left === 1 ? "" : "s"} left`} first`
+      : "Write the results into the working copy and carry on in Pending Changes, where the merge can be built and tested before committing";
+    return;
+  }
   // Every conflict has to be resolved first.
   mergeBtn.disabled = merging || p.kind === "up-to-date" || !!operation || left > 0;
   mergeBtn.textContent = merging ? "Merging…" : "Merge";
-  const into = p.toBranch ?? p.to.slice(0, 8);
   mergeBtn.title = left
     ? `Resolve ${left === conflicts ? "every conflict" : `the ${left} conflicted file${left === 1 ? "" : "s"} left`} first`
     : conflicts
@@ -237,9 +254,45 @@ function updateMergeButton(p: MergePreview, conflicts: number) {
       : `Merge into ${into} as a new merge changeset`;
 }
 
+/**
+ * Finishes resolving the merge in progress with the results chosen here: writes
+ * them, marks them resolved, and leaves the merge to commit in Pending Changes.
+ */
+async function useResults(p: MergePreview) {
+  const summary = $("summary");
+  merging = true;
+  updateMergeButton(p, p.files.filter((f) => f.conflict).length);
+  const conflicted = p.files.filter((f) => f.conflict && resolved.has(f.path)).map((f) => f.path);
+  const written: string[] = [];
+  const failed: string[] = [];
+  for (const path of conflicted) {
+    const text = (results.get(path) ?? originals.get(path))?.text;
+    if (text === undefined) continue;
+    await invoke("write_worktree_file", { repo, path, text }).then(
+      () => written.push(path),
+      () => failed.push(path),
+    );
+  }
+  try {
+    await invoke("mark_resolved", { repo, paths: written });
+  } catch (err) {
+    appliedError = `Your results are in place, but couldn't be marked resolved: ${err}`;
+  }
+  applied = written.length;
+  if (failed.length) appliedError = `Could not write your result for ${failed.join(", ")}.`;
+  merging = false;
+  void emit("repo-changed", { repo });
+  void invoke("show_pending_changes", { repo });
+  results.clear();
+  resolved.clear();
+  await refresh();
+  if (!appliedError) summary.textContent += " Build and test it, then commit in Pending Changes.";
+}
+
 async function runMerge() {
   const p = preview;
   if (!p || merging) return;
+  if (finishing(p)) return useResults(p);
   const summary = $("summary");
   applied = 0;
   appliedError = "";

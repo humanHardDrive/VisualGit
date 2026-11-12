@@ -368,6 +368,18 @@ pub struct Operation {
     from: Option<String>,
     /// The commit message git prepared for it.
     message: Option<String>,
+    /// Set when this merge brings a branch's local changesets into what its remote branch has
+    /// (see `sync_branch`): aborting it puts the branch back where it was.
+    sync: Option<SyncInfo>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncInfo {
+    /// The branch being brought level, e.g. "main".
+    branch: String,
+    /// Its remote branch, e.g. "origin/main".
+    remote: String,
 }
 
 /// A merge, cherry pick or subtractive merge waiting for its conflicts to be resolved, if any.
@@ -384,7 +396,9 @@ pub fn operation_in_progress(repo: String) -> Result<Option<Operation>, String> 
         // Drop git's comment lines (the conflict list).
         .map(|m| m.lines().filter(|l| !l.starts_with('#')).collect::<Vec<_>>().join("\n").trim().to_string())
         .filter(|m| !m.is_empty());
-    Ok(Some(Operation { kind: kind.into(), from, message }))
+    let sync = if kind == "merge" { sync_in_progress(&root) } else { None };
+    let sync = sync.map(|(branch, _)| SyncInfo { remote: upstream(&root, &branch).map(|(_, short)| short).unwrap_or_else(|| "its remote branch".into()), branch });
+    Ok(Some(Operation { kind: kind.into(), from, message, sync }))
 }
 
 /// Abandons the operation in progress, putting everything back as it was.
@@ -393,7 +407,164 @@ pub fn abort_operation(repo: String) -> Result<(), String> {
     let root = repo_root(&repo)?;
     let Some(kind) = in_progress(&root) else { return Ok(()) };
     let command = OPERATIONS.iter().find(|(name, _, _)| *name == kind).map(|(_, _, c)| *c).unwrap_or("merge");
-    git(&root, &[command, "--abort"], &[], None).map(|_| ())
+    let sync = if kind == "merge" { sync_in_progress(&root) } else { None };
+    git(&root, &[command, "--abort"], &[], None)?;
+    // Aborting a sync also puts the branch back on its own changesets.
+    if let Some((branch, local)) = sync {
+        git(&root, &["reset", "--quiet", "--keep", &local], &[], None)
+            .map_err(|e| format!("The merge was aborted, but {branch} couldn't be put back on its own changesets ({}): {e}", &local[..8]))?;
+        git(&root, &["update-ref", "-d", &sync_ref(&branch)], &[], None)?;
+        update_all(&root);
+    }
+    Ok(())
+}
+
+// ---- bringing a branch level with its remote branch ------------------------------------
+
+/// Where `sync_branch` keeps a branch's own changesets while they're merged
+/// into what its remote branch has. It's not a branch, so it's never pushed,
+/// switched to or listed by git; the branch explorer shows it as "main (local)".
+pub(crate) const SYNC_REFS: &str = "refs/visualgit/sync/";
+
+pub(crate) fn sync_ref(branch: &str) -> String {
+    format!("{SYNC_REFS}{branch}")
+}
+
+/// The commit message of a sync merge; the branch explorer names the merged-in side after it.
+fn sync_message(branch: &str) -> String {
+    format!("Merge local changes into {branch}")
+}
+
+/// `branch`'s upstream as (its remote-tracking ref, its short name):
+/// ("refs/remotes/origin/main", "origin/main"). None without one.
+pub(crate) fn upstream(root: &Path, branch: &str) -> Option<(String, String)> {
+    let config = |key: String| git(root, &["config", "--get", &key], &[], None).ok().map(|s| s.trim().to_string());
+    let remote = config(format!("branch.{branch}.remote")).filter(|r| r != ".")?;
+    let merge = config(format!("branch.{branch}.merge"))?;
+    let name = merge.strip_prefix("refs/heads/")?;
+    Some((format!("refs/remotes/{remote}/{name}"), format!("{remote}/{name}")))
+}
+
+/// A branch and its remote branch that have each moved on: pushing would be refused.
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Diverged {
+    pub branch: String,
+    /// "origin/main".
+    pub remote: String,
+    /// Changesets the branch has that the remote branch doesn't.
+    pub ahead: usize,
+    /// Changesets the remote branch has that the branch doesn't.
+    pub behind: usize,
+    /// Whether it's the checked-out branch (the merge happens in the working copy).
+    pub checked_out: bool,
+}
+
+/// How `branch` stands against its remote branch, as last fetched: Ok(None) when pushing it
+/// would work (level, ahead, or no remote branch yet), Ok(Some) when both have moved on, and
+/// Err when there's nothing to push because only the remote branch has.
+pub(crate) fn diverged(root: &Path, branch: &str) -> Result<Option<Diverged>, String> {
+    let Some((tracking, remote)) = upstream(root, branch) else { return Ok(None) };
+    let rev = |r: &str| git(root, &["rev-parse", "--verify", "-q", &format!("{r}^{{commit}}")], &[], None).ok().map(|s| s.trim().to_string());
+    let (Some(local), Some(theirs)) = (rev(&format!("refs/heads/{branch}")), rev(&tracking)) else { return Ok(None) };
+    let count = |range: String| -> Result<usize, String> { git(root, &["rev-list", "--count", &range], &[], None)?.trim().parse().map_err(|e| format!("{e}")) };
+    let behind = count(format!("{local}..{theirs}"))?;
+    if behind == 0 {
+        return Ok(None);
+    }
+    let ahead = count(format!("{theirs}..{local}"))?;
+    if ahead == 0 {
+        return Err(format!("Nothing to push: {remote} has {behind} changeset{} that {branch} doesn't, and {branch} has nothing new", if behind == 1 { "" } else { "s" }));
+    }
+    let checked_out = git(root, &["symbolic-ref", "-q", "--short", "HEAD"], &[], None).is_ok_and(|h| h.trim() == branch);
+    Ok(Some(Diverged { branch: branch.into(), remote, ahead, behind, checked_out }))
+}
+
+/// The sync merge in progress, if the merge in progress is one: (branch, its own changeset).
+fn sync_in_progress(root: &Path) -> Option<(String, String)> {
+    let branch = git(root, &["symbolic-ref", "-q", "--short", "HEAD"], &[], None).ok()?.trim().to_string();
+    let local = git(root, &["rev-parse", "--verify", "-q", &sync_ref(&branch)], &[], None).ok()?.trim().to_string();
+    let merging = git(root, &["rev-parse", "--verify", "-q", "MERGE_HEAD"], &[], None).ok()?.trim().to_string();
+    (merging == local).then_some((branch, local))
+}
+
+/// Forgets the kept changesets of syncs that were committed (the branch now contains them).
+/// A sync whose branch was deleted keeps them, so they're never lost.
+pub(crate) fn drop_finished_syncs(root: &Path) {
+    let Ok(refs) = git(root, &["for-each-ref", "--format=%(refname)%00%(objectname)", SYNC_REFS], &[], None) else { return };
+    for line in refs.lines() {
+        let Some((name, local)) = line.split_once('\0') else { continue };
+        let branch = &name[SYNC_REFS.len()..];
+        if git(root, &["merge-base", "--is-ancestor", local, &format!("refs/heads/{branch}")], &[], None).is_ok() {
+            let _ = git(root, &["update-ref", "-d", name, local], &[], None);
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStarted {
+    /// The branch's own changeset being merged in (kept under `refs/visualgit/sync/`).
+    pub local: String,
+    /// Files with conflicts to resolve; empty when the result is ready to test and commit.
+    pub conflicts: Vec<String>,
+    pub submodules: SubmoduleUpdate,
+}
+
+/// Brings the checked-out `branch` level with its remote branch when both have moved on:
+/// keeps the branch's own changesets aside, moves the branch to the remote branch, and merges
+/// them back in (never a fast-forward) without committing. The result waits in Pending Changes
+/// to be tested and committed; conflicts are left to resolve in the merge window first.
+/// Aborting puts the branch back as it was.
+#[tauri::command]
+pub async fn sync_branch(repo: String, branch: String) -> Result<SyncStarted, String> {
+    tauri::async_runtime::spawn_blocking(move || sync(&repo_root(&repo)?, &branch)).await.map_err(|e| e.to_string())?
+}
+
+pub(crate) fn sync(root: &Path, branch: &str) -> Result<SyncStarted, String> {
+    let current = git(root, &["symbolic-ref", "-q", "--short", "HEAD"], &[], None).map(|s| s.trim().to_string()).unwrap_or_default();
+    if current != branch {
+        return Err(format!("Switch to {branch} first: the merge happens in its working copy."));
+    }
+    if let Some(op) = in_progress(root) {
+        return Err(format!("A {op} is already in progress. Finish or abort it first."));
+    }
+    if !git(root, &["status", "--porcelain", "--untracked-files=no"], &[], None)?.trim().is_empty() {
+        return Err("There are pending changes. Commit or undo them before merging.".into());
+    }
+    let Some(d) = diverged(root, branch)? else { return Err(format!("{branch} can be pushed as it is: there's nothing to merge.")) };
+    let (tracking, _) = upstream(root, branch).ok_or("No remote branch")?;
+    let local = git(root, &["rev-parse", "HEAD"], &[], None)?.trim().to_string();
+    let theirs = git(root, &["rev-parse", &format!("{tracking}^{{commit}}")], &[], None)?.trim().to_string();
+
+    drop_finished_syncs(root);
+    let keep = sync_ref(branch);
+    if git(root, &["rev-parse", "--verify", "-q", &keep], &[], None).is_ok() {
+        return Err(format!("{branch} already has local changes waiting to be merged ({keep}). Merge or remove them first."));
+    }
+    let note = format!("VisualGit: {branch}'s own changesets, while merging them with {}", d.remote);
+    git(root, &["update-ref", "-m", &note, &keep, &local], &[], None)?;
+    let undo = |err: String| {
+        if in_progress(root) == Some("merge") {
+            let _ = git(root, &["merge", "--abort"], &[], None);
+        }
+        let _ = git(root, &["reset", "--quiet", "--keep", &local], &[], None);
+        let _ = git(root, &["update-ref", "-d", &keep], &[], None);
+        err
+    };
+    // Untracked files the remote's changesets would overwrite stop this, with nothing changed.
+    git(root, &["reset", "--quiet", "--keep", &theirs], &[], None).map_err(|e| undo(format!("Could not move {branch} to {}: {e}", d.remote)))?;
+    let message = sync_message(branch);
+    match git(root, &["merge", "--no-ff", "--no-commit", "-m", &message, &local], &[], None) {
+        Ok(_) => Ok(SyncStarted { local, conflicts: vec![], submodules: update_all(root) }),
+        Err(err) => {
+            let conflicts = conflicted_paths(root);
+            if conflicts.is_empty() {
+                return Err(undo(err));
+            }
+            Ok(SyncStarted { local, conflicts, submodules: SubmoduleUpdate::default() })
+        }
+    }
 }
 
 #[cfg(test)]
@@ -742,6 +913,86 @@ mod tests {
         // An ordinary commit afterwards leaves submodules alone.
         std::fs::write(app.join("f.txt"), "later\n").unwrap();
         assert!(crate::pending::commit_and_follow(root.to_str().unwrap(), "later", &["f.txt".into()]).unwrap().submodules.updated.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_push_the_remote_would_refuse_becomes_a_merge_to_test_first() {
+        let tmp = std::env::temp_dir().join(format!("visualgit-sync-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp = crate::os::canonical(&tmp).unwrap();
+        let (remote, mine, theirs) = (tmp.join("remote.git"), tmp.join("mine"), tmp.join("theirs"));
+        let run = |dir: &Path, args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(dir).args(["-c", "user.name=T", "-c", "user.email=t@e", "-c", "commit.gpgsign=false"]).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        run(&tmp, &["init", "-q", "--bare", "-b", "main", remote.to_str().unwrap()]);
+        run(&tmp, &["clone", "-q", remote.to_str().unwrap(), mine.to_str().unwrap()]);
+        std::fs::write(mine.join("f.txt"), "one\ntwo\nthree\n").unwrap();
+        run(&mine, &["add", "f.txt"]);
+        run(&mine, &["commit", "-q", "-m", "base"]);
+        run(&mine, &["push", "-q", "-u", "origin", "main"]);
+        run(&tmp, &["clone", "-q", remote.to_str().unwrap(), theirs.to_str().unwrap()]);
+        let repo = mine.to_str().unwrap();
+
+        // Someone else pushes; I commit without fetching.
+        std::fs::write(theirs.join("t.txt"), "theirs\n").unwrap();
+        run(&theirs, &["add", "t.txt"]);
+        run(&theirs, &["commit", "-q", "-m", "theirs"]);
+        run(&theirs, &["push", "-q", "origin", "main"]);
+        std::fs::write(mine.join("m.txt"), "mine\n").unwrap();
+        run(&mine, &["add", "m.txt"]);
+        run(&mine, &["commit", "-q", "-m", "mine"]);
+        let local = run(&mine, &["rev-parse", "HEAD"]);
+
+        // Pushing checks first and pushes nothing.
+        let pushed = crate::pending::push_branch_now(&mine, "main").unwrap();
+        assert_eq!(pushed.message, None);
+        assert_eq!(pushed.diverged, Some(Diverged { branch: "main".into(), remote: "origin/main".into(), ahead: 1, behind: 1, checked_out: true }));
+        let remote_tip = run(&mine, &["rev-parse", "origin/main"]);
+
+        // Merging: main moves to origin/main, my changeset is merged in, and nothing is committed.
+        let started = sync(&mine, "main").unwrap();
+        assert!(started.conflicts.is_empty());
+        assert_eq!(started.local, local);
+        assert_eq!(run(&mine, &["rev-parse", "HEAD"]), remote_tip);
+        assert_eq!(run(&mine, &["rev-parse", "MERGE_HEAD"]), local);
+        assert_eq!(run(&mine, &["rev-parse", &sync_ref("main")]), local);
+        assert!(mine.join("m.txt").exists() && mine.join("t.txt").exists());
+        let op = operation_in_progress(repo.into()).unwrap().unwrap();
+        assert_eq!(op.message.as_deref(), Some("Merge local changes into main"));
+        assert_eq!(op.sync.as_ref().map(|s| (s.branch.as_str(), s.remote.as_str())), Some(("main", "origin/main")));
+
+        // Committing it: origin/main is the first parent, my changeset the second; then the push goes through.
+        crate::pending::commit_and_follow(repo, "Merge local changes into main", &["m.txt".into()]).unwrap();
+        assert_eq!(run(&mine, &["rev-parse", "HEAD^1"]), remote_tip);
+        assert_eq!(run(&mine, &["rev-parse", "HEAD^2"]), local);
+        assert!(run(&mine, &["for-each-ref", SYNC_REFS]).is_empty(), "the kept changesets are forgotten once merged");
+        assert_eq!(crate::pending::push_branch_now(&mine, "main").unwrap().message.as_deref(), Some("Pushed main to origin/main"));
+
+        // Conflicting changes: the merge stops for them; aborting puts main back on my changeset.
+        std::fs::write(theirs.join("f.txt"), "one\nTHEIRS\nthree\n").unwrap();
+        run(&theirs, &["pull", "-q", "--no-rebase"]);
+        run(&theirs, &["commit", "-q", "-am", "theirs 2"]);
+        run(&theirs, &["push", "-q", "origin", "main"]);
+        std::fs::write(mine.join("f.txt"), "one\nMINE\nthree\n").unwrap();
+        run(&mine, &["commit", "-q", "-am", "mine 2"]);
+        let local = run(&mine, &["rev-parse", "HEAD"]);
+        assert!(crate::pending::push_branch_now(&mine, "main").unwrap().diverged.is_some());
+        let started = sync(&mine, "main").unwrap();
+        assert_eq!(started.conflicts, vec!["f.txt".to_string()]);
+        abort_operation(repo.into()).unwrap();
+        assert_eq!(run(&mine, &["rev-parse", "HEAD"]), local);
+        assert_eq!(run(&mine, &["symbolic-ref", "--short", "HEAD"]), "main");
+        assert!(run(&mine, &["status", "--porcelain"]).is_empty());
+        assert!(run(&mine, &["for-each-ref", SYNC_REFS]).is_empty());
+
+        // Only the checked-out branch can be merged, with no pending changes.
+        std::fs::write(mine.join("f.txt"), "dirty\n").unwrap();
+        assert!(sync(&mine, "main").unwrap_err().contains("pending changes"));
+        assert!(sync(&mine, "other").unwrap_err().contains("Switch to other"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

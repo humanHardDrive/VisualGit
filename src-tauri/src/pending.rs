@@ -100,6 +100,10 @@ pub(crate) fn commit_and_follow(repo: &str, message: &str, paths: &[String]) -> 
     let finishing = finishing_operation(&root);
     let hash = commit(repo, message, paths)?;
     let submodules = if finishing { update_all(&root) } else { SubmoduleUpdate::default() };
+    // A committed sync merge no longer needs the branch's changesets kept aside.
+    if finishing {
+        crate::merge::drop_finished_syncs(&root);
+    }
     Ok(Committed { hash, submodules })
 }
 
@@ -229,15 +233,48 @@ pub(crate) fn undo(repo: &str, tracked: &[String], created: &[String], discard: 
     Ok(result)
 }
 
+/// Marks conflicted files as resolved (`git add`), with what's in the working copy now: the
+/// merge window does this after writing the results chosen there into a merge left in progress.
+#[tauri::command]
+pub async fn mark_resolved(repo: String, paths: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = repo_root(&repo)?;
+        for p in &paths {
+            check_relative(p)?;
+        }
+        if paths.is_empty() {
+            return Ok(());
+        }
+        git(&root, &["add", "--"], &paths, None).map(|_| ())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// What pushing did: pushed (`message`), or not, because the remote branch has
+/// changesets the branch doesn't (`diverged`), which need merging first.
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Pushed {
+    pub message: Option<String>,
+    pub diverged: Option<crate::merge::Diverged>,
+}
+
+impl Pushed {
+    fn done(message: String) -> Self {
+        Pushed { message: Some(message), diverged: None }
+    }
+}
+
 /// Pushes the checked-out branch and returns a summary like "Pushed main to origin".
 #[tauri::command]
-pub async fn push_current_branch(repo: String) -> Result<String, String> {
+pub async fn push_current_branch(repo: String) -> Result<Pushed, String> {
     tauri::async_runtime::spawn_blocking(move || push(&repo)).await.map_err(|e| e.to_string())?
 }
 
 /// Pushes a local branch (checked out or not) and returns a summary.
 #[tauri::command]
-pub async fn push_branch(repo: String, branch: String) -> Result<String, String> {
+pub async fn push_branch(repo: String, branch: String) -> Result<Pushed, String> {
     tauri::async_runtime::spawn_blocking(move || push_named(&repo_root(&repo)?, &branch)).await.map_err(|e| e.to_string())?
 }
 
@@ -283,7 +320,12 @@ pub(crate) fn fetch(root: &Path) -> Result<String, String> {
     Ok(if parts.is_empty() { "Already up to date with the remote".into() } else { format!("Fetched: {}", parts.join(", ")) })
 }
 
-fn push(repo: &str) -> Result<String, String> {
+#[cfg(test)]
+pub(crate) fn push_branch_now(root: &Path, branch: &str) -> Result<Pushed, String> {
+    push_named(root, branch)
+}
+
+fn push(repo: &str) -> Result<Pushed, String> {
     let root = repo_root(repo)?;
     let branch = git(&root, &["symbolic-ref", "-q", "--short", "HEAD"], &[], None)
         .map_err(|_| "HEAD is detached. Check out a branch to push it.".to_string())?
@@ -294,7 +336,11 @@ fn push(repo: &str) -> Result<String, String> {
 
 /// Pushes `refs/heads/<branch>`: to its upstream if it has one, otherwise to
 /// origin (or the only remote) under the same name, setting the upstream.
-fn push_named(root: &Path, branch: &str) -> Result<String, String> {
+///
+/// A branch with an upstream is checked against the remote first (a fetch):
+/// when the remote branch has changesets the branch doesn't, nothing is pushed
+/// and `diverged` says so, for the user to merge them (`merge::sync_branch`).
+fn push_named(root: &Path, branch: &str) -> Result<Pushed, String> {
     let root = root.to_path_buf();
     if branch.starts_with('-') || git(&root, &["rev-parse", "--verify", "-q", &format!("refs/heads/{branch}")], &[], None).is_err() {
         return Err(format!("{branch} is not a local branch"));
@@ -304,9 +350,14 @@ fn push_named(root: &Path, branch: &str) -> Result<String, String> {
     // A branch with an upstream goes to that remote and branch.
     if let (Some(remote), Some(merge)) = (config(format!("branch.{branch}.remote")), config(format!("branch.{branch}.merge"))) {
         if remote != "." {
-            git(&root, &["push", "--porcelain", &remote, &format!("refs/heads/{branch}:{merge}")], &[], None)?;
+            // What the remote has now. Offline, git's push decides instead.
+            let _ = git(&root, &["-c", "protocol.ext.allow=never", "fetch", "--quiet", "--prune", &remote], &[], None);
+            if let Some(d) = crate::merge::diverged(&root, branch)? {
+                return Ok(Pushed { message: None, diverged: Some(d) });
+            }
+            git(&root, &["-c", "protocol.ext.allow=never", "push", "--porcelain", &remote, &format!("refs/heads/{branch}:{merge}")], &[], None)?;
             let target = merge.strip_prefix("refs/heads/").unwrap_or(&merge);
-            return Ok(format!("Pushed {branch} to {remote}/{target}"));
+            return Ok(Pushed::done(format!("Pushed {branch} to {remote}/{target}")));
         }
     }
     // Otherwise publish it under the same name and track it from now on.
@@ -320,8 +371,8 @@ fn push_named(root: &Path, branch: &str) -> Result<String, String> {
     } else {
         return Err(format!("{branch} has no upstream and there is no origin remote; set one with git push -u <remote> {branch}"));
     };
-    git(&root, &["push", "--porcelain", "-u", &remote, &format!("refs/heads/{branch}:refs/heads/{branch}")], &[], None)?;
-    Ok(format!("Pushed {branch} to {remote} (new branch)"))
+    git(&root, &["-c", "protocol.ext.allow=never", "push", "--porcelain", "-u", &remote, &format!("refs/heads/{branch}:refs/heads/{branch}")], &[], None)?;
+    Ok(Pushed::done(format!("Pushed {branch} to {remote} (new branch)")))
 }
 
 pub(crate) fn git(root: &Path, args: &[&str], paths: &[String], stdin: Option<&str>) -> Result<String, String> {
@@ -466,18 +517,18 @@ mod tests {
         git(&dir, &["remote", "add", "origin", &remote.to_string_lossy()], &[], None).unwrap();
 
         // First push publishes the branch and sets its upstream.
-        assert_eq!(push(&repo).unwrap(), "Pushed main to origin (new branch)");
+        assert_eq!(push(&repo).unwrap(), Pushed::done("Pushed main to origin (new branch)".into()));
         assert_eq!(git(&dir, &["rev-parse", "--abbrev-ref", "@{u}"], &[], None).unwrap().trim(), "origin/main");
         // Later pushes go to the upstream.
         std::fs::write(dir.join("a.txt"), "a2\n").unwrap();
         let second = commit(&repo, "second", &["a.txt".into()]).unwrap();
-        assert_eq!(push(&repo).unwrap(), "Pushed main to origin/main");
+        assert_eq!(push(&repo).unwrap(), Pushed::done("Pushed main to origin/main".into()));
         let on_remote = Command::new("git").arg("-C").arg(&remote).args(["rev-parse", "main"]).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&on_remote.stdout).trim(), second);
 
         // Any local branch can be pushed, not just the checked-out one.
         git(&dir, &["branch", "side"], &[], None).unwrap();
-        assert_eq!(push_named(&dir, "side").unwrap(), "Pushed side to origin (new branch)");
+        assert_eq!(push_named(&dir, "side").unwrap(), Pushed::done("Pushed side to origin (new branch)".into()));
         assert!(push_named(&dir, "no-such-branch").is_err());
         assert!(push_named(&dir, "--force").is_err());
         std::fs::remove_dir_all(&dir).ok();

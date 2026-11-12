@@ -559,10 +559,64 @@ describe("unpushed", () => {
     git("reset", "-q", "--hard", "HEAD~1");
     commit("m4 again");
     m = await model();
-    main = branch(m, "main");
+    // Both have moved on: main's own changeset gets a lane of its own, which carries the label.
+    main = branch(m, "main (local)");
     expect([main.ahead, main.behind]).toEqual([1, 1]);
     expect(pushLabel(m, main)).toBe("↑1 ↓1");
+    expect(pushLabel(m, branch(m, "main"))).toBeNull();
     expect(pushLabel(m, branch(m, "feature"))).toBeNull();
+  });
+
+  it("gives a branch's own changesets a lane of their own when it and its remote branch have both moved on", async () => {
+    const { git, commit, model } = fixture();
+    const base = commit("base");
+    const remote = mkdtempSync(join(tmpdir(), "visualgit-remote-"));
+    dirs.push(remote);
+    execFileSync("git", ["init", "-q", "--bare", "-b", "main", remote]);
+    git("remote", "add", "origin", remote);
+    git("push", "-q", "-u", "origin", "main");
+    // Their changesets, as if fetched; then mine on main.
+    const t1 = commit("theirs 1");
+    const t2 = commit("theirs 2");
+    git("push", "-q", "origin", "main");
+    git("reset", "-q", "--hard", base);
+    const m1 = commit("mine 1");
+    const m2 = commit("mine 2");
+
+    let m = await model();
+    let main = branch(m, "main");
+    let mine = branch(m, "main (local)");
+    expect(main.commits).toEqual([base, t1, t2]);
+    expect(main.refs).toEqual(["refs/remotes/origin/main"]);
+    expect(main.isHead).toBe(false);
+    expect(mine.commits).toEqual([m1, m2]);
+    expect(mine.parent).toBe(main.id);
+    expect(mine.base).toBe(base);
+    expect(mine.isHead).toBe(true);
+    expect(pushLabel(m, mine)).toBe("↑2 ↓2");
+
+    // Merging (what sync_branch does): main moves to origin/main, mine are kept aside and merged in.
+    git("update-ref", "refs/visualgit/sync/main", m2);
+    git("reset", "-q", "--keep", t2);
+    git("merge", "-q", "--no-ff", "--no-commit", "-m", "Merge local changes into main", m2);
+    m = await model();
+    main = branch(m, "main");
+    mine = branch(m, "main (local)");
+    expect(main.commits).toEqual([base, t1, t2]);
+    expect(main.isHead).toBe(true);
+    expect(mine.commits).toEqual([m1, m2]);
+    expect(m.refsAt.get(m2)).toBeUndefined();
+
+    // Committed (and the kept ref dropped): the lane keeps its name from the merge message.
+    git("commit", "-q", "--no-edit");
+    git("update-ref", "-d", "refs/visualgit/sync/main");
+    m = await model();
+    main = branch(m, "main");
+    mine = branch(m, "main (local)");
+    expect(main.commits.slice(0, 3)).toEqual([base, t1, t2]);
+    expect(main.commits).toHaveLength(4);
+    expect(mine.commits).toEqual([m1, m2]);
+    expect(pushLabel(m, main)).toBe("↑3");
   });
 });
 

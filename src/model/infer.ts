@@ -81,6 +81,8 @@ export interface Model {
 }
 
 const TRUNK_NAMES = ["main", "master", "trunk", "develop"];
+/** Where VisualGit keeps a branch's own changesets while merging them with its remote branch's. */
+const SYNC_REFS = "refs/visualgit/sync/";
 
 interface Candidate {
   name: string;
@@ -107,7 +109,14 @@ export function inferModel(raw: RawRepo): Model {
   const refsAt = new Map<string, string[]>();
   const remoteRefs: { name: string; ref: string; hash: string }[] = [];
 
+  const LOCAL = " (local)";
   for (const ref of raw.refs) {
+    if (ref.name.startsWith(SYNC_REFS)) {
+      // A branch's own changesets while they're merged with its remote branch's (see `sync_branch`).
+      const name = ref.name.slice(SYNC_REFS.length);
+      if (commits.has(ref.hash)) byName.set(name + LOCAL, { name: name + LOCAL, kind: "local", refs: [ref.name], tips: [ref.hash], priority: 0, hintParent: name });
+      continue;
+    }
     if (!ref.name.startsWith("refs/tags/") && commits.has(ref.hash)) {
       const short = ref.name.replace(/^refs\/(heads|remotes)\//, "");
       refsAt.set(ref.hash, [...(refsAt.get(ref.hash) ?? []), short]);
@@ -137,6 +146,23 @@ export function inferModel(raw: RawRepo): Model {
     }
   }
   for (const c of byName.values()) c.tips = c.tips.filter((t) => commits.has(t));
+  // A local branch and its remote branch that have each moved on: the lane is
+  // what the remote has, and the branch's own changesets get a lane of their
+  // own, "main (local)", until they're merged in (and pushed).
+  for (const c of [...byName.values()]) {
+    const local = c.refs.find((r) => r.startsWith("refs/heads/"));
+    const remote = c.refs.find((r) => r.startsWith("refs/remotes/"));
+    if (!local || !remote || byName.has(c.name + LOCAL)) continue;
+    const mine = raw.refs.find((r) => r.name === local)?.hash;
+    const theirs = raw.refs.find((r) => r.name === remote)?.hash;
+    if (!mine || !theirs || !commits.has(mine) || !commits.has(theirs)) continue;
+    const [ahead, behind] = aheadBehind(commits, index, mine, theirs);
+    if (ahead === 0 || behind === 0) continue;
+    c.refs = c.refs.filter((r) => r !== local);
+    c.tips = [...new Set(c.refs.map((r) => raw.refs.find((x) => x.name === r)!.hash))].filter((t) => commits.has(t));
+    if (c.kind === "local") c.kind = "remote";
+    byName.set(c.name + LOCAL, { name: c.name + LOCAL, kind: "local", refs: [local], tips: [mine], priority: 0, hintParent: c.name, createdAt: c.createdAt });
+  }
   // A checked-out branch with nothing committed yet (a new repository, or
   // `git switch --orphan`): HEAD names it, but git has no ref for it until its
   // first commit. It still gets its own, empty lane, where HEAD is shown.
@@ -202,7 +228,10 @@ export function inferModel(raw: RawRepo): Model {
       children: [],
       createdFrom: cand.createdFrom,
       createdAt: cand.createdAt,
-      isHead: cand.kind === "detached" || (cand.kind === "local" && cand.name === raw.headBranch),
+      isHead:
+        cand.kind === "detached" ||
+        (raw.headBranch !== undefined && cand.refs.includes(`refs/heads/${raw.headBranch}`)) ||
+        (cand.kind === "local" && cand.refs.length === 0 && cand.name === raw.headBranch),
       published: cand.refs.some((r) => r.startsWith("refs/remotes/")),
       unpushed: 0,
       ahead: 0,
@@ -289,9 +318,11 @@ export function inferModel(raw: RawRepo): Model {
       // `git pull` merges "branch 'main' of <url>" into main: the other side is
       // upstream work on the same branch, not a deleted branch.
       const pulled = name !== undefined && name === branches[owner.get(h)!].name;
+      // VisualGit's sync merge: the other side is the branch's own changesets, made before it was level with its remote.
+      const synced = /^Merge local changes into (\S+)$/.exec(c.subject)?.[1];
       const b = newBranch({
-        name: pulled ? `${name} (upstream)` : (name ?? "(merged)"),
-        kind: name && !pulled ? "deleted" : "anonymous",
+        name: synced ? `${synced}${LOCAL}` : pulled ? `${name} (upstream)` : (name ?? "(merged)"),
+        kind: name && !pulled && !synced ? "deleted" : "anonymous",
         refs: [],
         tips: [ph],
         priority: 0,
@@ -426,7 +457,13 @@ function compareWithRemotes(raw: RawRepo, commits: Map<string, RawCommit>, index
     const local = b.refs.find((r) => r.startsWith("refs/heads/"));
     if (!local) continue;
     const configured = upstreamOf.get(local);
-    const remote = configured?.startsWith("refs/remotes/") && hashOf.has(configured) ? configured : b.refs.find((r) => r.startsWith("refs/remotes/"));
+    const short = local.slice("refs/heads/".length);
+    // Its upstream, else a remote branch of the same name (origin first); the lane may not hold it ("main (local)").
+    const sameName = raw.refs
+      .map((r) => r.name)
+      .filter((r) => r.startsWith("refs/remotes/") && r.slice("refs/remotes/".length).split("/").slice(1).join("/") === short)
+      .sort((x, y) => Number(!x.startsWith("refs/remotes/origin/")) - Number(!y.startsWith("refs/remotes/origin/")));
+    const remote = configured?.startsWith("refs/remotes/") && hashOf.has(configured) ? configured : sameName[0];
     if (!remote) continue;
     b.remote = remote.slice("refs/remotes/".length);
     const [ahead, behind] = aheadBehind(commits, index, hashOf.get(local)!, hashOf.get(remote)!);

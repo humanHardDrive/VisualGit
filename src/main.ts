@@ -13,6 +13,7 @@ import { buildTree, isRepoKind, loadFiles, loadLastChanges, nestList, ownerOf, t
 import { fileRows, renderFiles, rowKey, type FileRow } from "./view/files.ts";
 import { ignorePatterns } from "./git/ignore.ts";
 import { branchColor, Explorer, pushLabel, type Selection, type View } from "./view/explorer.ts";
+import { pushBranch as pushBranchChecked } from "./view/push.ts";
 import { filterRepos, renderWorkspaceList, type RepoInfo } from "./view/workspaceList.ts";
 import { createPendingView } from "./pending/view.ts";
 import { createSearchBox } from "./view/searchBox.ts";
@@ -391,14 +392,19 @@ function notify(text: string, kind: "" | "ok" | "error" = "") {
 }
 toast.addEventListener("click", () => (toast.hidden = true));
 
+/**
+ * Pushes `branch`, after checking the remote: when someone has pushed to it
+ * since, this offers to merge their changesets first (see view/push.ts).
+ */
 async function pushBranch(branch: string) {
   if (!repoPath) return;
   const path = repoPath;
-  notify(`Pushing ${branch}…`);
+  notify(`Checking ${branch} against the remote…`);
   try {
-    notify(`${await invoke<string>("push_branch", { repo: path, branch })}.`, "ok");
+    notify(await pushBranchChecked(path, branch), "ok");
   } catch (err) {
-    notify(`Could not push ${branch}: ${err}`, "error");
+    toast.hidden = true;
+    await message(String(err), { title: `Could not push ${branch}`, kind: "error" });
   }
   if (repoPath === path) reload();
 }
