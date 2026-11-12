@@ -92,6 +92,8 @@ The app opens whatever repository you pass as `visualgit /path/to/repo` or in `V
 
 The details panel on the right, for the selected changeset or branch, belongs to the Branch Explorer and only shows there. The Branch Explorer also has its own bar along the top, with *Reload*, the changeset arrows and search. In the Branch List, that bar is replaced by the list's own search. VisualGit remembers which view you were using.
 
+**Timeline.** A timeline runs across the top of the Branch Explorer. It stays in place as you scroll down, and follows the changesets as you scroll sideways and zoom. It labels the changesets where the date changes: zoomed out it shows years, and zooming in brings in months, days, and then each changeset's time. The date of the first changeset in view stays at its left end. Changesets are spaced evenly rather than by time, so the labels mark where each period starts, not a uniform scale.
+
 The home symbol marks what's checked out. When you have uncommitted changes, an empty changeset is drawn at the end of the checked-out branch, after its latest changeset, with a hollow, dashed home symbol. A branch you've just created and switched to shows the same hollow home symbol in its empty slot. So does the first branch of a new repository, before its first commit (Git has no ref for it until then). Right-click either one for *Pending Changes*.
 
 **Creating branches.** Right-click any changeset and choose *Create Branch from This Changeset…*. Type a name and choose whether to switch to the new branch. Switching is ticked by default when you start from the checked-out changeset, so any work in progress comes along. The new branch shows up straight away as its own empty lane, starting at that changeset.

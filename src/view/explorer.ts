@@ -9,6 +9,8 @@ import type { Edge, Layout, Span } from "../model/layout.ts";
 export const COL = 30;
 export const ROW = 64;
 const PAD = 48;
+/** Height of the timeline across the top, in screen pixels (it doesn't scale; its labels follow the columns). */
+export const TIMELINE_H = 24;
 const BAND_TOP = 22;
 const BAND_H = 26;
 const NODE_R = 6;
@@ -67,6 +69,9 @@ interface Theme {
   canvas: string;
   match: string;
   unpushed: string;
+  panel: string;
+  border: string;
+  grid: string;
 }
 
 export interface ExplorerEvents {
@@ -226,9 +231,11 @@ export class Explorer {
     this.pendingPlacement = null;
     const worldW = colX(this.layout.cols) + PAD;
     const worldH = rowTop(this.layout.rows) + PAD;
-    this.scale = clamp(Math.min(w / worldW, h / worldH, 1.5), 0.04, 3);
+    // The timeline covers the top: fit what's below it.
+    const below = Math.max(1, h - TIMELINE_H);
+    this.scale = clamp(Math.min(w / worldW, below / worldH, 1.5), 0.04, 3);
     this.tx = (w - worldW * this.scale) / 2;
-    this.ty = Math.max(0, (h - worldH * this.scale) / 2);
+    this.ty = TIMELINE_H + Math.max(0, (below - worldH * this.scale) / 2);
     this.redraw();
   }
 
@@ -290,7 +297,7 @@ export class Explorer {
   private hitTest(sx: number, sy: number): Selection | null {
     const model = this.model;
     const layout = this.layout;
-    if (!model || !layout) return null;
+    if (!model || !layout || sy < TIMELINE_H) return null;
     const wx = (sx - this.tx) / this.scale;
     const wy = (sy - this.ty) / this.scale;
     const col = Math.round((wx - PAD) / COL);
@@ -322,7 +329,7 @@ export class Explorer {
 
   /** The arrow nearest a screen point, if one passes within a few pixels of it. */
   private edgeAt(sx: number, sy: number): Edge | null {
-    if (!this.model || !this.layout) return null;
+    if (!this.model || !this.layout || sy < TIMELINE_H) return null;
     const wx = (sx - this.tx) / this.scale;
     const wy = (sy - this.ty) / this.scale;
     const reach = 5 / this.scale + 1;
@@ -358,7 +365,7 @@ export class Explorer {
   private onHollowHead(sx: number, sy: number) {
     const layout = this.layout;
     const id = this.headLane ?? this.pendingLane;
-    if (!layout || id === null) return false;
+    if (!layout || id === null || sy < TIMELINE_H) return false;
     const span = layout.spans[id];
     const { left, right } = this.bandExtent(span);
     const x = span.pendingCol !== null ? colX(span.pendingCol) : (left + right) / 2;
@@ -577,6 +584,9 @@ export class Explorer {
       canvas: v("--canvas"),
       match: v("--match"),
       unpushed: v("--unpushed"),
+      panel: v("--panel"),
+      border: v("--border"),
+      grid: v("--grid"),
     };
   }
 
@@ -808,6 +818,62 @@ export class Explorer {
       if (x < view.x0 - 20 || x > view.x1 + 20) continue;
       hollowHome(ctx, x, rowMid(span.row), t);
     }
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.drawTimeline(model, w, t);
+  }
+
+  /** Each column's date for the timeline: commit times, never going backwards (a rebased or backdated changeset doesn't make the timeline jump back). */
+  private columnTimes(model: Model): number[] {
+    let times = columnTimeCache.get(model);
+    if (!times) {
+      times = [];
+      let last = -Infinity;
+      for (const h of model.order) times.push((last = Math.max(last, model.commits.get(h)!.time)));
+      columnTimeCache.set(model, times);
+    }
+    return times;
+  }
+
+  /**
+   * The timeline across the top: it stays put as you scroll down, and follows
+   * the columns as you scroll sideways and zoom. Labels go where the date
+   * changes between one changeset and the next, by priority (years, then
+   * months, days, and each changeset's time), wherever they fit: zoomed out
+   * shows years, zooming in brings in months, days, then times. The date of
+   * the first changeset in view stays at the left.
+   */
+  private drawTimeline(model: Model, w: number, t: Theme) {
+    const { ctx } = this;
+    const s = this.scale;
+    const times = this.columnTimes(model);
+    ctx.fillStyle = t.panel;
+    ctx.fillRect(0, 0, w, TIMELINE_H);
+    ctx.fillStyle = t.border;
+    ctx.fillRect(0, TIMELINE_H - 1, w, 1);
+    if (times.length === 0) return;
+
+    const sx = (col: number) => colX(col) * s + this.tx;
+    const first = clamp(Math.ceil(((-this.tx) / s - PAD) / COL), 0, times.length - 1);
+    const last = clamp(Math.floor(((w - this.tx) / s - PAD) / COL), 0, times.length - 1);
+    if (sx(first) > w || sx(last) < 0) return;
+
+    const font = (bold: boolean) => `${bold ? "600" : "400"} 11px -apple-system, system-ui, sans-serif`;
+    const { context, marks } = timelineMarks(times, first, last, sx, COL * s, (text, bold) => {
+      ctx.font = font(bold);
+      return ctx.measureText(text).width;
+    });
+
+    ctx.textBaseline = "alphabetic";
+    for (const m of marks) {
+      ctx.fillStyle = m.bold ? t.text : t.muted;
+      ctx.fillRect(Math.round(m.x), TIMELINE_H - 1 - m.tick, 1, m.tick);
+      ctx.font = font(m.bold);
+      ctx.fillText(m.text, m.x + 3, 15);
+    }
+    ctx.fillStyle = t.text;
+    ctx.font = font(true);
+    ctx.fillText(context, 8, 15);
   }
 
   /** Where a branch's creation connector starts. */
@@ -820,6 +886,84 @@ export class Explorer {
     }
     return this.commitPos(b.base!);
   }
+}
+
+const columnTimeCache = new WeakMap<Model, number[]>();
+
+export interface TimelineMark {
+  /** Screen x of the changeset where the date changes. */
+  x: number;
+  text: string;
+  /** Years and months: drawn bold, with longer ticks. */
+  bold: boolean;
+  tick: number;
+}
+
+/**
+ * The timeline's labels for columns `first`…`last` (`times`: each column's
+ * date, unix seconds; `x`: a column's screen x; `colWidth`: a column's width
+ * on screen). A label goes where the date changes from the column before, by
+ * priority: years, months, days, then each changeset's time (only once a
+ * column is wide enough to hold one), wherever it fits without overlapping
+ * one already placed. `context` is the first column's full date, pinned at
+ * the left.
+ */
+export function timelineMarks(
+  times: number[],
+  first: number,
+  last: number,
+  x: (col: number) => number,
+  colWidth: number,
+  measure: (text: string, bold: boolean) => number,
+): { context: string; marks: TimelineMark[] } {
+  const date = (col: number) => new Date(times[col] * 1000);
+  const levels: { key: (d: Date, col: number) => number; label: (d: Date) => string; bold: boolean; tick: number }[] = [
+    { key: (d) => d.getFullYear(), label: (d) => String(d.getFullYear()), bold: true, tick: 10 },
+    { key: (d) => d.getFullYear() * 12 + d.getMonth(), label: (d) => d.toLocaleDateString(undefined, { month: "short" }), bold: true, tick: 8 },
+    { key: (d) => d.getFullYear() * 10000 + d.getMonth() * 100 + d.getDate(), label: (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" }), bold: false, tick: 6 },
+    { key: (_, col) => col, label: (d) => d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }), bold: false, tick: 4 },
+  ];
+
+  // Placed labels as [left, right], kept sorted by left, so nothing overlaps.
+  const placed: [number, number][] = [];
+  const GAP = 10;
+  const at = (a: number) => {
+    let lo = 0;
+    let hi = placed.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (placed[mid][0] < a) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  };
+  const tryPlace = (a: number, b: number) => {
+    const i = at(a);
+    if ((i > 0 && placed[i - 1][1] + GAP > a) || (i < placed.length && b + GAP > placed[i][0])) return false;
+    placed.splice(i, 0, [a, b]);
+    return true;
+  };
+
+  const context = date(first).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  tryPlace(0, 8 + measure(context, true));
+
+  const marks: TimelineMark[] = [];
+  for (const level of levels) {
+    // A time under every changeset only once a column can hold one; before that it's clutter.
+    if (level.tick === 4 && colWidth < 34) continue;
+    let prev = first > 0 ? level.key(date(first - 1), first - 1) : NaN;
+    for (let col = first; col <= last; col++) {
+      const d = date(col);
+      const key = level.key(d, col);
+      if (key === prev) continue;
+      prev = key;
+      const left = x(col);
+      const text = level.label(d);
+      if (!tryPlace(left - 1, left + 3 + measure(text, level.bold))) continue;
+      marks.push({ x: left, text, bold: level.bold, tick: level.tick });
+    }
+  }
+  return { context, marks };
 }
 
 function clamp(v: number, lo: number, hi: number) {
