@@ -15,6 +15,8 @@ const BAND_TOP = 22;
 const BAND_H = 26;
 const NODE_R = 6;
 const EMPTY_W = 40;
+/** How far past its edge the graph can be panned, in screen pixels. */
+const OVERSCROLL = 120;
 /** The checked-out changeset is drawn larger, with a home symbol inside. */
 const HEAD_R = 9;
 /** Radius of the circle that marks a release (tagged changeset). */
@@ -178,6 +180,7 @@ export class Explorer {
   }
 
   getView(): View {
+    this.bound();
     return { scale: this.scale, tx: this.tx, ty: this.ty };
   }
 
@@ -282,6 +285,28 @@ export class Explorer {
   private centerOn(wx: number, wy: number) {
     this.tx = this.canvas.clientWidth / 2 - wx * this.scale;
     this.ty = Math.min(0, this.canvas.clientHeight / 2 - wy * this.scale);
+  }
+
+  /**
+   * Keeps the branches in view however far you pan or zoom: the graph can be
+   * moved until its far edge is a little way past the edge of the view, but no
+   * further. A graph smaller than the view stays within it.
+   */
+  private bound() {
+    const layout = this.layout;
+    const w = this.canvas.clientWidth;
+    const h = this.canvas.clientHeight;
+    if (!layout || w === 0 || h === 0) return;
+    const cw = (colX(layout.cols) + PAD) * this.scale;
+    const ch = (rowTop(layout.rows) + PAD) * this.scale;
+    const limit = (t: number, start: number, end: number, size: number) => {
+      const slack = Math.min(OVERSCROLL, (end - start) / 3);
+      const lo = Math.min(start, end - size) - slack;
+      const hi = Math.max(start, end - size) + slack;
+      return clamp(t, lo, hi);
+    };
+    this.tx = limit(this.tx, 0, w, cw);
+    this.ty = limit(this.ty, 0, h, ch);
   }
 
   private zoomAt(factor: number, sx: number, sy: number) {
@@ -606,6 +631,7 @@ export class Explorer {
     const layout = this.layout;
     if (!model || !layout) return;
 
+    this.bound();
     const s = this.scale;
     ctx.setTransform(dpr * s, 0, 0, dpr * s, dpr * this.tx, dpr * this.ty);
     const view = {
@@ -859,7 +885,7 @@ export class Explorer {
     if (sx(first) > w || sx(last) < 0) return;
 
     const font = (bold: boolean) => `${bold ? "600" : "400"} 11px -apple-system, system-ui, sans-serif`;
-    const { context, marks } = timelineMarks(times, first, last, sx, COL * s, (text, bold) => {
+    const { context, marks } = timelineMarks(times, first, last, sx, (text, bold) => {
       ctx.font = font(bold);
       return ctx.measureText(text).width;
     });
@@ -901,11 +927,10 @@ export interface TimelineMark {
 
 /**
  * The timeline's labels for columns `first`…`last` (`times`: each column's
- * date, unix seconds; `x`: a column's screen x; `colWidth`: a column's width
- * on screen). A label goes where the date changes from the column before, by
- * priority: years, months, days, then each changeset's time (only once a
- * column is wide enough to hold one), wherever it fits without overlapping
- * one already placed. `context` is the first column's full date, pinned at
+ * date, unix seconds; `x`: a column's screen x). A label goes where the date
+ * changes from the column before, by priority: years, months, then days (never
+ * finer: zoomed in, a day's changesets share its label), wherever it fits
+ * without overlapping one already placed. `context` is the first column's full date, pinned at
  * the left.
  */
 export function timelineMarks(
@@ -913,15 +938,13 @@ export function timelineMarks(
   first: number,
   last: number,
   x: (col: number) => number,
-  colWidth: number,
   measure: (text: string, bold: boolean) => number,
 ): { context: string; marks: TimelineMark[] } {
   const date = (col: number) => new Date(times[col] * 1000);
-  const levels: { key: (d: Date, col: number) => number; label: (d: Date) => string; bold: boolean; tick: number }[] = [
+  const levels: { key: (d: Date) => number; label: (d: Date) => string; bold: boolean; tick: number }[] = [
     { key: (d) => d.getFullYear(), label: (d) => String(d.getFullYear()), bold: true, tick: 10 },
     { key: (d) => d.getFullYear() * 12 + d.getMonth(), label: (d) => d.toLocaleDateString(undefined, { month: "short" }), bold: true, tick: 8 },
     { key: (d) => d.getFullYear() * 10000 + d.getMonth() * 100 + d.getDate(), label: (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" }), bold: false, tick: 6 },
-    { key: (_, col) => col, label: (d) => d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }), bold: false, tick: 4 },
   ];
 
   // Placed labels as [left, right], kept sorted by left, so nothing overlaps.
@@ -949,12 +972,10 @@ export function timelineMarks(
 
   const marks: TimelineMark[] = [];
   for (const level of levels) {
-    // A time under every changeset only once a column can hold one; before that it's clutter.
-    if (level.tick === 4 && colWidth < 34) continue;
-    let prev = first > 0 ? level.key(date(first - 1), first - 1) : NaN;
+    let prev = first > 0 ? level.key(date(first - 1)) : NaN;
     for (let col = first; col <= last; col++) {
       const d = date(col);
-      const key = level.key(d, col);
+      const key = level.key(d);
       if (key === prev) continue;
       prev = key;
       const left = x(col);

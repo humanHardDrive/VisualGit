@@ -867,13 +867,13 @@ describe("timeline", () => {
   }
   times.push(new Date(2027, 1, 2, 9, 0).getTime() / 1000, new Date(2027, 1, 2, 15, 45).getTime() / 1000);
   const measure = (text: string) => text.length * 6;
-  const marksAt = (colWidth: number) => timelineMarks(times, 0, times.length - 1, (col) => 100 + col * colWidth, colWidth, measure);
+  const marksAt = (colWidth: number) => timelineMarks(times, 0, times.length - 1, (col) => 100 + col * colWidth, measure);
   const noOverlaps = (marks: { x: number; text: string }[]) => {
     const sorted = [...marks].sort((a, b) => a.x - b.x);
     sorted.slice(1).forEach((m, i) => expect(m.x - 1).toBeGreaterThanOrEqual(sorted[i].x + 3 + measure(sorted[i].text) + 10));
   };
 
-  it("shows coarser dates zoomed out and finer ones zoomed in, never overlapping", () => {
+  it("shows coarser dates zoomed out and finer ones zoomed in, down to days, never overlapping", () => {
     const far = marksAt(2);
     expect(far.marks.filter((m) => m.text === "2026" || m.text === "2027")).toHaveLength(2);
     expect(far.marks.every((m) => m.bold)).toBe(true); // years and months only
@@ -881,11 +881,14 @@ describe("timeline", () => {
 
     const mid = marksAt(12);
     expect(mid.marks.some((m) => !m.bold)).toBe(true); // days appear
-    expect(mid.marks.filter((m) => m.tick === 4)).toHaveLength(0); // no times yet
     noOverlaps(mid.marks);
 
     const near = marksAt(60);
-    expect(near.marks.filter((m) => m.tick === 4).length).toBeGreaterThan(0); // times under changesets
+    expect(near.marks.filter((m) => m.tick === 4)).toHaveLength(0); // never times of day
+    // The second of two changesets on one day gets no label of its own.
+    const last = times.length - 1;
+    expect(near.marks.some((m) => m.x === 100 + (last - 1) * 60)).toBe(true);
+    expect(near.marks.some((m) => m.x === 100 + last * 60)).toBe(false);
     // The first changeset in history starts its year too.
     expect(near.marks.filter((m) => m.tick === 10).map((m) => m.text)).toEqual(["2025", "2026", "2027"]);
     noOverlaps(near.marks);
@@ -893,7 +896,7 @@ describe("timeline", () => {
 
   it("pins the first column's date at the left and keeps labels clear of it", () => {
     const first = 40;
-    const { context, marks } = timelineMarks(times, first, times.length - 1, (col) => (col - first) * 20, 20, measure);
+    const { context, marks } = timelineMarks(times, first, times.length - 1, (col) => (col - first) * 20, measure);
     expect(context).toBe(new Date(times[first] * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }));
     expect(marks.every((m) => m.x - 1 >= 8 + measure(context) + 10)).toBe(true);
   });
