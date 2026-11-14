@@ -31,14 +31,21 @@ interface Pushed {
 
 const changesets = (n: number) => `${n} changeset${n === 1 ? "" : "s"}`;
 
+/** What a push did: `text` is a line for the caller's status. */
+export interface PushOutcome {
+  /** False when the remote had new changes and nothing was pushed (a merge may have started instead). */
+  pushed: boolean;
+  text: string;
+}
+
 /**
- * Pushes `branch` (null: the checked-out one). Resolves with a line saying
- * what happened, for the caller's status; rejects with git's error.
+ * Pushes `branch` (null: the checked-out one). Resolves with what happened;
+ * rejects with git's error.
  */
-export async function pushBranch(repo: string, branch: string | null): Promise<string> {
+export async function pushBranch(repo: string, branch: string | null): Promise<PushOutcome> {
   const pushed = await invoke<Pushed>(branch ? "push_branch" : "push_current_branch", branch ? { repo, branch } : { repo });
-  if (pushed.diverged) return offerMerge(repo, pushed.diverged);
-  return `${pushed.message ?? "Pushed"}.`;
+  if (pushed.diverged) return { pushed: false, text: await offerMerge(repo, pushed.diverged) };
+  return { pushed: true, text: `${pushed.message ?? "Pushed"}.` };
 }
 
 /** Explains why the push didn't happen and, for the checked-out branch, offers the merge. */

@@ -6,6 +6,7 @@ mod menu;
 mod merge;
 mod os;
 mod pending;
+mod subcommit;
 mod submodule;
 mod workspace;
 
@@ -147,6 +148,7 @@ pub fn run() {
             merge::abort_operation,
             merge::sync_branch,
             merge::remote_moved,
+            subcommit::submodule_commit_plans,
             submodule::open_add_submodule_window,
             submodule::add_submodule_info,
             submodule::choose_submodule_changeset,

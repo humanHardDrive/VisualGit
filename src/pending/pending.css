@@ -43,6 +43,11 @@
 .branch-info { padding: 0 10px 6px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-list { overflow: auto; flex: 1; padding: 4px 0; }
 .file-empty { padding: 12px 10px; color: var(--muted); }
+.submodule-group { display: flex; align-items: baseline; gap: 8px; padding: 6px 10px 2px; font-size: 11px; color: var(--muted); border-top: 1px solid var(--border); min-width: 0; }
+.submodule-group .submodule-name { flex: none; font-weight: 600; color: var(--text); }
+.submodule-group .submodule-plan { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.submodule-group.problem .submodule-plan { color: #d1242f; white-space: normal; }
+.pfile.in-submodule { padding-left: 20px; }
 
 .pfile { display: flex; align-items: center; gap: 6px; padding: 3px 8px 3px 10px; cursor: pointer; border-left: 2px solid transparent; min-width: 0; }
 .pfile:hover { background: var(--hover); }

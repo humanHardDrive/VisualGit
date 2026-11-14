@@ -16,7 +16,7 @@ import { LogicalPosition } from "@tauri-apps/api/dpi";
 import { Menu } from "@tauri-apps/api/menu";
 import { ask, message as alert } from "@tauri-apps/plugin-dialog";
 import { basicSetup } from "codemirror";
-import { loadPendingChanges, type PendingChanges, type PendingFile } from "../git/status.ts";
+import { loadWithSubmodules, type PendingChanges, type PendingFile } from "../git/status.ts";
 import { pushBranch } from "../view/push.ts";
 import { remoteMoved, remoteMovedBanner } from "../view/remoteMoved.ts";
 import { submoduleChange } from "../git/submoduleChange.ts";
@@ -42,6 +42,23 @@ interface Operation {
   message: string | null;
   /** A merge bringing a branch's own changesets into what its remote branch has (see view/push.ts). */
   sync: { branch: string; remote: string } | null;
+}
+
+/** Mirrors `SubmodulePlan` in src-tauri/src/subcommit.rs: where a submodule's changes would be committed. */
+interface SubmodulePlan {
+  path: string;
+  branch: string | null;
+  creates: boolean;
+  follows: boolean;
+  problem: string | null;
+}
+
+/** Mirrors `NestedCommit` in src-tauri/src/subcommit.rs. */
+interface NestedCommit {
+  path: string;
+  hash: string;
+  branch: string;
+  created: boolean;
 }
 
 export interface PendingViewOptions {
@@ -129,6 +146,15 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
   const drafts = new Map<string, string>();
   /** The file shown in the diff. */
   let current: PendingFile | null = null;
+  /** For each submodule with changes listed, where committing puts them. */
+  let plans = new Map<string, SubmodulePlan>();
+
+  /** The repository a file belongs to (a submodule's, for a file inside one) and its paths there. */
+  const locate = (f: PendingFile) => {
+    if (!f.sub) return { repo, path: f.path, origPath: f.origPath };
+    const cut = (p: string) => p.slice(f.sub!.length + 1);
+    return { repo: `${repo}/${f.sub}`, path: cut(f.path), origPath: f.origPath === undefined ? undefined : cut(f.origPath) };
+  };
   let busy = false;
 
   interface Open {
@@ -164,7 +190,11 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     checkAll.indeterminate = chosen > 0 && chosen < files.length;
     checkAll.disabled = files.length === 0;
 
-    const rows = files.map((f) => {
+    const rows: HTMLElement[] = [];
+    let group: string | undefined;
+    for (const f of files) {
+      if (f.sub && f.sub !== group) rows.push(submoduleHeader(f.sub));
+      group = f.sub;
       const row = document.createElement("div");
       row.className = "pfile";
       row.setAttribute("role", "option");
@@ -184,9 +214,10 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
       row.append(box, pathParts(f.path));
       if (f.path === open?.path && isDirty()) row.append(span("dirty", "●"));
       row.append(span(`file-kind ${KIND_LABELS[kind].cls}`, KIND_LABELS[kind].label));
+      if (f.sub) row.classList.add("in-submodule");
       row.onclick = () => void selectFile(f);
-      return row;
-    });
+      rows.push(row);
+    }
     if (rows.length === 0) {
       const none = document.createElement("div");
       none.className = "file-empty";
@@ -195,6 +226,26 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     }
     fileList.replaceChildren(...rows);
     updateCommitButton();
+  }
+
+  /** Heads a submodule's files: which branch committing them goes on, or why it can't. */
+  function submoduleHeader(sub: string) {
+    const el = document.createElement("div");
+    el.className = "submodule-group";
+    const p = plans.get(sub);
+    el.append(span("submodule-name", sub));
+    let text = "";
+    if (p?.problem) {
+      text = p.problem;
+      el.classList.add("problem");
+    } else if (p?.branch) {
+      text = `Commits on ${sub}'s ${p.branch}${p.creates ? " (new branch)" : ""}`;
+      el.title = p.follows
+        ? `${sub}'s changes are committed on its own branch, named after this one, then this commit records the new changeset.`
+        : `${sub} is checked out on ${p.branch}, so its changes are committed there, then this commit records the new changeset.`;
+    }
+    el.append(span("submodule-plan", text));
+    return el;
   }
 
   checkAll.addEventListener("change", () => {
@@ -231,7 +282,8 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     // New in the working tree or the index: nothing to compare against.
     if (!pending.head || f.untracked || f.staged === "A") return "";
     try {
-      const text = await tauriRunner(repo).run(["show", `HEAD:${f.origPath ?? f.path}`]);
+      const at = locate(f);
+      const text = await tauriRunner(at.repo).run(["show", `HEAD:${at.origPath ?? at.path}`]);
       return text.includes("\0") ? null : text;
     } catch {
       return "";
@@ -246,7 +298,8 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     if (work.tooLarge) return showMessage("This file is too large to show.");
     // A submodule (its folder, or one being removed): its old and new changesets, described.
     if (work.submodule !== null || work.missing) {
-      const change = await submoduleChange(at, f.path, tauriRunner).catch(() => null);
+      const where = locate(f);
+      const change = await submoduleChange(where.repo, where.path, tauriRunner).catch(() => null);
       if (current?.path !== f.path || repo !== at) return;
       if (change) return showSubmodule(f, change, keepIfSame);
       if (work.submodule !== null) return showMessage("A submodule, with nothing checked out yet.");
@@ -487,7 +540,10 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     void refreshRemoteMoved();
     let next: PendingChanges;
     try {
-      next = await loadPendingChanges(tauriRunner(at));
+      next = await loadWithSubmodules(tauriRunner(at), (folder) => tauriRunner(`${at}/${folder}`));
+      const subs = [...new Set(next.files.flatMap((f) => (f.sub ? [f.sub] : [])))];
+      const listed = subs.length ? await invoke<SubmodulePlan[]>("submodule_commit_plans", { repo: at, paths: subs }).catch(() => []) : [];
+      if (repo === at) plans = new Map(listed.map((p) => [p.path, p]));
     } catch (err) {
       if (repo === at) setStatus(`Could not read pending changes: ${err}`, "error");
       return;
@@ -516,38 +572,45 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     }
   }
 
-  /** Commits the selected files; with `andPush`, then pushes the checked-out branch. */
+  /** Paths to hand git: a rename commits (or undoes) both its new and its old path. */
+  const withOrig = (p: { path: string; origPath?: string }) => (p.origPath ? [p.path, p.origPath] : [p.path]);
+
+  /** `files` by repository: this one's (key "") and each submodule's, with paths inside it. */
+  function byRepository(files: PendingFile[]) {
+    const groups = new Map<string, PendingFile[]>();
+    for (const f of files) groups.set(f.sub ?? "", [...(groups.get(f.sub ?? "") ?? []), f]);
+    return groups;
+  }
+
+  /**
+   * Commits the selected files; with `andPush`, then pushes the checked-out
+   * branch. Files inside submodules are committed in them first, each on its
+   * branch (see src-tauri/src/subcommit.rs), and pushed first too.
+   */
   async function commit(andPush = false) {
     const message = messageBox.value.trim();
     const files = selectedFiles();
     if (busy || !repo || !message || files.length === 0) return;
     if (!(await save())) return;
     const at = repo;
-    // A rename commits both its new and its old path.
-    const paths = files.flatMap((f) => (f.origPath ? [f.path, f.origPath] : [f.path]));
+    const groups = byRepository(files);
+    const paths = (groups.get("") ?? []).flatMap(withOrig);
+    const submodules = [...groups].filter(([sub]) => sub).map(([sub, fs]) => ({ path: sub, paths: fs.flatMap((f) => withOrig(locate(f))) }));
     busy = true;
     updateCommitButton();
     setStatus("Committing…");
     try {
       // Finishing a merge (or cherry pick) also brings the submodules to the changesets it records.
       const finishing = operation?.kind;
-      const done = await invoke<{ hash: string; submodules: SubmoduleUpdate }>("commit_changes", { repo: at, message, paths });
+      const done = await invoke<{ hash: string; submodules: SubmoduleUpdate; nested: NestedCommit[] }>("commit_changes", { repo: at, message, paths, submodules });
       const hash = done.hash;
+      const inside = done.nested.map((n) => ` ${n.path}: ${n.hash.slice(0, 8)} on ${n.branch}${n.created ? " (new branch)" : ""}.`).join("");
+      const committed = `Committed ${hash.slice(0, 8)}.${inside}`;
       messageBox.value = "";
-      setStatus(`Committed ${hash.slice(0, 8)}.${submodulesUpdated(done.submodules)}`, "ok");
+      setStatus(`${committed}${submodulesUpdated(done.submodules)}`, "ok");
       void reportSubmoduleFailures(done.submodules, finishing ?? "commit");
       opts.onChanged();
-      if (andPush) {
-        setStatus(`Committed ${hash.slice(0, 8)}. Checking the remote…`);
-        try {
-          setStatus(`Committed ${hash.slice(0, 8)}. ${await pushBranch(at, null)}`, "ok");
-        } catch (err) {
-          // The commit stands; only the push needs another go.
-          setStatus(`Committed ${hash.slice(0, 8)}, but the push failed.`, "error");
-          await alert(String(err), { title: "Could not push", kind: "error" });
-        }
-        opts.onChanged();
-      }
+      if (andPush) await pushAll(at, committed, done.nested);
     } catch (err) {
       setStatus(String(err), "error");
     }
@@ -555,48 +618,106 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     await refresh();
   }
 
+  /**
+   * Commit & Push: each submodule's branch first, so its new changeset is on
+   * its remote before anything here records it; then this repository's branch.
+   */
+  async function pushAll(at: string, committed: string, nested: NestedCommit[]) {
+    for (const n of nested) {
+      setStatus(`${committed} Pushing ${n.path}…`);
+      try {
+        const out = await pushBranch(`${at}/${n.path}`, n.branch);
+        if (!out.pushed) {
+          setStatus(`${committed} Not pushed: ${n.path} first. ${out.text}`, "error");
+          return;
+        }
+      } catch (err) {
+        setStatus(`${committed} Not pushed: ${n.path}'s push failed, so this repository's wasn't tried.`, "error");
+        await alert(String(err), { title: `Could not push ${n.path}`, kind: "error" });
+        return;
+      }
+    }
+    setStatus(`${committed} Checking the remote…`);
+    try {
+      const out = await pushBranch(at, null);
+      setStatus(`${committed} ${out.text}`, out.pushed ? "ok" : "");
+    } catch (err) {
+      // The commit stands; only the push needs another go.
+      setStatus(`${committed} The push failed.`, "error");
+      await alert(String(err), { title: "Could not push", kind: "error" });
+    }
+    opts.onChanged();
+  }
+
   /** True for files the checked-out changeset doesn't have: undoing them means removing them. */
   const isNew = (f: PendingFile) => !!f.untracked || f.staged === "A" || f.staged === "C" || (f.staged === "R" && !!f.origPath) || !pending.head;
 
-  /** Puts the selected files back as they are in the checked-out changeset, after asking. */
+  /**
+   * Puts the selected files back as they are in the checked-out changeset,
+   * after asking. Files inside a submodule go back to its checked-out changeset.
+   */
   async function undoChanges() {
     const files = selectedFiles();
     if (busy || !repo || files.length === 0) return;
-    const created = files.filter(isNew).map((f) => f.path);
-    // Tracked files go back to their committed content; a rename also restores its old path.
-    const tracked = files.flatMap((f) => (isNew(f) ? (f.staged === "R" && f.origPath ? [f.origPath] : []) : [f.path]));
+    const at = repo;
+    // Each repository's files, with their paths in it.
+    const groups = [...byRepository(files)].map(([sub, fs]) => {
+      const where = locate(fs[0]);
+      const local = fs.map((f) => ({ f, l: locate(f) }));
+      return {
+        sub,
+        repo: where.repo,
+        created: local.filter(({ f }) => isNew(f)).map(({ l }) => l.path),
+        // Tracked files go back to their committed content; a rename also restores its old path.
+        tracked: local.flatMap(({ f, l }) => (isNew(f) ? (f.staged === "R" && l.origPath ? [l.origPath] : []) : [l.path])),
+        paths: local.map(({ l }) => l.path),
+      };
+    });
+    const created = groups.reduce((n, g) => n + g.created.length, 0);
     const what = files.length === 1 ? files[0].path : `${files.length} files`;
     // Submodules are put back too: a moved one to its recorded changeset, a new one taken out entirely.
-    const paths = files.map((f) => f.path);
-    const runner = tauriRunner(repo);
-    const listings = await Promise.all([
-      runner.run(["ls-files", "--stage", "-z", "--", ...paths]).catch(() => ""),
-      runner.run(["ls-tree", "-z", "HEAD", "--", ...paths]).catch(() => ""),
-    ]);
+    const listings = await Promise.all(
+      groups.flatMap((g) => {
+        const runner = tauriRunner(g.repo);
+        return [runner.run(["ls-files", "--stage", "-z", "--", ...g.paths]).catch(() => ""), runner.run(["ls-tree", "-z", "HEAD", "--", ...g.paths]).catch(() => "")];
+      }),
+    );
     const submodules = listings.some((l) => /(^|\0)160000 /.test(l));
     const ok = await ask(
       `Undo the changes to ${what}? Their content goes back to the checked-out changeset and your edits are lost.` +
-        (created.length ? `\n\nNew files (${created.length}) are moved to the ${TRASH}.` : "") +
+        (created ? `\n\nNew files (${created}) are moved to the ${TRASH}.` : "") +
         (submodules
           ? `\n\nSubmodules go back too: a moved one is checked out at the changeset recorded for it, a removed one is set up again, and a new one is taken out of .gitmodules and git's records, its folder moved to the ${TRASH}.`
           : ""),
       { title: "Undo Changes", kind: "warning", okLabel: "Undo Changes", cancelLabel: "Cancel" },
     );
-    if (!ok) return;
+    if (!ok || repo !== at) return;
     // Unsaved edits to an undone file are dropped, not saved first.
     if (open && files.some((f) => f.path === open!.path)) closeEditor();
     busy = true;
     updateCommitButton();
-    try {
-      const subs = await invoke<SubmoduleUpdate>("undo_changes", { repo, tracked, created });
-      const back = subs.updated.length ? ` Put back ${subs.updated.length === 1 ? `the submodule ${subs.updated[0]}` : `${subs.updated.length} submodules`} at the recorded changeset.` : "";
-      const out = subs.putAway.length ? ` Took out the new submodule${subs.putAway.length === 1 ? "" : "s"} ${subs.putAway.join(", ")}.` : "";
-      setStatus(`Undid changes to ${what}.${back}${out}`, "ok");
-      void reportSubmoduleFailures(subs, "undo");
-      opts.onChanged();
-    } catch (err) {
-      setStatus(String(err), "error");
+    const back: string[] = [];
+    const out: string[] = [];
+    let failed = false;
+    for (const g of groups) {
+      try {
+        const subs = await invoke<SubmoduleUpdate>("undo_changes", { repo: g.repo, tracked: g.tracked, created: g.created });
+        const prefix = (p: string) => (g.sub ? `${g.sub}/${p}` : p);
+        back.push(...subs.updated.map(prefix));
+        out.push(...subs.putAway.map(prefix));
+        void reportSubmoduleFailures(subs, "undo");
+      } catch (err) {
+        setStatus(g.sub ? `${g.sub}: ${err}` : String(err), "error");
+        failed = true;
+        break;
+      }
     }
+    if (!failed) {
+      const backText = back.length ? ` Put back ${back.length === 1 ? `the submodule ${back[0]}` : `${back.length} submodules`} at the recorded changeset.` : "";
+      const outText = out.length ? ` Took out the new submodule${out.length === 1 ? "" : "s"} ${out.join(", ")}.` : "";
+      setStatus(`Undid changes to ${what}.${backText}${outText}`, "ok");
+    }
+    opts.onChanged();
     busy = false;
     if (current && files.some((f) => f.path === current!.path)) current = null;
     await refresh();

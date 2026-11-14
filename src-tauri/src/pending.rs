@@ -87,9 +87,14 @@ pub fn write_worktree_file(repo: String, path: String, text: String) -> Result<(
 
 /// Commits the given files as they are in the working tree, with `message`,
 /// and returns the new changeset id. Other staged files are left staged.
+///
+/// `submodules`: files to commit inside submodules first, each on its own branch (see
+/// src-tauri/src/subcommit.rs); this commit then records their new changesets.
 #[tauri::command]
-pub async fn commit_changes(repo: String, message: String, paths: Vec<String>) -> Result<Committed, String> {
-    tauri::async_runtime::spawn_blocking(move || commit_and_follow(&repo, &message, &paths)).await.map_err(|e| e.to_string())?
+pub async fn commit_changes(repo: String, message: String, paths: Vec<String>, submodules: Option<Vec<crate::subcommit::SubmoduleFiles>>) -> Result<crate::subcommit::CommittedAll, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::subcommit::commit_all(&repo, &message, &paths, &submodules.unwrap_or_default()))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// `commit`, and when that finishes a merge (or cherry pick, or subtractive
@@ -334,6 +339,27 @@ fn push(repo: &str) -> Result<Pushed, String> {
     push_named(&root, &branch)
 }
 
+/// `git push`, refusing (before anything is sent) when the changesets pushed record
+/// submodule changesets that none of the submodule's remotes have: everyone else would
+/// get a submodule pointing at a changeset they can't fetch. Push the submodule first.
+fn push_checked(root: &Path, args: &[&str]) -> Result<(), String> {
+    let mut all = vec!["-c", "protocol.ext.allow=never", "push", "--porcelain", "--recurse-submodules=check"];
+    all.extend_from_slice(args);
+    git(root, &all, &[], None).map(|_| ()).map_err(|e| {
+        // git wraps its message, so compare it with the line breaks taken out.
+        if !e.split_whitespace().collect::<Vec<_>>().join(" ").contains("can not be found on any remote") {
+            return e;
+        }
+        // git lists the submodules indented, between its explanation and its advice.
+        let paths: Vec<&str> = e.lines().filter(|l| l.starts_with("  ") && !l.trim().is_empty() && !l.contains("git ")).map(str::trim).collect();
+        let list = if paths.is_empty() { "a submodule".to_string() } else { paths.join(", ") };
+        format!(
+            "Push {list} first. These changesets record changesets in {list} that aren't on any of its remotes yet, so nobody else could get them. \
+             Commit & Push in Pending Changes pushes submodules first; or open {list} as a repository and push its branch, then push here again."
+        )
+    })
+}
+
 /// Pushes `refs/heads/<branch>`: to its upstream if it has one, otherwise to
 /// origin (or the only remote) under the same name, setting the upstream.
 ///
@@ -355,7 +381,7 @@ fn push_named(root: &Path, branch: &str) -> Result<Pushed, String> {
             if let Some(d) = crate::merge::diverged(&root, branch)? {
                 return Ok(Pushed { message: None, diverged: Some(d) });
             }
-            git(&root, &["-c", "protocol.ext.allow=never", "push", "--porcelain", &remote, &format!("refs/heads/{branch}:{merge}")], &[], None)?;
+            push_checked(&root, &[&remote, &format!("refs/heads/{branch}:{merge}")])?;
             let target = merge.strip_prefix("refs/heads/").unwrap_or(&merge);
             return Ok(Pushed::done(format!("Pushed {branch} to {remote}/{target}")));
         }
@@ -371,7 +397,7 @@ fn push_named(root: &Path, branch: &str) -> Result<Pushed, String> {
     } else {
         return Err(format!("{branch} has no upstream and there is no origin remote; set one with git push -u <remote> {branch}"));
     };
-    git(&root, &["-c", "protocol.ext.allow=never", "push", "--porcelain", "-u", &remote, &format!("refs/heads/{branch}:refs/heads/{branch}")], &[], None)?;
+    push_checked(&root, &["-u", &remote, &format!("refs/heads/{branch}:refs/heads/{branch}")])?;
     Ok(Pushed::done(format!("Pushed {branch} to {remote} (new branch)")))
 }
 

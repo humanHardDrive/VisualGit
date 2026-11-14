@@ -402,7 +402,7 @@ async function pushBranch(branch: string) {
   const path = repoPath;
   notify(`Checking ${branch} against the remote…`);
   try {
-    notify(await pushBranchChecked(path, branch), "ok");
+    notify((await pushBranchChecked(path, branch)).text, "ok");
   } catch (err) {
     toast.hidden = true;
     await message(String(err), { title: `Could not push ${branch}`, kind: "error" });
@@ -1504,8 +1504,10 @@ function selectFileRow(r: FileRow) {
 function openFileRow(r: FileRow) {
   if (r.kind !== "file" || !files?.list.status.has(r.path)) return;
   const w = whereIs(r.path);
-  // A change inside a submodule is that repository's to commit: open it, then its Pending Changes.
-  if (w?.submodule != null) void openNested(w.repo, () => openPendingChanges(w.path));
+  // A change inside one of this repository's submodules is listed in its Pending Changes too.
+  // Deeper down (a submodule inside one) it's that repository's to commit: open it, then its Pending Changes.
+  const direct = w?.submodule != null && files && !ownerOf(files.list, w.submodule);
+  if (w?.submodule != null && !direct) void openNested(w.repo, () => openPendingChanges(w.path));
   else openPendingChanges(r.path);
 }
 
@@ -1768,8 +1770,10 @@ if (inTauri()) {
     void reportSubmoduleFailures(p.submodules, "move");
   });
   // A merge window that stopped for conflicts (or found pending changes) hands over to Pending Changes.
+  // A submodule's (merging in it before pushing it, from Commit & Push) stays here: its files are listed with this repository's.
   void listen<{ repo: string }>("show-pending", async (e) => {
-    if (e.payload.repo !== repoPath) await loadRepoAt(e.payload.repo);
+    const inside = repoPath !== null && e.payload.repo.startsWith(`${repoPath}/`);
+    if (e.payload.repo !== repoPath && !inside) await loadRepoAt(e.payload.repo);
     openPendingChanges();
   });
 }
