@@ -157,8 +157,11 @@ async function showContextMenu(sel: Selection) {
     const id = sel.id;
     // The double-click action, so it comes first; a branch with no changesets has nothing to show.
     items.unshift({ id: "view-branch-changes", text: "View Changes", enabled: b.commits.length > 0, action: () => openBranchDiff(id) });
-    const go = switchToBranchCall(b);
-    items.push({ id: "switch-branch", text: "Switch to This Branch", enabled: !!go && !b.isHead, action: () => go && void runSwitch(b.name, go) });
+    const go = switchToBranchCall(model, b);
+    // The checked-out branch too, while it's only behind its remote branch: switching brings it up to date.
+    const behindOnly = !!b.remote && b.ahead === 0 && b.behind > 0;
+    const text = behindOnly ? `Switch to This Branch (↓${b.behind}, brings it up to date)` : "Switch to This Branch";
+    items.push({ id: "switch-branch", text, enabled: !!go && (!b.isHead || behindOnly), action: () => go && void runSwitch(b.name, go) });
     const local = b.refs.find((r) => r.startsWith("refs/heads/"));
     if (local) {
       const name = local.slice("refs/heads/".length);
@@ -190,15 +193,47 @@ function toPush(m: Model): string {
 
 function switchTarget(m: Model, hash: string): { branch?: string; current: boolean } {
   const tipOf = (b: Model["branches"][number]) => {
-    const local = b.refs.find((r) => r.startsWith("refs/heads/"));
-    return local && b.tips[0] === hash ? local.slice("refs/heads/".length) : undefined;
+    const local = localName(b);
+    return local && localTip(m, b) === hash ? local : undefined;
   };
   const names = m.branches.map(tipOf).filter((n): n is string => !!n);
   if (hash === m.headHash && (m.headBranch ? names.includes(m.headBranch) : names.length === 0)) {
     return { branch: m.headBranch, current: true };
   }
-  const lane = tipOf(m.branches[m.owner.get(hash)!]);
-  return { branch: lane ?? names[0], current: false };
+  const owner = m.branches[m.owner.get(hash)!];
+  return { branch: tipOf(owner) ?? catchesUp(m, owner, hash) ?? names[0], current: false };
+}
+
+const localName = (b: Model["branches"][number]) => b.refs.find((r) => r.startsWith("refs/heads/"))?.slice("refs/heads/".length);
+
+/** Where a lane's local branch points (its tips also hold its remote branches'). */
+function localTip(m: Model, b: Model["branches"][number]): string | undefined {
+  const name = localName(b);
+  return name === undefined ? undefined : b.tips.find((t) => m.refsAt.get(t)?.includes(name));
+}
+
+/**
+ * The lane's local branch, when switching to `hash` can bring it up to date
+ * on the way: the branch is only behind its remote branch (nothing of its own
+ * to merge) and `hash` is further along that remote branch. The switch then
+ * moves the branch forward to it (see `catch_up` in src-tauri/src/branch.rs).
+ */
+function catchesUp(m: Model, b: Model["branches"][number], hash: string): string | undefined {
+  const name = localName(b);
+  const tip = localTip(m, b);
+  if (!name || !tip || !b.remote || b.ahead > 0 || b.behind === 0) return undefined;
+  // `tip` in `hash`'s history: walk back from it, no further than where the tip is in the order.
+  const stop = m.index.get(tip) ?? Infinity;
+  const seen = new Set<string>();
+  const todo = [hash];
+  while (todo.length) {
+    const h = todo.pop()!;
+    if (h === tip) return name;
+    if (seen.has(h) || (m.index.get(h) ?? -1) < stop) continue;
+    seen.add(h);
+    todo.push(...(m.commits.get(h)?.parents ?? []));
+  }
+  return undefined;
 }
 
 /** Mirrors `Switched` in src-tauri/src/branch.rs. */
@@ -216,11 +251,13 @@ function switchTo(hash: string, branch: string | undefined) {
  * remote-only one gets a local tracking branch; a deleted or unnamed lane's
  * last changeset is checked out as a detached HEAD.
  */
-function switchToBranchCall(b: Model["branches"][number]): ((repo: string) => Promise<Switched>) | null {
-  const local = b.refs.find((r) => r.startsWith("refs/heads/"));
-  if (local) {
-    const name = local.slice("refs/heads/".length);
-    return (repo) => invoke<Switched>("switch_to_changeset", { repo, at: b.tips[0], branch: name });
+function switchToBranchCall(m: Model, b: Model["branches"][number]): ((repo: string) => Promise<Switched>) | null {
+  const name = localName(b);
+  if (name) {
+    // Only behind its remote branch: go to the end of the lane, bringing the branch up to date.
+    const remoteTip = b.remote && b.ahead === 0 && b.behind > 0 ? b.tips.find((t) => m.refsAt.get(t)?.includes(b.remote!)) : undefined;
+    const at = remoteTip ?? localTip(m, b) ?? b.tips[0];
+    return (repo) => invoke<Switched>("switch_to_changeset", { repo, at, branch: name });
   }
   const remote = b.refs.find((r) => r.startsWith("refs/remotes/"));
   if (remote) return (repo) => invoke<Switched>("switch_to_remote_branch", { repo, remoteRef: remote });

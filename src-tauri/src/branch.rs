@@ -76,14 +76,53 @@ fn switch(repo: &str, at: &str, branch: Option<&str>) -> Result<Switched, String
     let short = &full[..8.min(full.len())];
     if let Some(b) = branch {
         let tip = git(&root, &["rev-parse", "--verify", "-q", &format!("refs/heads/{b}")], &[], None).map_err(|_| format!("{b} is not a local branch"))?;
-        if b.starts_with('-') || tip.trim() != full {
-            return Err(format!("{b} does not point at {short}"));
+        let tip = tip.trim();
+        if b.starts_with('-') {
+            return Err(format!("{b} is not a local branch"));
         }
-        git(&root, &["switch", b], &[], None)?;
-        return Ok(Switched::after(&root, format!("Switched to {b}")));
+        if tip == full {
+            git(&root, &["switch", b], &[], None)?;
+            return Ok(Switched::after(&root, format!("Switched to {b}")));
+        }
+        let Some(remote) = catch_up_from(&root, b, tip, &full) else { return Err(format!("{b} does not point at {short}")) };
+        return catch_up(&root, b, tip, &full, &remote);
     }
     git(&root, &["switch", "--detach", &full], &[], None)?;
     Ok(Switched::after(&root, format!("Switched to changeset {short} (detached HEAD). Create a branch here before committing")))
+}
+
+/// The remote branch ("origin/1.0") that `branch` can be brought up along to changeset `to`:
+/// the branch has nothing of its own past `tip` (its tip is in `to`'s history), and `to` is
+/// on the branch's own remote branch (its upstream, or the same-named one). None otherwise.
+fn catch_up_from(root: &std::path::Path, branch: &str, tip: &str, to: &str) -> Option<String> {
+    git(root, &["merge-base", "--is-ancestor", tip, to], &[], None).ok()?;
+    let own: Vec<String> = match crate::merge::upstream(root, branch) {
+        Some((tracking, _)) => vec![tracking],
+        None => git(root, &["for-each-ref", "--format=%(refname)", &format!("refs/remotes/*/{branch}")], &[], None).ok()?.lines().map(str::to_string).collect(),
+    };
+    let containing = git(root, &["for-each-ref", "--format=%(refname)", "--contains", to, "refs/remotes"], &[], None).ok()?;
+    let found = own.iter().find(|r| containing.lines().any(|c| c == r.as_str()))?;
+    Some(found.trim_start_matches("refs/remotes/").to_string())
+}
+
+/// Brings `branch` (at `tip`) forward to `to` along its remote branch and switches to it. It only
+/// moves the branch along changesets it doesn't have yet, so nothing is merged and no merge
+/// changeset is made. If the switch can't happen (uncommitted changes in the way), the branch
+/// stays where it was.
+fn catch_up(root: &std::path::Path, branch: &str, tip: &str, to: &str, remote: &str) -> Result<Switched, String> {
+    let n: usize = git(root, &["rev-list", "--count", &format!("{tip}..{to}")], &[], None)?.trim().parse().unwrap_or(0);
+    let what = format!("{n} changeset{} from {remote}", if n == 1 { "" } else { "s" });
+    let on_it = git(root, &["symbolic-ref", "-q", "--short", "HEAD"], &[], None).is_ok_and(|h| h.trim() == branch);
+    if on_it {
+        git(root, &["merge", "--ff-only", "--quiet", to], &[], None).map_err(|e| format!("Could not bring {branch} up to {}: {e}", &to[..8]))?;
+    } else {
+        git(root, &["branch", "--force", branch, to], &[], None)?;
+        if let Err(e) = git(root, &["switch", branch], &[], None) {
+            let _ = git(root, &["branch", "--force", branch, tip], &[], None);
+            return Err(e);
+        }
+    }
+    Ok(Switched::after(root, format!("Switched to {branch}, brought up to date with {what}")))
 }
 
 /// Creates a local branch tracking `remote_ref` (`refs/remotes/<remote>/<name>`)
@@ -186,6 +225,67 @@ mod tests {
         assert!(switch(&repo, &first, Some("main")).unwrap_err().contains("does not point"));
         assert!(switch(&repo, &first, Some("nope")).is_err());
         assert!(switch(&repo, "HEAD~1", None).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn switching_further_along_its_remote_branch_brings_a_branch_up_to_date() {
+        let (dir, first, second) = repo_with_two_commits();
+        let repo = dir.to_string_lossy().into_owned();
+        let g = |args: &[&str]| git(&dir, args, &[], None).unwrap().trim().to_string();
+        // As after a fetch: origin/main has moved on to `second`, local main is still at `first`.
+        g(&["remote", "add", "origin", "https://example.invalid/repo.git"]);
+        g(&["update-ref", "refs/remotes/origin/main", &second]);
+        g(&["config", "branch.main.remote", "origin"]);
+        g(&["config", "branch.main.merge", "refs/heads/main"]);
+        g(&["switch", "-q", "--detach", &first]);
+        g(&["branch", "--force", "main", &first]);
+
+        // From elsewhere: main moves up and is checked out; no merge changeset.
+        let s = switch(&repo, &second, Some("main")).unwrap();
+        assert_eq!(s.message, "Switched to main, brought up to date with 1 changeset from origin/main");
+        assert_eq!(g(&["symbolic-ref", "--short", "HEAD"]), "main");
+        assert_eq!(g(&["rev-parse", "main"]), second);
+
+        // While on it.
+        g(&["reset", "-q", "--keep", &first]);
+        switch(&repo, &second, Some("main")).unwrap();
+        assert_eq!(g(&["rev-parse", "HEAD"]), second);
+
+        // Not on its remote branch: refused, as before.
+        g(&["commit", "-q", "--allow-empty", "-m", "three"]);
+        let third = g(&["rev-parse", "HEAD"]);
+        g(&["reset", "-q", "--keep", &second]);
+        assert!(switch(&repo, &third, Some("main")).unwrap_err().contains("does not point"));
+
+        // The branch has a changeset of its own: that's a merge, not this.
+        g(&["update-ref", "refs/remotes/origin/main", &third]);
+        g(&["commit", "-q", "--allow-empty", "-m", "mine"]);
+        assert!(switch(&repo, &third, Some("main")).unwrap_err().contains("does not point"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_branch_stays_put_when_uncommitted_changes_stop_the_switch() {
+        let (dir, _, second) = repo_with_two_commits();
+        let repo = dir.to_string_lossy().into_owned();
+        let g = |args: &[&str]| git(&dir, args, &[], None).unwrap().trim().to_string();
+        std::fs::write(dir.join("f.txt"), "one\n").unwrap();
+        g(&["add", "f.txt"]);
+        g(&["commit", "-q", "-m", "f"]);
+        let tip = g(&["rev-parse", "HEAD"]);
+        std::fs::write(dir.join("f.txt"), "two\n").unwrap();
+        g(&["commit", "-q", "-am", "f two"]);
+        let newer = g(&["rev-parse", "HEAD"]);
+        g(&["remote", "add", "origin", "https://example.invalid/repo.git"]);
+        g(&["update-ref", "refs/remotes/origin/main", &newer]);
+        g(&["branch", "--force", "other", &second]);
+        g(&["switch", "-q", "other"]);
+        g(&["branch", "--force", "main", &tip]);
+        std::fs::write(dir.join("f.txt"), "edited\n").unwrap();
+        assert!(switch(&repo, &newer, Some("main")).is_err());
+        assert_eq!(g(&["rev-parse", "main"]), tip);
+        assert_eq!(g(&["symbolic-ref", "--short", "HEAD"]), "other");
         std::fs::remove_dir_all(&dir).ok();
     }
 
