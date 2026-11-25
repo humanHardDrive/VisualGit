@@ -428,11 +428,15 @@ $("branch-form").addEventListener("submit", async (e) => {
   const name = branchName.value.trim();
   branchCreate.disabled = true;
   try {
+    // The lane it's made on, so its reflog names that branch (and its history stays there in the explorer).
+    const lane = model?.branches[model.owner.get(branchAt) ?? -1];
+    const from = lane?.refs.find((r) => r.startsWith("refs/heads/"))?.slice("refs/heads/".length) ?? null;
     const result = await invoke<{ switched: boolean; switchError: string | null; submodules: SubmoduleUpdate }>("create_branch", {
       repo: path,
       name,
       at: branchAt,
       switchTo: branchSwitch.checked,
+      from,
     });
     branchDialog.close();
     if (result.switchError) notify(`Created ${name}, but could not switch to it: ${result.switchError}`, "error");

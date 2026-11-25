@@ -198,6 +198,44 @@ export function inferModel(raw: RawRepo): Model {
     if (resolved && resolved !== cand.name) cand.hintParent = resolved;
   }
 
+  // Created from a changeset id rather than a branch (`git branch x <id>`, or VisualGit's Create
+  // Branch from This Changeset before it named the lane): the branch it came from is the one that
+  // was at that changeset then, by its own reflog. Failing that (the reflog doesn't go back that
+  // far), one made earlier whose own line runs through it, the nearest. Without this the new
+  // branch, being shorter, would claim the shared history before the branch it came from.
+  const firstParentSteps = (tips: string[], id: string): number | undefined => {
+    let best: number | undefined;
+    for (const tip of tips) {
+      let n = 0;
+      for (let c: string | undefined = tip; c && commits.has(c) && (best === undefined || n < best); c = commits.get(c)!.parents[0], n++) {
+        if (c.startsWith(id)) best = n;
+      }
+    }
+    return best;
+  };
+  for (const cand of byName.values()) {
+    const id = cand.createdFrom;
+    if (cand.hintParent || !id || cand.createdAt === undefined || !/^[0-9a-f]{7,40}$/i.test(id)) continue;
+    const at = cand.createdAt;
+    const others = [...byName.values()].filter((o) => o.name !== cand.name && o.kind !== "remote" && !o.name.endsWith(LOCAL));
+    const thereThen = others.filter((o) => {
+      // Newest first: the first entry no later than then is where it was.
+      const entry = raw.reflogs.get(`refs/heads/${o.name}`)?.find((e) => e.time <= at);
+      return entry?.hash.startsWith(id.toLowerCase());
+    });
+    if (thereThen.length) {
+      cand.hintParent = thereThen.sort((x, y) => (x.createdAt ?? 0) - (y.createdAt ?? 0))[0].name;
+      continue;
+    }
+    let nearest: { name: string; steps: number } | undefined;
+    for (const o of others) {
+      if (o.createdAt !== undefined && o.createdAt >= at) continue; // made afterwards: not where it came from
+      const steps = firstParentSteps(o.tips, id.toLowerCase());
+      if (steps !== undefined && (!nearest || steps < nearest.steps)) nearest = { name: o.name, steps };
+    }
+    if (nearest) cand.hintParent = nearest.name;
+  }
+
   // Branch-name conventions as a tiebreak: long-lived branches claim first.
   for (const cand of byName.values()) {
     if (/^(develop|dev|development)$/.test(cand.name)) cand.priority = -2;
@@ -581,6 +619,9 @@ export function branchNameFromMerge(subject: string, octopus: boolean): string |
   if (m) return m[1];
   m = /^Merge (?:remote-tracking )?branch "([^"]+)"/.exec(subject);
   if (m) return m[1];
+  // Written by hand: "Merge origin/main into main", "Merge feature into main".
+  m = /^Merge ([^\s'"]+) into \S/.exec(subject);
+  if (m) return /^(origin|upstream)\//.test(m[1]) ? stripRemote(m[1]) : m[1];
   return undefined;
 }
 
