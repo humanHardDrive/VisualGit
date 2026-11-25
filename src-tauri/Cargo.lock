@@ -3742,6 +3742,7 @@ version = "1.0.0"
 dependencies = [
  "dunce",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

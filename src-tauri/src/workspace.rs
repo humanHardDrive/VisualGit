@@ -64,6 +64,25 @@ fn config_time(dir: &Path) -> Option<SystemTime> {
     fs::metadata(git_dir.join("config")).and_then(|m| m.modified()).ok()
 }
 
+/// Each folder as a repository, named after its folder, or None when it isn't one (any more).
+pub fn infos(paths: &[String]) -> Vec<Option<RepoInfo>> {
+    let mut found: Vec<RepoInfo> = Vec::new();
+    let mut at: Vec<Option<usize>> = Vec::new();
+    for p in paths {
+        let dir = Path::new(p);
+        match repo_info(dir.parent().unwrap_or(dir), dir) {
+            Some(info) => {
+                at.push(Some(found.len()));
+                found.push(info);
+            }
+            None => at.push(None),
+        }
+    }
+    add_remotes(&mut found);
+    let mut found: Vec<Option<RepoInfo>> = found.into_iter().map(Some).collect();
+    at.into_iter().map(|i| i.and_then(|i| found[i].take())).collect()
+}
+
 /// Fills in each repository's remote. Looking one up takes a git process, so
 /// the answers are kept until the repository's config changes (rescans happen
 /// on every reload), and new lookups run a few at a time.

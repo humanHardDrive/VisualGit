@@ -1,4 +1,4 @@
-//! The native menu bar: the platform default menu, with the open commands at
+//! The native menu bar: the platform default menu, with the repository commands at
 //! the top of File and an About panel carrying version (with the changeset),
 //! build date, author and copyright. Choosing an open command emits a `menu`
 //! event carrying the item id to the webview, which runs the command.
@@ -8,6 +8,7 @@ use tauri::{AppHandle, Emitter, Runtime};
 
 const OPEN_WORKSPACE: &str = "open-workspace";
 const OPEN_REPOSITORY: &str = "open-repository";
+const SWITCH_REPOSITORY: &str = "switch-repository";
 
 /// The commit this binary was built from (see build.rs).
 const CHANGESET: &str = env!("VISUALGIT_CHANGESET");
@@ -17,14 +18,15 @@ const BUILD_DATE: &str = env!("VISUALGIT_BUILD_DATE");
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     // Start from the default so Edit (copy/paste in text fields), Window and Quit keep working.
     let menu = Menu::default(app)?;
-    let open_workspace = MenuItem::with_id(app, OPEN_WORKSPACE, "Open Workspace…", true, Some("CmdOrCtrl+Shift+O"))?;
+    let switch_repository = MenuItem::with_id(app, SWITCH_REPOSITORY, "Switch Repository…", true, Some("CmdOrCtrl+P"))?;
+    let open_workspace = MenuItem::with_id(app, OPEN_WORKSPACE, "Add Workspace…", true, Some("CmdOrCtrl+Shift+O"))?;
     let open_repository = MenuItem::with_id(app, OPEN_REPOSITORY, "Open Repository…", true, Some("CmdOrCtrl+O"))?;
 
     let submenus: Vec<Submenu<R>> = menu.items()?.into_iter().filter_map(|item| item.as_submenu().cloned()).collect();
     match submenus.iter().find(|s| s.text().is_ok_and(|t| t == "File")) {
-        Some(file) => file.insert_items(&[&open_workspace, &open_repository, &PredefinedMenuItem::separator(app)?], 0)?,
+        Some(file) => file.insert_items(&[&switch_repository, &open_repository, &open_workspace, &PredefinedMenuItem::separator(app)?], 0)?,
         // The default menu has no File menu on Linux.
-        None => menu.prepend(&Submenu::with_items(app, "File", true, &[&open_workspace, &open_repository])?)?,
+        None => menu.prepend(&Submenu::with_items(app, "File", true, &[&switch_repository, &open_repository, &open_workspace])?)?,
     }
 
     // The default About item (app menu on macOS, Help elsewhere) only knows the version.
@@ -74,7 +76,7 @@ fn version(major: u64, minor: u64, changeset: &str) -> String {
 
 pub fn handle<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
     let id = event.id().as_ref();
-    if id == OPEN_WORKSPACE || id == OPEN_REPOSITORY {
+    if id == OPEN_WORKSPACE || id == OPEN_REPOSITORY || id == SWITCH_REPOSITORY {
         let _ = app.emit("menu", id);
     }
 }

@@ -21,6 +21,8 @@ export interface RepoInfo {
   detached: boolean;
   /** null: no remotes. Undefined: not looked up (a repository opened from outside the workspace). */
   remote?: Remote | null;
+  /** On the list but gone from where it was (see model/library.ts). */
+  missing?: boolean;
 }
 
 export interface WorkspaceListOptions {
@@ -90,7 +92,11 @@ export function renderWorkspaceList(host: HTMLElement, repos: RepoInfo[], opts: 
     const name = el("td", "col-repo");
     name.append(el("span", "name", r.name));
     const headCell = el("td", "col-head");
-    if (r.head) headCell.append(el("span", r.detached ? "mono muted" : "mono", r.detached ? `detached at ${r.head}` : r.head));
+    if (r.missing) {
+      tr.classList.add("missing");
+      headCell.append(el("span", "repo-missing", "Not found"));
+      tr.title = "It isn't at this folder any more. Click to forget it, or open it from its new place.";
+    } else if (r.head) headCell.append(el("span", r.detached ? "mono muted" : "mono", r.detached ? `detached at ${r.head}` : r.head));
     const path = el("td", "col-path muted", shownPath(r.path));
     path.title = shownPath(r.path);
     tr.append(name, headCell, remoteCell(r.remote), path);

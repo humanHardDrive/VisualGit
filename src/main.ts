@@ -16,10 +16,12 @@ import { branchColor, Explorer, pushLabel, type Selection, type View } from "./v
 import { pushBranch as pushBranchChecked } from "./view/push.ts";
 import { remoteMoved, remoteMovedAlert } from "./view/remoteMoved.ts";
 import { filterRepos, renderWorkspaceList, type RepoInfo } from "./view/workspaceList.ts";
+import { RepoSwitcher } from "./view/repoSwitcher.ts";
+import { addRepository, addWorkspace, carriedOver, emptyLibrary, groupLibrary, removeRepository, removeWorkspace, type Library, type LibraryGroup, type ListedRepo } from "./model/library.ts";
 import { createPendingView } from "./pending/view.ts";
 import { createSearchBox } from "./view/searchBox.ts";
 import { reportSubmoduleFailures, submodulesUpdated, type SubmoduleUpdate } from "./view/submoduleUpdate.ts";
-import { isMac, isWindows, localizeShortcuts, shownPath, slashPath, TRASH } from "./platform.ts";
+import { isMac, isWindows, localizeShortcuts, shortcutText, shownPath, slashPath, TRASH } from "./platform.ts";
 
 /** Selection saved across reloads; branches by name, since ids are reassigned. */
 type SavedSelection = { kind: "commit"; hash: string } | { kind: "branch"; name: string };
@@ -35,20 +37,29 @@ const workspaceView = $("workspace-view");
 const repoSearch = $<HTMLInputElement>("repo-search");
 const emptyState = $("empty-state");
 const stats = $("stats");
-const repoNameEl = $("repo-name");
 const reloadBtn = $<HTMLButtonElement>("reload");
 const fetchBtn = $<HTMLButtonElement>("fetch");
 /** A fetch is running (Fetch stays disabled through reloads meanwhile). */
 let fetching = false;
 
+// Where the workspace and last repository were remembered before the stored list (see model/library.ts); read once, to carry them over.
 const LAST_REPO_KEY = "visualgit.lastRepo";
 const WORKSPACE_KEY = "visualgit.workspace";
 // Ctrl+Shift+O rather than ⇧⌘O off macOS; before the welcome text is copied.
 localizeShortcuts();
 const welcome = [...emptyState.childNodes].map((n) => n.cloneNode(true));
 
-let workspace: string | null = null;
-let repos: RepoInfo[] = [];
+/** The stored list of workspaces and repositories (see model/library.ts and src-tauri/src/library.rs). */
+let library: Library = emptyLibrary();
+/** What scanning each workspace found; null for a folder that couldn't be read. */
+const scans = new Map<string, RepoInfo[] | null>();
+/** The repositories added on their own, looked up; null for one that's gone. */
+const singles = new Map<string, RepoInfo | null>();
+/** The list as shown, grouped by workspace, and flattened. */
+let groups: LibraryGroup[] = [];
+let repos: ListedRepo[] = [];
+/** Repositories the open one was opened from (a submodule opened as a repository), outermost first. */
+let parents: string[] = [];
 let repoPath: string | null = null;
 let git: GitRunner | null = null;
 let model: Model | null = null;
@@ -71,6 +82,25 @@ const explorer = new Explorer(canvas, $("tooltip"), {
   onOpenBranch: (id) => openBranchDiff(id),
   onArrowMenu: (edge) => void showArrowMenu(edge),
 });
+
+const switcher = new RepoSwitcher($<HTMLButtonElement>("repo-switch"), {
+  groups: () => groups,
+  current: () => repoPath,
+  parents: () => parents.map((path) => ({ path, name: repoName(path) })),
+  shown: shownPath,
+  // The open repository's is already known.
+  pending: async (path) => (path === repoPath && model ? model.pendingChanges : invoke<boolean>("has_pending_changes", { repo: path })),
+  onPick: (r) => {
+    if (r.missing) void forgetMissing(r.path, "repository");
+    else if (r.path !== repoPath) void loadRepoAt(r.path);
+  },
+  onBack: (path) => void loadRepoAt(path, { back: true }),
+  onMissingWorkspace: (path) => void forgetMissing(path, "workspace"),
+  onManage: () => showView("workspace"),
+  onOpenRepository: () => void chooseRepo(),
+  onAddWorkspace: () => void chooseWorkspace(),
+});
+switcher.setLabel(null);
 
 // ---- storage ---------------------------------------------------------------
 
@@ -575,7 +605,7 @@ function rememberCurrent() {
  * Opens (or reloads) a repository.
  * `remembered`: the path came from a previous session; if it is gone, forget it quietly.
  */
-async function loadRepoAt(path: string, opts: { reload?: boolean; remembered?: boolean } = {}) {
+async function loadRepoAt(path: string, opts: { reload?: boolean; remembered?: boolean; nestedFrom?: string; back?: boolean } = {}) {
   const seq = ++loadSeq;
   if (!opts.reload) {
     loadingPath = path;
@@ -596,12 +626,15 @@ async function loadRepoAt(path: string, opts: { reload?: boolean; remembered?: b
     repoPath = root;
     git = runner;
     model = next;
-    store(LAST_REPO_KEY, root);
+    // Opened from another (a submodule opened as a repository): remember the way back. Anything else starts afresh.
+    if (opts.nestedFrom && opts.nestedFrom !== root) parents = [...parents, opts.nestedFrom];
+    else if (opts.back) parents = parents.slice(0, Math.max(0, parents.lastIndexOf(root)));
+    else if (!opts.reload && switching) parents = [];
+    // Opening a repository puts it on the list, and it's the one reopened next time; a submodule isn't listed on its own.
+    if (!parents.length) setLibrary({ ...addRepository(library, root, (p) => repos.some((r) => r.path === p)), last: root });
 
-    // The name the Workspace view lists it under (`group/app`), else its folder name; the path is in the tooltip.
-    const name = repos.find((r) => r.path === root)?.name ?? (root.split("/").pop() || root);
-    repoNameEl.textContent = name;
-    repoNameEl.title = shownPath(root);
+    switcher.setLabel(repoName(root), shownPath(root));
+    const name = repoName(root);
     document.title = `${name} · VisualGit`;
     pendingDot.hidden = !next.pendingChanges;
     void pendingView.setRepo(root);
@@ -622,7 +655,8 @@ async function loadRepoAt(path: string, opts: { reload?: boolean; remembered?: b
   } catch (err) {
     if (seq !== loadSeq) return;
     if (opts.remembered) {
-      store(LAST_REPO_KEY, null);
+      // Gone since last time: it stays on the list (shown as not found) but isn't reopened.
+      setLibrary({ ...library, last: null });
       if (!repoPath) showWelcome();
     } else if (!opts.reload || repoPath === path) {
       // A failed switch leaves nothing stale on screen.
@@ -634,8 +668,8 @@ async function loadRepoAt(path: string, opts: { reload?: boolean; remembered?: b
       searchInput.disabled = true;
       refreshSearch();
       applySelection(null, false);
-      repoNameEl.textContent = "";
-      repoNameEl.title = "";
+      parents = [];
+      switcher.setLabel(null);
       stats.textContent = "";
       pendingDot.hidden = true;
       void pendingView.setRepo(null);
@@ -651,50 +685,91 @@ async function loadRepoAt(path: string, opts: { reload?: boolean; remembered?: b
   }
 }
 
-async function openWorkspace(chosen: string, opts: { remembered?: boolean } = {}) {
-  const path = slashPath(chosen);
+/** The name a repository is listed under (`group/app` in its workspace), else its folder's name. */
+function repoName(path: string): string {
+  return repos.find((r) => r.path === path)?.name ?? (path.split("/").pop() || path);
+}
+
+/** Changes the stored list, saves it, and shows the change. */
+function setLibrary(next: Library) {
+  if (JSON.stringify(next) === JSON.stringify(library)) return;
+  library = next;
+  relist();
+  if (inTauri()) {
+    void invoke("save_library", { library }).catch((err) => message(String(err), { title: "Could not save the repository list", kind: "error" }));
+  }
+}
+
+/** Regroups what's listed after the list or a scan changed. */
+function relist() {
+  groups = groupLibrary(library, scans, singles);
+  repos = groups.flatMap((g) => g.repos);
+  renderRepos();
+  switcher.refresh();
+}
+
+/** Scans one workspace; false (and the folder is listed as not found) if it can't be read. */
+async function scanWorkspace(path: string): Promise<boolean> {
   try {
-    const found = await invoke<RepoInfo[]>("find_repos", { root: path });
-    workspace = path;
-    repos = found;
-    store(WORKSPACE_KEY, path);
-    renderRepos();
+    scans.set(path, await invoke<RepoInfo[]>("find_repos", { root: path }));
     return true;
-  } catch (err) {
-    if (opts.remembered) store(WORKSPACE_KEY, null);
-    else showMessage("Could not open workspace", String(err));
+  } catch {
+    scans.set(path, null);
     return false;
   }
 }
 
+/** Scans every workspace and looks up the repositories added on their own. */
 async function rescanWorkspace() {
-  if (!workspace) return;
+  const lib = library;
+  await Promise.all(lib.workspaces.map(scanWorkspace));
+  const infos = lib.repositories.length ? await invoke<(RepoInfo | null)[]>("repository_infos", { paths: lib.repositories }).catch(() => null) : [];
+  if (infos) lib.repositories.forEach((p, i) => singles.set(p, infos[i]));
+  relist();
+}
+
+/** Adds a workspace folder to the list, scanning it first. */
+async function addWorkspaceAt(chosen: string): Promise<boolean> {
+  const path = slashPath(chosen);
   try {
-    repos = await invoke<RepoInfo[]>("find_repos", { root: workspace });
-    renderRepos();
-  } catch {
-    // Workspace folder vanished; keep the last list until the user picks another.
+    scans.set(path, await invoke<RepoInfo[]>("find_repos", { root: path }));
+  } catch (err) {
+    await message(String(err), { title: "Could not add the workspace", kind: "error" });
+    return false;
   }
+  setLibrary(addWorkspace(library, path));
+  relist();
+  return true;
 }
 
 const isInside = (path: string, root: string) => path === root || path.startsWith(root.endsWith("/") ? root : `${root}/`);
 
-/** After opening a workspace: the last repository if it lives there, else ask the user to pick. */
-function openDefaultRepo() {
-  const stored = recall(LAST_REPO_KEY);
-  const last = stored && slashPath(stored);
-  const target = last && workspace && isInside(last, workspace) ? repos.find((r) => r.path === last) : undefined;
-  if (target) void loadRepoAt(target.path, { remembered: true });
-  else if (!repoPath) {
-    showMessage(
-      repos.length ? "Pick a repository" : "No repositories found",
-      repos.length
-        ? `${repos.length} repositories in this workspace. Choose one in the Workspace view.`
-        : "No Git repositories were found in this folder or the four levels below it.",
-    );
-    // Show the list to pick from.
-    showView("workspace");
-  }
+/** Where Create and Clone put a new repository: the open repository's workspace, else the first one. */
+function targetWorkspace(): string | null {
+  return (repoPath && library.workspaces.find((w) => isInside(repoPath!, w))) || library.workspaces[0] || null;
+}
+
+/** With nothing open: say so, and show the list to pick from. */
+function askToPick() {
+  if (repoPath) return;
+  // Nothing listed yet: the welcome text says how to start.
+  if (!repos.length) return showWelcome();
+  showMessage("Pick a repository", shortcutText("Choose one from the repository menu at the top (⌘P), or in the Workspace view."));
+  showView("workspace");
+}
+
+/** A listed repository or workspace that isn't where it was: forget it, or keep it listed. */
+async function forgetMissing(path: string, kind: "repository" | "workspace") {
+  const what = kind === "repository" ? `The repository ${path.split("/").pop()}` : `The workspace folder ${path.split("/").pop()}`;
+  const forget = await ask(
+    `${what} isn't at ${shownPath(path)} any more. It may have been moved or deleted, or be on a drive that isn't connected.\n\n` +
+      `Forget it? Only VisualGit's list changes; nothing on disk is touched. If it has moved, open it from its new place afterwards.`,
+    { title: `${kind === "repository" ? "Repository" : "Workspace"} not found`, kind: "warning", okLabel: "Forget It", cancelLabel: "Keep It" },
+  );
+  if (!forget) return;
+  setLibrary(kind === "repository" ? removeRepository(library, path) : removeWorkspace(library, path));
+  if (kind === "workspace") scans.delete(path);
+  relist();
 }
 
 // ---- messages ------------------------------------------------------------------
@@ -717,8 +792,8 @@ function showMessage(title: string, text: string) {
 
 // ---- sidebar ---------------------------------------------------------------------
 
-/** Workspace repositories, plus the open repository if it lives elsewhere. */
-function listedRepos(): RepoInfo[] {
+/** Listed repositories, plus the open repository if it isn't one of them (a submodule opened as a repository). */
+function listedRepos(): ListedRepo[] {
   const list = [...repos];
   if (repoPath && !list.some((r) => r.path === repoPath)) {
     list.unshift({ path: repoPath, name: repoPath.split("/").pop() || repoPath, head: model?.headBranch ?? null, detached: false });
@@ -727,9 +802,10 @@ function listedRepos(): RepoInfo[] {
 }
 
 function renderRepos() {
-  workspaceName.textContent = workspace ? workspace.split("/").pop() || workspace : "No workspace open";
-  workspaceName.title = workspace ? shownPath(workspace) : "";
-  ($("rescan") as HTMLButtonElement).disabled = !workspace;
+  const n = library.workspaces.length;
+  workspaceName.textContent = n ? `${n} workspace${n === 1 ? "" : "s"}` : "No workspaces";
+  workspaceName.title = library.workspaces.map(shownPath).join("\n");
+  ($("rescan") as HTMLButtonElement).disabled = !n && !library.repositories.length;
   const list = listedRepos();
   const shown = filterRepos(list, repoSearch.value).length;
   $("repo-count").textContent = repoSearch.value.trim()
@@ -740,20 +816,21 @@ function renderRepos() {
     current: repoPath,
     loading: loadingPath,
     query: repoSearch.value,
-    empty: workspace
-      ? "No Git repositories were found in this folder or the four levels below it."
-      : "No workspace is open. Choose Open Workspace… and pick the folder you keep your repositories in.",
+    empty: n
+      ? "No Git repositories were found in the workspaces' folders or the four levels below them."
+      : "No repositories yet. Choose Add Workspace… and pick the folder you keep your repositories in, or open one with File › Open Repository….",
     onOpen: (r) => {
-      if (r.path !== repoPath) void loadRepoAt(r.path);
+      if ((r as ListedRepo).missing) void forgetMissing(r.path, "repository");
+      else if (r.path !== repoPath) void loadRepoAt(r.path);
     },
-    onActivate: (r) => openRepoInExplorer(r),
+    onActivate: (r) => ((r as ListedRepo).missing ? void forgetMissing(r.path, "repository") : openRepoInExplorer(r)),
   });
 }
 
 // ---- create repository -------------------------------------------------------------
 
 const repoDialog = $<HTMLDialogElement>("repo-dialog");
-const repoName = $<HTMLInputElement>("repo-name");
+const repoNameInput = $<HTMLInputElement>("repo-name");
 const repoBranch = $<HTMLInputElement>("repo-branch");
 const repoOpen = $<HTMLInputElement>("repo-open");
 const repoRemote = $<HTMLInputElement>("repo-remote");
@@ -776,9 +853,11 @@ interface WebPage {
   remote: string;
 }
 
-async function showWorkspaceMenu(repo?: RepoInfo) {
+async function showWorkspaceMenu(repo?: ListedRepo) {
   const items: ({ id: string; text: string; enabled?: boolean; action?: () => void } | { item: "Separator" })[] = [];
-  if (repo) {
+  if (repo?.missing) {
+    items.push({ id: "forget-repo", text: "Forget Repository…", action: () => void forgetMissing(repo.path, "repository") }, { item: "Separator" });
+  } else if (repo) {
     // Where the repository is hosted, from its remote's URL; not knowing just leaves the item disabled.
     const page = await invoke<WebPage | null>("repo_web_page", { repo: repo.path }).catch(() => null);
     items.push(
@@ -791,20 +870,36 @@ async function showWorkspaceMenu(repo?: RepoInfo) {
             action: () => void invoke("open_repo_web_page", { repo: repo.path }).catch((err) => notify(`Could not open ${page.url}: ${err}`, "error")),
           }
         : { id: "open-web", text: "Open on Hosting Site (no remote)", enabled: false },
-      { item: "Separator" },
     );
+    // Taking it off the list: on its own, or its whole workspace. Nothing on disk is touched.
+    const home = library.workspaces.find((w) => scans.get(w)?.some((r) => r.path === repo.path));
+    if (repo.own) items.push({ id: "remove-repo", text: "Remove from List", action: () => setLibrary(removeRepository(library, repo.path)) });
+    else if (home) {
+      items.push({
+        id: "remove-workspace",
+        text: `Remove Workspace “${home.split("/").pop()}” from List`,
+        action: () => {
+          setLibrary(removeWorkspace(library, home));
+          scans.delete(home);
+          relist();
+        },
+      });
+    }
+    items.push({ item: "Separator" });
   }
+  const ws = targetWorkspace();
+  const where = ws && library.workspaces.length > 1 ? ` in “${ws.split("/").pop()}”` : "";
   items.push(
     {
       id: "create-repo",
-      text: workspace ? "Create New Repository…" : "Create New Repository… (open a workspace first)",
-      enabled: !!workspace,
+      text: ws ? `Create New Repository${where}…` : "Create New Repository… (add a workspace first)",
+      enabled: !!ws,
       action: () => openRepoDialog(),
     },
     {
       id: "clone-repo",
-      text: workspace ? "Clone Repository…" : "Clone Repository… (open a workspace first)",
-      enabled: !!workspace && !cloning,
+      text: ws ? `Clone Repository${where}…` : "Clone Repository… (add a workspace first)",
+      enabled: !!ws && !cloning,
       action: () => openCloneDialog(),
     },
   );
@@ -812,26 +907,33 @@ async function showWorkspaceMenu(repo?: RepoInfo) {
   await menu.popup();
 }
 
+/** The workspace the open Create or Clone dialog puts the new repository in. */
+let newRepoWorkspace: string | null = null;
+/** Repositories already in that workspace, by their names there. */
+const inNewRepoWorkspace = () => (newRepoWorkspace ? (scans.get(newRepoWorkspace) ?? []) : []);
+
 function openRepoDialog() {
+  const workspace = (newRepoWorkspace = targetWorkspace());
   if (!workspace) return;
   $("repo-workspace").textContent = workspace.split("/").pop() || workspace;
   $("repo-workspace").title = shownPath(workspace);
-  repoName.value = "";
+  repoNameInput.value = "";
   repoBranch.value = "main";
   repoRemote.value = "";
   repoRemoteNote.textContent = REMOTE_HINT;
   repoError.textContent = "";
   updateRepoDialog();
   repoDialog.showModal();
-  repoName.focus();
+  repoNameInput.focus();
 }
 
 /** The folder the new repository goes in, and anything wrong with the name that's quick to spot. */
 function updateRepoDialog() {
-  const name = repoName.value.trim().replace(/\/+$/, "");
+  const workspace = newRepoWorkspace;
+  const name = repoNameInput.value.trim().replace(/\/+$/, "");
   $("repo-location").textContent = workspace ? shownPath(`${workspace}/${name || "…"}`) : "";
-  const taken = repos.some((r) => r.name === name);
-  const inside = repos.find((r) => name.startsWith(`${r.name}/`));
+  const taken = inNewRepoWorkspace().some((r) => r.name === name);
+  const inside = inNewRepoWorkspace().find((r) => name.startsWith(`${r.name}/`));
   repoError.textContent = taken
     ? `The workspace already has a repository named “${name}”`
     : inside
@@ -852,7 +954,7 @@ async function describeRemote() {
   repoRemoteNote.textContent = page ? `Pushes to ${page.host} · ${page.url}` : REMOTE_HINT;
 }
 
-repoName.addEventListener("input", updateRepoDialog);
+repoNameInput.addEventListener("input", updateRepoDialog);
 repoBranch.addEventListener("input", updateRepoDialog);
 repoRemote.addEventListener("input", () => {
   updateRepoDialog();
@@ -862,12 +964,13 @@ $("repo-cancel").addEventListener("click", () => repoDialog.close());
 
 $("repo-form").addEventListener("submit", async (e) => {
   e.preventDefault();
+  const workspace = newRepoWorkspace;
   if (!workspace) return;
   repoCreate.disabled = true;
   try {
     const made = await invoke<RepoInfo>("create_repo", {
       workspace,
-      name: repoName.value,
+      name: repoNameInput.value,
       branch: repoBranch.value.trim() || null,
       remote: repoRemote.value.trim() || null,
     });
@@ -901,6 +1004,7 @@ function folderFromUrl(url: string): string {
 }
 
 function openCloneDialog() {
+  const workspace = (newRepoWorkspace = targetWorkspace());
   if (!workspace || cloning) return;
   $("clone-workspace").textContent = workspace.split("/").pop() || workspace;
   $("clone-workspace").title = shownPath(workspace);
@@ -915,10 +1019,11 @@ function openCloneDialog() {
 
 function updateCloneDialog() {
   if (!cloneNameTyped) cloneName.value = folderFromUrl(cloneUrl.value);
+  const workspace = newRepoWorkspace;
   const name = cloneName.value.trim().replace(/\/+$/, "");
   $("clone-location").textContent = workspace ? shownPath(`${workspace}/${name || "…"}`) : "";
-  const taken = repos.some((r) => r.name === name);
-  const inside = repos.find((r) => name.startsWith(`${r.name}/`));
+  const taken = inNewRepoWorkspace().some((r) => r.name === name);
+  const inside = inNewRepoWorkspace().find((r) => name.startsWith(`${r.name}/`));
   cloneError.textContent = taken
     ? `The workspace already has a repository named “${name}”`
     : inside
@@ -936,6 +1041,7 @@ $("clone-cancel").addEventListener("click", () => cloneDialog.close());
 
 $("clone-form").addEventListener("submit", async (e) => {
   e.preventDefault();
+  const workspace = newRepoWorkspace;
   if (!workspace || cloning) return;
   const url = cloneUrl.value.trim();
   const name = cloneName.value.trim();
@@ -948,7 +1054,7 @@ $("clone-form").addEventListener("submit", async (e) => {
   try {
     const made = await invoke<RepoInfo>("clone_repo", { workspace: at, url, name });
     notify(`Cloned ${made.name}.`, "ok");
-    if (workspace === at) await rescanWorkspace();
+    await rescanWorkspace();
     if (cloneOpen.checked) void loadRepoAt(made.path);
   } catch (err) {
     notify(`Could not clone ${url}: ${err}`, "error");
@@ -1305,16 +1411,18 @@ function openAddSubmodule(folder: string) {
   // Inside an open submodule, the new one goes into that submodule's repository.
   const w = whereIs(folder);
   if (!w) return;
-  void invoke("open_add_submodule_window", { repo: w.repo, folder: w.path, workspace }).catch((err) =>
+  void invoke("open_add_submodule_window", { repo: w.repo, folder: w.path, workspace: targetWorkspace() }).catch((err) =>
     message(String(err), { title: "Could not add a submodule", kind: "error" }),
   );
 }
 
 /** Makes a submodule (or repository inside) the open repository, e.g. to commit in it; then `then`. */
 async function openNested(root: string, then?: () => void) {
-  await loadRepoAt(root);
+  const from = repoPath ?? undefined;
+  await loadRepoAt(root, { nestedFrom: from });
   if (repoPath !== root) return; // couldn't open it (loadRepoAt said why)
-  notify(`Switched to ${root.split("/").pop()}, a repository inside the one you were in. Switch back from the Workspace view.`, "ok");
+  const back = from ? ` To go back to ${repoName(from)}, use the repository menu at the top (⌘P).` : "";
+  notify(`Switched to ${root.split("/").pop()}, a repository inside the one you were in.${back}`, "ok");
   then?.();
 }
 
@@ -1623,30 +1731,14 @@ function stepRow(dir: 1 | -1) {
 
 // ---- commands ----------------------------------------------------------------------
 
+/** Adds a workspace: every repository in the chosen folder joins the list. The open repository stays open. */
 async function chooseWorkspace() {
-  const chosen = await open({ directory: true, title: "Open workspace folder", defaultPath: workspace ? shownPath(workspace) : undefined });
+  const near = targetWorkspace();
+  const chosen = await open({ directory: true, title: "Add workspace folder", defaultPath: near ? shownPath(near) : undefined });
   if (typeof chosen !== "string") return;
-  const dir = slashPath(chosen);
-  if (await openWorkspace(dir)) {
+  if (await addWorkspaceAt(chosen)) {
     showView("workspace");
-    // Stay on the current repository if it belongs to the new workspace.
-    if (!repoPath || !isInside(repoPath, dir)) {
-      rememberCurrent();
-      repoPath = null;
-      model = null;
-      git = null;
-      explorer.clear();
-      searchInput.disabled = true;
-      refreshSearch();
-      applySelection(null, false);
-      repoNameEl.textContent = "";
-      repoNameEl.title = "";
-      stats.textContent = "";
-      pendingDot.hidden = true;
-      void pendingView.setRepo(null);
-      openDefaultRepo();
-    }
-    renderRepos();
+    askToPick();
   }
 }
 
@@ -1783,6 +1875,7 @@ if (inTauri()) {
   void listen<string>("menu", (e) => {
     if (e.payload === "open-workspace") void chooseWorkspace();
     else if (e.payload === "open-repository") void chooseRepo();
+    else if (e.payload === "switch-repository") switcher.open();
   });
   // A merge made in a merge window.
   void listen<{ repo: string }>("repo-changed", (e) => {
@@ -1818,14 +1911,20 @@ window.addEventListener("focus", reload);
 
 async function start() {
   const fromArgs = await invoke<string | null>("initial_repo");
-  const ws = recall(WORKSPACE_KEY);
-  const hasWorkspace = ws ? await openWorkspace(ws, { remembered: true }) : false;
-  if (fromArgs) void loadRepoAt(fromArgs);
-  else if (hasWorkspace) openDefaultRepo();
+  // The stored list; the first time, what was remembered before it existed.
+  const stored = await invoke<Library | null>("load_library").catch(async (err) => {
+    await message(String(err), { title: "Could not read the repository list", kind: "error" });
+    return emptyLibrary();
+  });
+  if (stored) library = stored;
   else {
     const last = recall(LAST_REPO_KEY);
-    if (last) void loadRepoAt(last, { remembered: true });
+    setLibrary(carriedOver(recall(WORKSPACE_KEY), last && slashPath(last), isInside));
   }
+  await rescanWorkspace();
+  if (fromArgs) void loadRepoAt(fromArgs);
+  else if (library.last) void loadRepoAt(library.last, { remembered: true });
+  else askToPick();
 }
 
 showView(currentView);

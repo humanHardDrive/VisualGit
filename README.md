@@ -43,17 +43,23 @@ In PowerShell, set the variable first: `$env:VISUALGIT_REPO = "C:\path\to\repo";
 
 **Shortcuts** are written here as macOS shows them. On Windows and Linux, ⌘ is Ctrl, ⇧ is Shift and ↩ is Enter (⇧⌘O is Ctrl+Shift+O), as the app's own menus and tooltips say. Where this README says the Trash, on Windows it's the Recycle Bin.
 
-**Workspaces.** Choose *File › Open Workspace…* (or *Open Workspace…* in the Workspace view) and pick the folder you keep your repositories in, e.g. `~/Documents/GitHub` (or `C:\Users\you\source\repos` on Windows).
+**The repository list.** VisualGit keeps a list of your repositories, in `library.json` in its settings folder:
+
+- **Workspaces:** folders whose repositories are all listed. Choose *File › Add Workspace…* (or *Add Workspace…* in the Workspace view) and pick the folder you keep your repositories in, e.g. `~/Documents/GitHub` (or `C:\Users\you\source\repos` on Windows). You can add as many as you like.
+- **Repositories on their own:** any repository you open from outside a workspace (*File › Open Repository…*, or a path given at launch) joins the list.
+- **The repository menu:** the open repository's name in the middle of the toolbar. Click it, or press ⌘P (*File › Switch Repository…*), for the list, grouped by workspace. Type to search (with `*` and `?`, as elsewhere), use ↑/↓ and Enter to pick, Esc to close. A dot marks a repository with uncommitted changes; the dots fill in as each is checked, in the background. Switching keeps you in the view you're in. A submodule opened as a repository shows as `app › lib`, and the menu starts with *Back to app*. The menu ends with *Manage Repositories…* (the Workspace view), *Open Repository…* and *Add Workspace…*.
+- **Removing:** right-click a repository in the Workspace view and choose *Remove from List*, or for a workspace's repository, *Remove Workspace “…” from List*. Only the list changes; nothing on disk is touched.
+- **Gone missing:** a repository or workspace folder that has been moved or deleted (or is on a drive that isn't connected) stays listed, marked *not found*. Click it to forget it; if it moved, open it from its new place.
 
 - **Finding repositories:** VisualGit looks up to four levels down, skipping hidden folders and build folders such as `node_modules` and `target`.
-- **The Workspace view:** one of the entries under *View*. It lists every repository with what it has checked out, its remote and its path, and you can search their names with ⌘F.
+- **The Workspace view:** one of the entries under *View*. It lists every repository on the list with what it has checked out, its remote and its path, and you can search their names with ⌘F.
   - Click a repository to open it. Double-click it, or press Enter in the search box, to open it and go straight to the Branch Explorer.
-  - *Rescan* looks for new repositories.
+  - *Rescan* looks for new repositories in every workspace.
   - **Remote:** where the repository pushes to: the hosting service (*GitHub*, *GitLab*, …), or the server's name if it's self-hosted, or *Local folder* for a remote that's a path on disk. *Local only* means it has no remote. It's `origin` when there is one, otherwise the remote is named. Hover for the full URL (never including a password or token).
   - Right-click a repository for *Switch Active Repo* (the same as double-clicking it) and *Open on GitHub* (or GitLab, Bitbucket, Azure DevOps, Codeberg, SourceHut, or the server's name if it's self-hosted). The page comes from the repository's remote URL: `origin` first, then `upstream`, then any other. SSH host aliases from `~/.ssh/config` are followed to the real host, and any user name or token in the URL is left out of the address.
-  - Right-click anywhere in the view and choose *Create New Repository…* to make one in the workspace. A name like `group/my-project` creates the folders too. You also choose the first branch (`main` unless you change it) and, optionally, a remote to push to, which becomes `origin`. Git can't create the repository on the server, so it must already exist there. The first *Commit & Push* publishes the branch to it and tracks it. Without a remote, the repository is local only. Only https://, http://, ssh://, git://, file:// and `git@host:path` remotes are accepted.
-  - Right-click anywhere in the view and choose *Clone Repository…* to `git clone` a URL into the workspace. The folder name comes from the URL (you can change it, `group/name` works too). The dialog closes and git's progress shows in the corner; the clone is listed, and opened if you asked, when it's done. There's no terminal to type a password into, so private repositories need credentials Git already has: a credential helper for https:// (such as the macOS Keychain, or Git Credential Manager, which comes with Git for Windows), or an SSH key in your agent. A folder that already exists but isn't a repository yet becomes one, and its files are left as they are. VisualGit won't create a repository inside another one, or anywhere the workspace scan wouldn't find it: in a hidden or build folder, or more than four levels down.
-- **Remembered settings:** each repository keeps its own zoom, scroll position and selection while you switch. The workspace and the last repository reopen at the next launch.
+  - Right-click anywhere in the view and choose *Create New Repository…* to make one in a workspace: the open repository's, otherwise the first one added (the menu names it when there are several). A name like `group/my-project` creates the folders too. You also choose the first branch (`main` unless you change it) and, optionally, a remote to push to, which becomes `origin`. Git can't create the repository on the server, so it must already exist there. The first *Commit & Push* publishes the branch to it and tracks it. Without a remote, the repository is local only. Only https://, http://, ssh://, git://, file:// and `git@host:path` remotes are accepted.
+  - Right-click anywhere in the view and choose *Clone Repository…* to `git clone` a URL into a workspace, chosen the same way. The folder name comes from the URL (you can change it, `group/name` works too). The dialog closes and git's progress shows in the corner; the clone is listed, and opened if you asked, when it's done. There's no terminal to type a password into, so private repositories need credentials Git already has: a credential helper for https:// (such as the macOS Keychain, or Git Credential Manager, which comes with Git for Windows), or an SSH key in your agent. A folder that already exists but isn't a repository yet becomes one, and its files are left as they are. VisualGit won't create a repository inside another one, or anywhere the workspace scan wouldn't find it: in a hidden or build folder, or more than four levels down.
+- **Remembered settings:** each repository keeps its own zoom, scroll position and selection while you switch. The last repository reopens at the next launch.
 
 *File › Open Repository…* opens a single repository from anywhere.
 
@@ -61,7 +67,7 @@ The app opens whatever repository you pass as `visualgit /path/to/repo` or in `V
 
 **Views.** The *View* pane in the sidebar switches between five views:
 
-- **Workspace:** the repositories in the open workspace (see above).
+- **Workspace:** every repository on the list (see above).
 - **Branch Explorer:** the lanes.
 - **Branch List:** a table of every branch.
   - **What it shows:** each branch's lane colour, its badges (HEAD, empty, remote, deleted, not pushed), how many changesets it has, its latest changeset, and that changeset's author and date.
@@ -196,8 +202,9 @@ The view refreshes when the window regains focus (or on ⌘R), and the other vie
 
 | Key | Action |
 | --- | --- |
-| `⇧⌘O` / `⌘O` | File › Open Workspace… / Open Repository… |
-| `⌘[` / `⌘]` | Previous / next repository in the workspace |
+| `⌘P` | File › Switch Repository…: the repository menu |
+| `⇧⌘O` / `⌘O` | File › Add Workspace… / Open Repository… |
+| `⌘[` / `⌘]` | Previous / next repository on the list |
 | `⌘R` | Reload, in either view (it also happens when the window regains focus, so terminal commits show up) |
 | `←` / `→` | Previous / next changeset along the selected branch (Branch Explorer; also its bar's arrows) |
 | `Home` | Go to the checked-out changeset, HEAD (Branch Explorer) |
@@ -226,6 +233,8 @@ On Windows, run `scripts/make-demo-repo.sh` from Git Bash. Text files are checke
 | [src/model/infer.ts](src/model/infer.ts) | Turns raw history into branches with parents, bases and owned changesets |
 | [src/model/layout.ts](src/model/layout.ts) | Assigns lanes to rows and changesets to columns |
 | [src/model/search.ts](src/model/search.ts) | Search with `*` / `?` wildcards |
+| [src/model/library.ts](src/model/library.ts) | The repository list: workspaces and repositories, grouped for the repository menu |
+| [src/view/repoSwitcher.ts](src/view/repoSwitcher.ts) | The repository menu in the toolbar |
 | [src/view/explorer.ts](src/view/explorer.ts) | Canvas renderer, pan/zoom and hit testing |
 | [src/view/details.ts](src/view/details.ts) | Changeset and branch details panel |
 | [src-tauri/src/lib.rs](src-tauri/src/lib.rs) | Rust backend: one `git` command that only allows read-only subcommands |
@@ -234,7 +243,8 @@ On Windows, run `scripts/make-demo-repo.sh` from Git Bash. Text files are checke
 | [src/merge/main.ts](src/merge/main.ts), [src-tauri/src/merge.rs](src-tauri/src/merge.rs) | Merge window: previews merging a changeset into the checked-out one (`git merge-tree`), then merges it (`--no-ff`) |
 | [src-tauri/src/workspace.rs](src-tauri/src/workspace.rs) | Finds the repositories inside a workspace folder, and creates new ones there |
 | [src-tauri/src/hosting.rs](src-tauri/src/hosting.rs) | Where a repository is hosted, from its remote URL, and opening its page there |
-| [src-tauri/src/menu.rs](src-tauri/src/menu.rs) | Native menu bar (File › Open Workspace…, Open Repository…) |
+| [src-tauri/src/menu.rs](src-tauri/src/menu.rs) | Native menu bar (File › Switch Repository…, Open Repository…, Add Workspace…) |
+| [src-tauri/src/library.rs](src-tauri/src/library.rs) | Stores the repository list, looks up repositories on it, and checks them for uncommitted changes |
 | [src-tauri/src/os.rs](src-tauri/src/os.rs) | What differs between operating systems: canonical paths without Windows' `\\?\` prefix (which git can't use), running git without a console window, opening files and web pages |
 | [src/platform.ts](src/platform.ts) | The pages' side of it: absolute paths kept with `/` as git prints them (shown with `\` on Windows), and each platform's names for shortcuts and the Trash |
 

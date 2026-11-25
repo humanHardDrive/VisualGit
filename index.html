@@ -10,11 +10,11 @@
   <body>
     <header class="toolbar main-toolbar">
       <div class="brand">VisualGit</div>
-      <div id="repo-name" class="repo-name"></div>
       <div id="stats" class="stats"></div>
     </header>
     <main class="layout">
       <aside class="sidebar">
+        <div class="repo-switch-wrap"><button id="repo-switch" class="repo-switch"></button></div>
         <div class="section-head">
           <span class="section-title">View</span>
         </div>
@@ -64,7 +64,7 @@
           </div>
         </div>
         <div id="workspace-bar" class="explorer-bar" hidden>
-          <button id="open-workspace" title="Open a folder of repositories (⇧⌘O)">Open Workspace…</button>
+          <button id="open-workspace" title="Add a folder of repositories to the list (⇧⌘O)">Add Workspace…</button>
           <button id="rescan" title="Look for repositories again">Rescan</button>
           <span id="workspace-name" class="workspace-name"></span>
           <div class="search" title="Search repository names (⌘F). * matches anything, ? matches one character.">
@@ -154,7 +154,7 @@
           </div>
           <div id="empty-state" class="empty-state">
             <h1>Branch Explorer</h1>
-            <p>Choose <b>File › Open Workspace…</b> (⇧⌘O) and pick the folder you keep your repositories in to switch between all of them, or <b>File › Open Repository…</b> (⌘O) for a single one.</p>
+            <p>Choose <b>File › Add Workspace…</b> (⇧⌘O) and pick the folder you keep your repositories in to switch between all of them, or <b>File › Open Repository…</b> (⌘O) for a single one. Either way they're kept in the repository menu at the top (⌘P).</p>
             <p>Each branch is a lane: changesets along it, where it was created, and how it merges back.</p>
             <p class="hint">Drag or scroll to pan · ⌘/Ctrl + scroll or pinch to zoom · click a changeset for details</p>
           </div>

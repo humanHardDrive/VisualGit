@@ -2,6 +2,7 @@ mod branch;
 mod diff;
 mod files;
 mod hosting;
+mod library;
 mod menu;
 mod merge;
 mod os;
@@ -147,6 +148,10 @@ pub fn run() {
             merge::abort_operation,
             merge::sync_branch,
             merge::remote_moved,
+            library::load_library,
+            library::save_library,
+            library::repository_infos,
+            library::has_pending_changes,
             submodule::open_add_submodule_window,
             submodule::add_submodule_info,
             submodule::choose_submodule_changeset,
