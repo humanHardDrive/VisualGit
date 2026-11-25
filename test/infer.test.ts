@@ -105,6 +105,33 @@ describe("inferModel", () => {
     expect(branch(m, "B").parent).toBe(branch(m, "A").id);
   });
 
+  it("keeps shared history on the branch that was at the changeset a branch was created from", async () => {
+    // As VisualGit's Create Branch from This Changeset does: "branch: Created from <id>".
+    const { git, commit, model } = fixture();
+    commit("m1");
+    git("checkout", "-q", "-b", "A");
+    commit("a1");
+    const a2 = commit("a2");
+    git("branch", "B", a2);
+    commit("a3");
+    commit("a4");
+    commit("a5");
+    git("checkout", "-q", "B");
+    commit("b1");
+    // Made from an older changeset of A's, which A wasn't at by then: A's line still has it.
+    const a1 = git("rev-parse", "A~4");
+    git("branch", "C", a1);
+    git("checkout", "-q", "C");
+    commit("c1");
+    const m = await model();
+    expect(branch(m, "B").createdFrom).toBe(a2);
+    expect(subjects(m, "A")).toEqual(["a1", "a2", "a3", "a4", "a5"]);
+    expect(subjects(m, "B")).toEqual(["b1"]);
+    expect(branch(m, "B").parent).toBe(branch(m, "A").id);
+    expect(subjects(m, "C")).toEqual(["c1"]);
+    expect(branch(m, "C").parent).toBe(branch(m, "A").id);
+  });
+
   it("finds the parent of `checkout -b` branches through the HEAD reflog", async () => {
     const { git, commit, model } = fixture();
     commit("m1");
@@ -327,6 +354,9 @@ describe("branchNameFromMerge", () => {
     ["Merge remote-tracking branch 'origin/topic'", "topic"],
     ["Merge pull request #42 from someone/feature/y", "feature/y"],
     ["Merged in bugfix/z (pull request #7)", "bugfix/z"],
+    ["Merge origin/1.0 into 1.0: the work from the other PC", "1.0"],
+    ["Merge feature/x into main", "feature/x"],
+    ["Merge local changes into main", undefined],
     ["Fix the thing", undefined],
   ])("%s", (subject, expected) => {
     expect(branchNameFromMerge(subject, false)).toBe(expected);
