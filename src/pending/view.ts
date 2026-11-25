@@ -208,8 +208,15 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     renderFiles();
   });
 
+  /** Settings › Committing › Push after every commit: Commit pushes too. */
+  const autoPush = () => settings().commit.push;
+
   function updateCommitButton() {
     const files = selectedFiles().length;
+    commitBtn.textContent = autoPush() ? "Commit & Push" : "Commit";
+    commitBtn.title = autoPush()
+      ? "Commit the selected files and push (⌘↩). Push after every commit is on in Settings."
+      : "Commit the selected files (⌘↩)";
     commitBtn.disabled = busy || !repo || !messageBox.value.trim() || files === 0;
     // The drop-down also offers Undo Changes, which needs files but no message.
     commitMore.disabled = busy || !repo || files === 0;
@@ -379,7 +386,10 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     if (repo === at) await refresh();
   });
 
-  onSettings(() => updateDiffBar());
+  onSettings(() => {
+    updateDiffBar();
+    updateCommitButton();
+  });
 
   function updateDiffBar() {
     // Offered once a tool is chosen: the diff tool for a change to a file (not a new one, nor a
@@ -575,6 +585,22 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     const paths = files.flatMap((f) => (f.origPath ? [f.path, f.origPath] : [f.path]));
     busy = true;
     updateCommitButton();
+    // Pushing too: first make sure the push would go through, so there's a choice to just commit.
+    let notPushed: string | null = null;
+    if (andPush) {
+      setStatus("Checking the push would go through…");
+      const blocker = await invoke<string | null>("check_push", { repo: at }).catch((err) => String(err));
+      if (blocker) {
+        if (!skipPushAsk && !(await askCommitOnly(blocker))) {
+          setStatus("Not committed.");
+          busy = false;
+          updateCommitButton();
+          return;
+        }
+        andPush = false;
+        notPushed = blocker;
+      }
+    }
     setStatus("Committing…");
     try {
       // Finishing a merge (or cherry pick) also brings the submodules to the changesets it records.
@@ -582,7 +608,7 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
       const done = await invoke<{ hash: string; submodules: SubmoduleUpdate }>("commit_changes", { repo: at, message, paths });
       const hash = done.hash;
       messageBox.value = "";
-      setStatus(`Committed ${hash.slice(0, 8)}.${submodulesUpdated(done.submodules)}`, "ok");
+      setStatus(`Committed ${hash.slice(0, 8)}.${submodulesUpdated(done.submodules)}${notPushed ? ` Not pushed: ${notPushed}` : ""}`, notPushed ? "" : "ok");
       void reportSubmoduleFailures(done.submodules, finishing ?? "commit");
       opts.onChanged();
       if (andPush) {
@@ -601,6 +627,33 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     }
     busy = false;
     await refresh();
+  }
+
+  // ---- when the push wouldn't go through ----------------------------------------------
+
+  const pushAsk = document.getElementById("push-ask") as HTMLDialogElement;
+  const pushAskSkip = document.getElementById("push-ask-skip") as HTMLInputElement;
+  /** "Don't ask again" was ticked: until VisualGit closes, commit without pushing when the push wouldn't go through. */
+  let skipPushAsk = false;
+
+  /** Says why the push wouldn't go through, and asks whether to commit without pushing. */
+  function askCommitOnly(why: string): Promise<boolean> {
+    document.getElementById("push-ask-text")!.textContent = why;
+    pushAskSkip.checked = false;
+    pushAsk.returnValue = "";
+    return new Promise((resolve) => {
+      pushAsk.addEventListener(
+        "close",
+        () => {
+          const commitOnly = pushAsk.returnValue === "commit";
+          // Remembered only with Commit Only: remembering Cancel would quietly stop every commit.
+          if (commitOnly && pushAskSkip.checked) skipPushAsk = true;
+          resolve(commitOnly);
+        },
+        { once: true },
+      );
+      pushAsk.showModal();
+    });
   }
 
   /** True for files the checked-out changeset doesn't have: undoing them means removing them. */
@@ -650,7 +703,7 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     await refresh();
   }
 
-  commitBtn.addEventListener("click", () => void commit());
+  commitBtn.addEventListener("click", () => void commit(autoPush()));
   commitMore.addEventListener("click", async () => {
     const left = commitBtn.getBoundingClientRect().left;
     const bottom = commitMore.getBoundingClientRect().bottom;
@@ -658,8 +711,16 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     const n = selectedFiles().length;
     const menu = await Menu.new({
       items: [
-        { id: "commit", text: "Commit", accelerator: "CmdOrCtrl+Enter", enabled: canCommit, action: () => void commit() },
-        { id: "commit-push", text: "Commit & Push", accelerator: "CmdOrCtrl+Shift+Enter", enabled: canCommit, action: () => void commit(true) },
+        // With Push after every commit on, pushing is the main action and the other one doesn't push.
+        ...(autoPush()
+          ? [
+              { id: "commit-push", text: "Commit & Push", accelerator: "CmdOrCtrl+Enter", enabled: canCommit, action: () => void commit(true) },
+              { id: "commit", text: "Commit Without Pushing", accelerator: "CmdOrCtrl+Shift+Enter", enabled: canCommit, action: () => void commit(false) },
+            ]
+          : [
+              { id: "commit", text: "Commit", accelerator: "CmdOrCtrl+Enter", enabled: canCommit, action: () => void commit(false) },
+              { id: "commit-push", text: "Commit & Push", accelerator: "CmdOrCtrl+Shift+Enter", enabled: canCommit, action: () => void commit(true) },
+            ]),
         { item: "Separator" },
         { id: "undo", text: `Undo Changes${n === 1 ? "" : ` (${n} files)`}…`, action: () => void undoChanges() },
       ],
@@ -671,7 +732,8 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
   messageBox.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
-      void commit(e.shiftKey);
+      // ⌘↩ does what the button does; ⇧⌘↩ the other.
+      void commit(e.shiftKey !== autoPush());
     }
   });
   $("refresh").addEventListener("click", () => void refresh());

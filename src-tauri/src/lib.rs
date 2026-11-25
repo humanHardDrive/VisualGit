@@ -130,6 +130,7 @@ pub fn run() {
             pending::push_current_branch,
             pending::push_branch,
             pending::fetch_remotes,
+            pending::check_push,
             pending::mark_resolved,
             branch::create_branch,
             branch::switch_to_changeset,

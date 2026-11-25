@@ -49,6 +49,10 @@ export interface Settings {
     /** Wrap long lines in diffs instead of scrolling sideways. */
     wrap: boolean;
   };
+  commit: {
+    /** Push after every commit (Pending Changes' Commit becomes Commit & Push). */
+    push: boolean;
+  };
   /** External tools (run by src-tauri/src/tools.rs, which reads them from the stored settings). */
   tools: {
     diff: ExternalTool;
@@ -71,6 +75,7 @@ export const defaults = (): Settings => ({
   trunkColor: DEFAULT_TRUNK,
   branchColors: [...DEFAULT_BRANCHES],
   diff: { ignoreWhitespace: "none", wrap: false },
+  commit: { push: false },
   tools: { diff: { kind: "builtin", command: "" }, merge: { kind: "builtin", command: "" }, open: [] },
 });
 
@@ -106,6 +111,7 @@ export function normalize(raw: unknown): Settings {
       ignoreWhitespace: oneOf(diff.ignoreWhitespace, ["none", "trailing", "all"] as const, d.diff.ignoreWhitespace),
       wrap: typeof diff.wrap === "boolean" ? diff.wrap : d.diff.wrap,
     },
+    commit: { push: obj(r.commit).push === true },
     tools: {
       diff: tool(tools.diff),
       merge: tool(tools.merge),

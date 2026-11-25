@@ -375,6 +375,59 @@ fn push_named(root: &Path, branch: &str) -> Result<Pushed, String> {
     Ok(Pushed::done(format!("Pushed {branch} to {remote} (new branch)")))
 }
 
+/// Whether pushing the checked-out branch would go through, asked before committing on it (Settings ›
+/// Committing › Push after every commit), so the user can choose to just commit instead. Ok(None)
+/// when it would; Ok(Some(why)) when it wouldn't: no branch or remote, the remote can't be reached
+/// or refuses (a dry run: credentials, permissions), or it has changesets this branch doesn't.
+#[tauri::command]
+pub async fn check_push(repo: String) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || Ok(push_blocker(&repo_root(&repo)?))).await.map_err(|e| e.to_string())?
+}
+
+pub(crate) fn push_blocker(root: &Path) -> Option<String> {
+    let Ok(branch) = git(root, &["symbolic-ref", "-q", "--short", "HEAD"], &[], None) else {
+        return Some("HEAD is detached, so there's no branch to push.".into());
+    };
+    let branch = branch.trim().to_string();
+    let config = |key: String| git(root, &["config", "--get", &key], &[], None).ok().map(|s| s.trim().to_string());
+    let (remote, target) = match (config(format!("branch.{branch}.remote")), config(format!("branch.{branch}.merge"))) {
+        (Some(remote), Some(merge)) if remote != "." => (remote, merge),
+        _ => {
+            let remotes: Vec<String> = git(root, &["remote"], &[], None).ok()?.lines().map(str::to_string).collect();
+            let remote = if remotes.iter().any(|r| r == "origin") {
+                "origin".to_string()
+            } else if remotes.len() == 1 {
+                remotes[0].clone()
+            } else if remotes.is_empty() {
+                return Some("This repository has no remote to push to.".into());
+            } else {
+                return Some(format!("{branch} has no upstream and there is no origin remote to publish it to."));
+            };
+            (remote, format!("refs/heads/{branch}"))
+        }
+    };
+    let tracking = format!("refs/remotes/{remote}/{}", target.strip_prefix("refs/heads/").unwrap_or(&target));
+    if config(format!("branch.{branch}.remote")).is_some() {
+        if let Err(e) = git(root, &["-c", "protocol.ext.allow=never", "fetch", "--quiet", "--prune", &remote], &[], None) {
+            return Some(format!("Could not reach {remote}: {e}"));
+        }
+    }
+    // Changesets there that this branch doesn't have: the push would be refused until they're merged.
+    if git(root, &["rev-parse", "--verify", "-q", &tracking], &[], None).is_ok() {
+        let behind: usize = git(root, &["rev-list", "--count", &format!("HEAD..{tracking}")], &[], None).ok()?.trim().parse().unwrap_or(0);
+        if behind > 0 {
+            let short = tracking.trim_start_matches("refs/remotes/");
+            let n = if behind == 1 { "1 changeset".to_string() } else { format!("{behind} changesets") };
+            return Some(format!("{short} has {n} that {branch} doesn't: someone pushed since you last got its changes. They need merging before {branch} can be pushed."));
+        }
+    }
+    // A dry run: everything but sending, so the remote's answer (credentials, permissions) shows now.
+    match git(root, &["-c", "protocol.ext.allow=never", "push", "--dry-run", "--porcelain", &remote, &format!("refs/heads/{branch}:{target}")], &[], None) {
+        Ok(_) => None,
+        Err(e) => Some(format!("{remote} won't take the push: {e}")),
+    }
+}
+
 pub(crate) fn git(root: &Path, args: &[&str], paths: &[String], stdin: Option<&str>) -> Result<String, String> {
     let mut cmd = command("git");
     cmd.arg("-C")
@@ -533,6 +586,45 @@ mod tests {
         assert!(push_named(&dir, "--force").is_err());
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&remote).ok();
+    }
+
+    #[test]
+    fn says_before_committing_whether_the_push_would_go_through() {
+        let tmp = std::env::temp_dir().join(format!("visualgit-checkpush-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp = crate::os::canonical(&tmp).unwrap();
+        let run = |dir: &Path, args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(dir).args(["-c", "user.name=T", "-c", "user.email=t@e", "-c", "commit.gpgsign=false"]).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        let (remote, mine, theirs) = (tmp.join("remote.git"), tmp.join("mine"), tmp.join("theirs"));
+        std::fs::create_dir_all(&mine).unwrap();
+        run(&mine, &["init", "-q", "-b", "main"]);
+        run(&mine, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        assert!(push_blocker(&mine).unwrap().contains("no remote"));
+
+        run(&tmp, &["init", "-q", "--bare", "-b", "main", remote.to_str().unwrap()]);
+        run(&mine, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        // A new branch: it would be published.
+        assert_eq!(push_blocker(&mine), None);
+        run(&mine, &["push", "-q", "-u", "origin", "main"]);
+        assert_eq!(push_blocker(&mine), None);
+
+        // Someone else pushed: it would be refused until merged.
+        run(&tmp, &["clone", "-q", remote.to_str().unwrap(), theirs.to_str().unwrap()]);
+        run(&theirs, &["commit", "-q", "--allow-empty", "-m", "theirs"]);
+        run(&theirs, &["push", "-q", "origin", "main"]);
+        assert!(push_blocker(&mine).unwrap().contains("origin/main has 1 changeset that main doesn't"));
+
+        // The remote gone: it can't be reached.
+        run(&mine, &["pull", "-q", "--no-rebase"]);
+        std::fs::remove_dir_all(&remote).unwrap();
+        assert!(push_blocker(&mine).unwrap().starts_with("Could not reach origin"));
+
+        run(&mine, &["checkout", "-q", "--detach"]);
+        assert!(push_blocker(&mine).unwrap().contains("detached"));
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

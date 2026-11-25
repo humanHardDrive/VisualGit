@@ -109,6 +109,11 @@ for (const r of document.querySelectorAll<HTMLInputElement>('input[name="whitesp
 const wrap = $<HTMLInputElement>("wrap");
 wrap.addEventListener("change", () => void change((s) => (s.diff.wrap = wrap.checked)));
 
+// ---- committing ---------------------------------------------------------------------------
+
+const pushOnCommit = $<HTMLInputElement>("push-on-commit");
+pushOnCommit.addEventListener("change", () => void change((s) => (s.commit.push = pushOnCommit.checked)));
+
 // ---- external tools ---------------------------------------------------------------------
 
 /** Mirrors `GitTools` in src-tauri/src/tools.rs. */
@@ -204,6 +209,7 @@ function render(s: Settings) {
   if (!swatches.contains(document.activeElement)) renderSwatches(s.branchColors);
   for (const r of document.querySelectorAll<HTMLInputElement>('input[name="whitespace"]')) r.checked = r.value === s.diff.ignoreWhitespace;
   wrap.checked = s.diff.wrap;
+  pushOnCommit.checked = s.commit.push;
   for (const which of ["diff", "merge"] as const) {
     const t = s.tools[which];
     for (const r of document.querySelectorAll<HTMLInputElement>(`input[name="${which}-kind"]`)) r.checked = r.value === t.kind;

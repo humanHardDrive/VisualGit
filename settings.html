@@ -18,6 +18,10 @@
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2.5h4v11H3zM9 2.5h4v11H9zM4.5 6h1M10.5 6h1M10.5 9h1" /></svg>
           Diffs
         </button>
+        <button class="view-item" data-section="commit" aria-pressed="false">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.5" /><path d="M1.5 8h4M10.5 8h4" /></svg>
+          Committing
+        </button>
         <button class="view-item" data-section="tools" aria-pressed="false">
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 2.5a3 3 0 0 0-2.8 4.1L2.5 11.8 4.2 13.5l5.2-5.2a3 3 0 0 0 4.1-2.8l-1.8 1.8-2-2 1.8-1.8Z" /></svg>
           External Tools
@@ -102,6 +106,15 @@
           <div class="setting">
             <label class="check"><input id="wrap" type="checkbox" /> Wrap long lines</label>
             <p class="setting-note">Instead of scrolling sideways.</p>
+          </div>
+        </section>
+
+        <section id="section-commit" class="settings-section" hidden>
+          <h1>Committing</h1>
+
+          <div class="setting">
+            <label class="check"><input id="push-on-commit" type="checkbox" /> Push after every commit</label>
+            <p class="setting-note">Pending Changes' <b>Commit</b> becomes <b>Commit &amp; Push</b>, and its ▾ menu offers <b>Commit Without Pushing</b>. Before committing, VisualGit checks the push would go through: the remote can be reached and takes it, and nobody has pushed changes you don't have yet. If it wouldn't, it says why and asks whether to commit without pushing.</p>
           </div>
         </section>
 

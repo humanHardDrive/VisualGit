@@ -167,6 +167,18 @@
         <div class="placeholder">Select a changeset or branch</div>
       </aside>
     </main>
+    <dialog id="push-ask" class="dialog" aria-labelledby="push-ask-title">
+      <form method="dialog">
+        <h2 id="push-ask-title">The push wouldn't go through</h2>
+        <p id="push-ask-text" class="dialog-message"></p>
+        <p class="dialog-message">Commit without pushing? You can push later, from the Branch Explorer or the next Commit &amp; Push.</p>
+        <label class="check"><input id="push-ask-skip" type="checkbox" /> Don't ask again while VisualGit is open: commit without pushing</label>
+        <div class="dialog-actions">
+          <button type="submit" value="cancel">Cancel</button>
+          <button type="submit" value="commit" class="primary" autofocus>Commit Only</button>
+        </div>
+      </form>
+    </dialog>
     <dialog id="branch-dialog" class="dialog" aria-labelledby="branch-dialog-title">
       <form id="branch-form" method="dialog">
         <h2 id="branch-dialog-title">Create branch</h2>

@@ -38,6 +38,12 @@ describe("settings", () => {
     ]);
   });
 
+  it("pushes after committing only when it's been turned on", () => {
+    expect(defaults().commit.push).toBe(false);
+    expect(normalize({ commit: { push: true } }).commit.push).toBe(true);
+    expect(normalize({ commit: { push: "yes" } }).commit.push).toBe(false);
+  });
+
   it("never lets the code font become CSS", () => {
     expect(normalize({ codeFont: 'x"; } body { display: none' }).codeFont).toBe("");
     expect(normalize({ accent: "red; color: blue" }).accent).toBeNull();
