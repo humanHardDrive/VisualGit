@@ -12,6 +12,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { message, open } from "@tauri-apps/plugin-dialog";
 import { shownPath } from "../platform.ts";
 import type { RepoInfo } from "../view/workspaceList.ts";
+import { initSettings } from "../settings/settings.ts";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const form = $<HTMLFormElement>("sm-form");
@@ -179,4 +180,4 @@ async function start() {
   void showWorkspace();
 }
 
-void start();
+void initSettings().then(start);

@@ -5,6 +5,7 @@
 
 import { pendingChangesOn, uncommittedHead, type Branch, type Model } from "../model/infer.ts";
 import type { Edge, Layout, Span } from "../model/layout.ts";
+import { onSettings, settings } from "../settings/settings.ts";
 
 export const COL = 30;
 export const ROW = 64;
@@ -22,8 +23,6 @@ const HEAD_R = 9;
 /** Radius of the circle that marks a release (tagged changeset). */
 const RELEASE_R = HEAD_R + 6;
 
-const TRUNK_COLOR = "#2f81f7";
-const PALETTE = ["#a371f7", "#e3a008", "#f0603c", "#1fb5d4", "#e85aad", "#f08c2e", "#6e7bf2", "#b0882f", "#0ea5e9", "#cf5be0"];
 
 export type Selection = { kind: "commit"; hash: string } | { kind: "branch"; id: number };
 
@@ -53,8 +52,10 @@ export function pushLabel(model: Model, b: Branch): string | null {
   return parts.length ? parts.join(" ") : null;
 }
 
+/** A lane's colour: the trunk's, or the next in the palette (Settings › Color and Style). */
 export function branchColor(model: Model, id: number): string {
-  return id === model.trunk ? TRUNK_COLOR : PALETTE[id % PALETTE.length];
+  const s = settings();
+  return id === model.trunk ? s.trunkColor : s.branchColors[id % s.branchColors.length];
 }
 
 const colX = (col: number) => PAD + col * COL;
@@ -126,9 +127,13 @@ export class Explorer {
     this.events = events;
     this.ctx = canvas.getContext("2d")!;
     this.readTheme();
-    matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-      this.readTheme();
-      this.redraw();
+    // Light or dark, the accent and the lane colours all come from Settings.
+    onSettings(() => {
+      // The page's variables have just changed; read them once they're in effect.
+      requestAnimationFrame(() => {
+        this.readTheme();
+        this.redraw();
+      });
     });
     new ResizeObserver(() => this.redraw()).observe(canvas);
     this.bindInput();

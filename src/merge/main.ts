@@ -25,6 +25,7 @@ import { tauriRunner } from "../git/tauriRunner.ts";
 import { inferModel, type Model } from "../model/infer.ts";
 import { localizeShortcuts } from "../platform.ts";
 import { dark, lineEndings, readOnly, theme, themeSlot } from "../view/codemirror.ts";
+import { initSettings } from "../settings/settings.ts";
 import { conflictRegions, dropRegion, regionsField, setRegions, sideHighlights } from "../view/conflictPanes.ts";
 import { branchColor } from "../view/explorer.ts";
 import { reportSubmoduleFailures, submodulesUpdated, type SubmoduleUpdate } from "../view/submoduleUpdate.ts";
@@ -802,4 +803,4 @@ async function start() {
   await refresh();
 }
 
-void start();
+void initSettings().then(start);

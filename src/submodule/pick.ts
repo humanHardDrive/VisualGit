@@ -21,6 +21,7 @@ import { localizeShortcuts, shownPath } from "../platform.ts";
 import { clearDetails, showBranch, showCommit } from "../view/details.ts";
 import { Explorer, type Selection } from "../view/explorer.ts";
 import { createSearchBox } from "../view/searchBox.ts";
+import { initSettings } from "../settings/settings.ts";
 
 localizeShortcuts();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -292,4 +293,4 @@ async function loadHistory(): Promise<boolean> {
   return true;
 }
 
-void start();
+void initSettings().then(start);

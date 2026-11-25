@@ -48,14 +48,18 @@ fn read(path: &Path) -> Result<Option<Library>, String> {
     }
 }
 
-/// Written beside the old file and then moved over it, so a crash mid-write never leaves half a list.
 fn write(path: &Path, library: &Library) -> Result<(), String> {
-    let dir = path.parent().ok_or("no settings folder")?;
-    fs::create_dir_all(dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
     let text = serde_json::to_string_pretty(library).map_err(|e| e.to_string())?;
+    write_file(path, &text).map_err(|e| format!("Could not save the repository list: {e}"))
+}
+
+/// Written beside the old file and then moved over it, so a crash mid-write never leaves it half written.
+pub(crate) fn write_file(path: &Path, text: &str) -> Result<(), String> {
+    let dir = path.parent().ok_or("no settings folder")?;
+    fs::create_dir_all(dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, text).map_err(|e| format!("Could not save the repository list: {e}"))?;
-    fs::rename(&tmp, path).map_err(|e| format!("Could not save the repository list: {e}"))
+    fs::write(&tmp, text).map_err(|e| e.to_string())?;
+    fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
 /// Each repository added on its own, as the Workspace view lists it; None for one that's gone

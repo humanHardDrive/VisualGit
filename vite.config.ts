@@ -16,9 +16,9 @@ export default defineConfig({
   build: {
     target: "safari15",
     outDir: "dist",
-    // Pages: the branch explorer, and the merge, changeset diff and submodule windows.
+    // Pages: the branch explorer, and the merge, changeset diff, submodule and settings windows.
     rollupOptions: {
-      input: { main: "index.html", merge: "merge.html", diff: "diff.html", submodule: "submodule.html", "submodule-pick": "submodule-pick.html" },
+      input: { main: "index.html", merge: "merge.html", diff: "diff.html", submodule: "submodule.html", "submodule-pick": "submodule-pick.html", settings: "settings.html" },
     },
   },
 });

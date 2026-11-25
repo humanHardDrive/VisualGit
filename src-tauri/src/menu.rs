@@ -9,6 +9,7 @@ use tauri::{AppHandle, Emitter, Runtime};
 const OPEN_WORKSPACE: &str = "open-workspace";
 const OPEN_REPOSITORY: &str = "open-repository";
 const SWITCH_REPOSITORY: &str = "switch-repository";
+const SETTINGS: &str = "open-settings";
 
 /// The commit this binary was built from (see build.rs).
 const CHANGESET: &str = env!("VISUALGIT_CHANGESET");
@@ -21,12 +22,22 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let switch_repository = MenuItem::with_id(app, SWITCH_REPOSITORY, "Switch Repository…", true, Some("CmdOrCtrl+P"))?;
     let open_workspace = MenuItem::with_id(app, OPEN_WORKSPACE, "Add Workspace…", true, Some("CmdOrCtrl+Shift+O"))?;
     let open_repository = MenuItem::with_id(app, OPEN_REPOSITORY, "Open Repository…", true, Some("CmdOrCtrl+O"))?;
+    let settings = MenuItem::with_id(app, SETTINGS, "Settings…", true, Some("CmdOrCtrl+,"))?;
 
     let submenus: Vec<Submenu<R>> = menu.items()?.into_iter().filter_map(|item| item.as_submenu().cloned()).collect();
     match submenus.iter().find(|s| s.text().is_ok_and(|t| t == "File")) {
         Some(file) => file.insert_items(&[&switch_repository, &open_repository, &open_workspace, &PredefinedMenuItem::separator(app)?], 0)?,
         // The default menu has no File menu on Linux.
         None => menu.prepend(&Submenu::with_items(app, "File", true, &[&switch_repository, &open_repository, &open_workspace])?)?,
+    }
+    // Settings… goes where each platform keeps it: the app menu on macOS (after About), File elsewhere.
+    let menus: Vec<Submenu<R>> = menu.items()?.into_iter().filter_map(|item| item.as_submenu().cloned()).collect();
+    if cfg!(target_os = "macos") {
+        if let Some(app_menu) = menus.first() {
+            app_menu.insert_items(&[&PredefinedMenuItem::separator(app)?, &settings], 1)?;
+        }
+    } else if let Some(file) = menus.iter().find(|s| s.text().is_ok_and(|t| t == "File")) {
+        file.insert_items(&[&settings, &PredefinedMenuItem::separator(app)?], 4)?;
     }
 
     // The default About item (app menu on macOS, Help elsewhere) only knows the version.
@@ -76,7 +87,7 @@ fn version(major: u64, minor: u64, changeset: &str) -> String {
 
 pub fn handle<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
     let id = event.id().as_ref();
-    if id == OPEN_WORKSPACE || id == OPEN_REPOSITORY || id == SWITCH_REPOSITORY {
+    if id == OPEN_WORKSPACE || id == OPEN_REPOSITORY || id == SWITCH_REPOSITORY || id == SETTINGS {
         let _ = app.emit("menu", id);
     }
 }

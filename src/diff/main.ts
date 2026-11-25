@@ -17,7 +17,8 @@ import { loadRepo } from "../git/load.ts";
 import { tauriRunner } from "../git/tauriRunner.ts";
 import { inferModel, type Model } from "../model/infer.ts";
 import { localizeShortcuts } from "../platform.ts";
-import { dark, lineEndings, readOnly, theme, themeSlot } from "../view/codemirror.ts";
+import { dark, diffConfig, lineEndings, onDiffConfigChange, readOnly, theme, themeSlot } from "../view/codemirror.ts";
+import { initSettings } from "../settings/settings.ts";
 import { branchColor } from "../view/explorer.ts";
 
 localizeShortcuts();
@@ -293,6 +294,7 @@ async function loadDiff() {
     parent: diffHost,
     highlightChanges: true,
     gutter: true,
+    diffConfig: diffConfig(),
   });
   updateDiffBar();
   if (view.chunks.length) goToNextChunk({ state: view.b.state, dispatch: view.b.dispatch });
@@ -438,4 +440,6 @@ async function start() {
   await loadFiles();
 }
 
-void start();
+// Ignoring whitespace or not: compare the shown file again.
+onDiffConfigChange(() => void loadDiff());
+void initSettings().then(start);

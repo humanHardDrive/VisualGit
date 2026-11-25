@@ -7,6 +7,7 @@ mod menu;
 mod merge;
 mod os;
 mod pending;
+mod settings;
 mod submodule;
 mod workspace;
 
@@ -152,6 +153,9 @@ pub fn run() {
             library::save_library,
             library::repository_infos,
             library::has_pending_changes,
+            settings::load_settings,
+            settings::save_settings,
+            settings::open_settings_window,
             submodule::open_add_submodule_window,
             submodule::add_submodule_info,
             submodule::choose_submodule_changeset,

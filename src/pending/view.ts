@@ -22,7 +22,7 @@ import { remoteMoved, remoteMovedBanner } from "../view/remoteMoved.ts";
 import { submoduleChange } from "../git/submoduleChange.ts";
 import { tauriRunner } from "../git/tauriRunner.ts";
 import { TRASH } from "../platform.ts";
-import { dark, lineEndings, readOnly, theme, themeSlot } from "../view/codemirror.ts";
+import { dark, diffConfig, lineEndings, onDiffConfigChange, readOnly, theme, themeSlot } from "../view/codemirror.ts";
 import { reportSubmoduleFailures, submodulesUpdated, type SubmoduleUpdate } from "../view/submoduleUpdate.ts";
 
 /** Mirrors `FileText` in src-tauri/src/pending.rs. */
@@ -295,6 +295,7 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
       revertControls: editable ? "a-to-b" : undefined,
       highlightChanges: true,
       gutter: true,
+      diffConfig: diffConfig(),
     });
     open = { path: f.path, editor: merge.b, merge, editable, base, saved: text };
     updateDiffBar();
@@ -334,6 +335,10 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     updateDiffBar();
   }
 
+  // Ignoring whitespace or not: compare the shown file again, unless it has unsaved edits.
+  onDiffConfigChange(() => {
+    if (visible && current && !isDirty()) void loadDiff(current);
+  });
   dark.addEventListener("change", () => {
     if (!open) return;
     for (const v of open.merge ? [open.merge.a, open.merge.b] : [open.editor]) v.dispatch({ effects: themeSlot.reconfigure(theme()) });

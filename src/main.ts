@@ -17,6 +17,7 @@ import { pushBranch as pushBranchChecked } from "./view/push.ts";
 import { remoteMoved, remoteMovedAlert } from "./view/remoteMoved.ts";
 import { filterRepos, renderWorkspaceList, type RepoInfo } from "./view/workspaceList.ts";
 import { RepoSwitcher } from "./view/repoSwitcher.ts";
+import { initSettings, onSettings } from "./settings/settings.ts";
 import { addRepository, addWorkspace, carriedOver, emptyLibrary, groupLibrary, removeRepository, removeWorkspace, type Library, type LibraryGroup, type ListedRepo } from "./model/library.ts";
 import { createPendingView } from "./pending/view.ts";
 import { createSearchBox } from "./view/searchBox.ts";
@@ -1877,6 +1878,7 @@ if (inTauri()) {
     if (e.payload === "open-workspace") void chooseWorkspace();
     else if (e.payload === "open-repository") void chooseRepo();
     else if (e.payload === "switch-repository") switcher.open();
+    else if (e.payload === "open-settings") void invoke("open_settings_window").catch((err) => message(String(err), { title: "Could not open Settings", kind: "error" }));
   });
   // A merge made in a merge window.
   void listen<{ repo: string }>("repo-changed", (e) => {
@@ -1933,5 +1935,9 @@ showView(currentView);
 if (!inTauri()) {
   showMessage("Run inside the desktop app", "VisualGit reads repositories through its Tauri backend. Start it with `npm run app`.");
 } else {
-  void start();
+  void initSettings().then(start);
 }
+// Branch colours appear in the details panel and the Branch List as well as the explorer.
+onSettings((s, before) => {
+  if (s.trunkColor !== before.trunkColor || s.branchColors.join() !== before.branchColors.join()) applySelection(selection, false);
+});

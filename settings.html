@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Settings</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <link rel="stylesheet" href="/src/settings/settings.css" />
+  </head>
+  <body>
+    <main class="settings">
+      <nav class="settings-nav view-list" aria-label="Settings sections">
+        <button class="view-item" data-section="style" aria-pressed="true">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5" /><path d="M8 2.5v11a5.5 5.5 0 0 0 0-11Z" /></svg>
+          Color and Style
+        </button>
+        <button class="view-item" data-section="diffs" aria-pressed="false">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2.5h4v11H3zM9 2.5h4v11H9zM4.5 6h1M10.5 6h1M10.5 9h1" /></svg>
+          Diffs
+        </button>
+        <button class="view-item" data-section="tools" aria-pressed="false">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 2.5a3 3 0 0 0-2.8 4.1L2.5 11.8 4.2 13.5l5.2-5.2a3 3 0 0 0 4.1-2.8l-1.8 1.8-2-2 1.8-1.8Z" /></svg>
+          External Tools
+        </button>
+      </nav>
+
+      <div class="settings-body">
+        <section id="section-style" class="settings-section">
+          <h1>Color and Style</h1>
+
+          <div class="setting">
+            <span class="setting-label">Theme</span>
+            <div class="segmented" role="radiogroup" aria-label="Theme" id="theme">
+              <button data-value="system" role="radio">System</button>
+              <button data-value="light" role="radio">Light</button>
+              <button data-value="dark" role="radio">Dark</button>
+            </div>
+            <p class="setting-note">System follows your computer's light or dark appearance.</p>
+          </div>
+
+          <div class="setting">
+            <span class="setting-label">Accent color</span>
+            <div class="setting-row">
+              <input id="accent" type="color" aria-label="Accent color" />
+              <button id="accent-reset" type="button">Use Default</button>
+            </div>
+            <p class="setting-note">Selections, the current view's box, buttons and dots.</p>
+          </div>
+
+          <div class="setting">
+            <label class="setting-label" for="scale">Interface size</label>
+            <select id="scale"></select>
+          </div>
+
+          <div class="setting">
+            <label class="setting-label" for="code-font">Code font</label>
+            <div class="setting-row">
+              <input id="code-font" type="text" list="code-fonts" placeholder="System monospaced font" spellcheck="false" autocomplete="off" />
+              <select id="code-size" aria-label="Code font size"></select>
+            </div>
+            <datalist id="code-fonts">
+              <option value="SF Mono"></option>
+              <option value="Menlo"></option>
+              <option value="Monaco"></option>
+              <option value="Consolas"></option>
+              <option value="Cascadia Code"></option>
+              <option value="JetBrains Mono"></option>
+              <option value="Fira Code"></option>
+              <option value="Source Code Pro"></option>
+            </datalist>
+            <pre id="code-preview" class="code-preview">if (branch.ahead > 0) push(branch); // 0O1lI</pre>
+            <p class="setting-note">For diffs and editors. A font that isn't installed falls back to the system's.</p>
+          </div>
+
+          <div class="setting">
+            <span class="setting-label">Branch colors</span>
+            <div class="setting-row">
+              <label class="swatch-label">Trunk <input id="trunk-color" type="color" aria-label="Trunk color" /></label>
+            </div>
+            <div id="branch-colors" class="swatches" aria-label="Branch colors"></div>
+            <div class="setting-row">
+              <button id="branch-add" type="button">Add Color</button>
+              <button id="branch-reset" type="button">Reset to Defaults</button>
+            </div>
+            <p class="setting-note">The trunk (main, master…) has its own color; other branches take the rest in turn.</p>
+          </div>
+        </section>
+
+        <section id="section-diffs" class="settings-section" hidden>
+          <h1>Diffs</h1>
+
+          <div class="setting">
+            <span class="setting-label">Ignore whitespace</span>
+            <div class="setting-choices" role="radiogroup" aria-label="Ignore whitespace">
+              <label><input type="radio" name="whitespace" value="none" /> Don't ignore: every change counts</label>
+              <label><input type="radio" name="whitespace" value="trailing" /> At the ends of lines</label>
+              <label><input type="radio" name="whitespace" value="all" /> Anywhere: changed indentation or spacing isn't a change</label>
+            </div>
+            <p class="setting-note">For the changeset diff window and Pending Changes. The merge window always shows every change, so nothing is resolved unseen.</p>
+          </div>
+
+          <div class="setting">
+            <label class="check"><input id="wrap" type="checkbox" /> Wrap long lines</label>
+            <p class="setting-note">Instead of scrolling sideways.</p>
+          </div>
+        </section>
+
+        <section id="section-tools" class="settings-section" hidden>
+          <h1>External Tools</h1>
+          <p class="setting-note">Coming next: diff and merge tools (git's own or your own), and tools to open files with.</p>
+        </section>
+
+        <p id="settings-error" class="dialog-error" role="alert"></p>
+      </div>
+    </main>
+    <script type="module" src="/src/settings/main.ts"></script>
+  </body>
+</html>
