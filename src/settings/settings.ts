@@ -14,6 +14,20 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 
 export type Theme = "system" | "light" | "dark";
 export type IgnoreWhitespace = "none" | "trailing" | "all";
+/** Built-in (VisualGit's own view), git's tool (git difftool / mergetool), or a command of your own. */
+export type ToolKind = "builtin" | "git" | "custom";
+
+export interface ExternalTool {
+  kind: ToolKind;
+  /** For "custom": the command, with $LOCAL, $REMOTE (and $BASE, $MERGED for merging). */
+  command: string;
+}
+
+/** A tool to open files with from the Files view: $FILE, $DIR and $REPO in its command. */
+export interface OpenTool {
+  name: string;
+  command: string;
+}
 
 export interface Settings {
   /** System follows the computer's light or dark setting. */
@@ -35,6 +49,12 @@ export interface Settings {
     /** Wrap long lines in diffs instead of scrolling sideways. */
     wrap: boolean;
   };
+  /** External tools (run by src-tauri/src/tools.rs, which reads them from the stored settings). */
+  tools: {
+    diff: ExternalTool;
+    merge: ExternalTool;
+    open: OpenTool[];
+  };
 }
 
 export const DEFAULT_TRUNK = "#2f81f7";
@@ -51,6 +71,7 @@ export const defaults = (): Settings => ({
   trunkColor: DEFAULT_TRUNK,
   branchColors: [...DEFAULT_BRANCHES],
   diff: { ignoreWhitespace: "none", wrap: false },
+  tools: { diff: { kind: "builtin", command: "" }, merge: { kind: "builtin", command: "" }, open: [] },
 });
 
 const COLOR = /^#[0-9a-f]{6}$/i;
@@ -60,10 +81,17 @@ const color = (v: unknown, fallback: string) => (typeof v === "string" && COLOR.
 const num = (v: unknown, min: number, max: number, fallback: number) => (typeof v === "number" && Number.isFinite(v) && v >= min && v <= max ? v : fallback);
 
 /** Settings from what was stored: each one checked, anything missing or odd its default. */
+const text = (v: unknown, max: number) => (typeof v === "string" ? v.slice(0, max) : "");
+const tool = (v: unknown): ExternalTool => {
+  const t = obj(v);
+  return { kind: oneOf(t.kind, ["builtin", "git", "custom"] as const, "builtin"), command: text(t.command, 1000) };
+};
+
 export function normalize(raw: unknown): Settings {
   const d = defaults();
   const r = obj(raw);
   const diff = obj(r.diff);
+  const tools = obj(r.tools);
   const branches = Array.isArray(r.branchColors) ? r.branchColors.filter((c): c is string => typeof c === "string" && COLOR.test(c)) : [];
   return {
     theme: oneOf(r.theme, ["system", "light", "dark"] as const, d.theme),
@@ -77,6 +105,11 @@ export function normalize(raw: unknown): Settings {
     diff: {
       ignoreWhitespace: oneOf(diff.ignoreWhitespace, ["none", "trailing", "all"] as const, d.diff.ignoreWhitespace),
       wrap: typeof diff.wrap === "boolean" ? diff.wrap : d.diff.wrap,
+    },
+    tools: {
+      diff: tool(tools.diff),
+      merge: tool(tools.merge),
+      open: (Array.isArray(tools.open) ? tools.open : []).slice(0, 20).map((t) => ({ name: text(obj(t).name, 60), command: text(obj(t).command, 1000) })),
     },
   };
 }

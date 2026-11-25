@@ -18,6 +18,7 @@ import { ask, message as alert } from "@tauri-apps/plugin-dialog";
 import { basicSetup } from "codemirror";
 import { loadPendingChanges, type PendingChanges, type PendingFile } from "../git/status.ts";
 import { pushBranch } from "../view/push.ts";
+import { onSettings, settings } from "../settings/settings.ts";
 import { remoteMoved, remoteMovedBanner } from "../view/remoteMoved.ts";
 import { submoduleChange } from "../git/submoduleChange.ts";
 import { tauriRunner } from "../git/tauriRunner.ts";
@@ -114,6 +115,8 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
   const prevBtn = $<HTMLButtonElement>("prev-change");
   const nextBtn = $<HTMLButtonElement>("next-change");
   const saveBtn = $<HTMLButtonElement>("save");
+  const externalDiff = $<HTMLButtonElement>("external-diff");
+  const externalMerge = $<HTMLButtonElement>("external-merge");
   const diffSides = $("diff-sides");
   const sideA = $("side-a");
   const sideB = $("side-b");
@@ -344,7 +347,47 @@ export function createPendingView(opts: PendingViewOptions): PendingView {
     for (const v of open.merge ? [open.merge.a, open.merge.b] : [open.editor]) v.dispatch({ effects: themeSlot.reconfigure(theme()) });
   });
 
+  // ---- external tools (Settings › External Tools) ---------------------------------------
+
+  externalDiff.addEventListener("click", async () => {
+    const f = current;
+    if (!f || !(await save())) return;
+    // The checked-out changeset's version against the working copy.
+    await invoke("open_diff_tool", { repo, from: pending.head ? "HEAD" : null, to: null, path: f.path, origPath: f.origPath ?? null }).catch((err) =>
+      alert(String(err), { title: "Could not open the diff tool", kind: "error" }),
+    );
+  });
+
+  externalMerge.addEventListener("click", async () => {
+    const f = current;
+    if (!f || busy || !(await save())) return;
+    const at = repo;
+    busy = true;
+    updateCommitButton();
+    externalMerge.disabled = true;
+    setStatus(`Resolving ${f.path} in the merge tool…`);
+    try {
+      const resolved = await invoke<boolean>("open_merge_tool", { repo: at, path: f.path });
+      setStatus(resolved ? `The merge tool resolved ${f.path}. Check it here, then commit.` : `The merge tool closed without resolving ${f.path}.`, resolved ? "ok" : "");
+    } catch (err) {
+      setStatus("");
+      await alert(String(err), { title: "Could not open the merge tool", kind: "error" });
+    }
+    busy = false;
+    externalMerge.disabled = false;
+    opts.onChanged();
+    if (repo === at) await refresh();
+  });
+
+  onSettings(() => updateDiffBar());
+
   function updateDiffBar() {
+    // Offered once a tool is chosen: the diff tool for a change to a file (not a new one, nor a
+    // submodule's move), the merge tool for a conflict.
+    const tools = settings().tools;
+    const f = current;
+    externalDiff.hidden = !f || tools.diff.kind === "builtin" || !!f.conflict || !!f.untracked || !!open?.submodule || !pending.head;
+    externalMerge.hidden = !f?.conflict || tools.merge.kind === "builtin";
     diffTitle.replaceChildren(current ? current.path : "");
     if (current?.origPath) diffTitle.prepend(`${current.origPath} → `);
     if (isDirty()) diffTitle.append(span("dirty", "●"));

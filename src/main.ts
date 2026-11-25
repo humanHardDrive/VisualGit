@@ -17,7 +17,7 @@ import { pushBranch as pushBranchChecked } from "./view/push.ts";
 import { remoteMoved, remoteMovedAlert } from "./view/remoteMoved.ts";
 import { filterRepos, renderWorkspaceList, type RepoInfo } from "./view/workspaceList.ts";
 import { RepoSwitcher } from "./view/repoSwitcher.ts";
-import { initSettings, onSettings } from "./settings/settings.ts";
+import { initSettings, onSettings, settings } from "./settings/settings.ts";
 import { addRepository, addWorkspace, carriedOver, emptyLibrary, groupLibrary, removeRepository, removeWorkspace, type Library, type LibraryGroup, type ListedRepo } from "./model/library.ts";
 import { createPendingView } from "./pending/view.ts";
 import { createSearchBox } from "./view/searchBox.ts";
@@ -1469,7 +1469,19 @@ async function showFileMenu(path: string) {
   const menu = await Menu.new({
     items: [
       { id: "open", text: "Open", enabled: onDisk, action: () => void openFile(path) },
-      { id: "open-with", text: "Open With…", enabled: onDisk, action: () => void openFileWith(path) },
+      {
+        text: "Open With",
+        enabled: onDisk,
+        items: [
+          // The tools to open files with, from Settings › External Tools.
+          ...settings()
+            .tools.open.map((t, index) => ({ t, index }))
+            .filter(({ t }) => t.name && t.command)
+            .map(({ t, index }) => ({ id: `open-tool-${index}`, text: t.name, action: () => void openWithTool(path, index) })),
+          ...(settings().tools.open.some((t) => t.name && t.command) ? [{ item: "Separator" as const }] : []),
+          { id: "open-with", text: "Other Application…", action: () => void openFileWith(path) },
+        ],
+      },
       { item: "Separator" },
       { id: "history", text: "View History", enabled: !untracked, action: () => void openHistory(path) },
       { item: "Separator" },
@@ -1498,6 +1510,13 @@ async function showFileMenu(path: string) {
 async function openFile(path: string) {
   if (!repoPath) return;
   await invoke("open_file", { repo: repoPath, path }).catch((err) => notify(String(err), "error"));
+}
+
+/** Opens a file with one of the tools in Settings › External Tools (inside an open submodule, from its repository). */
+async function openWithTool(path: string, index: number) {
+  const w = whereIs(path);
+  if (!w) return;
+  await invoke("open_with_tool", { repo: w.repo, path: w.path, index }).catch((err) => message(String(err), { title: "Could not open the file", kind: "error" }));
 }
 
 async function openFileWith(path: string) {

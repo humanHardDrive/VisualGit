@@ -43,6 +43,16 @@ In PowerShell, set the variable first: `$env:VISUALGIT_REPO = "C:\path\to\repo";
 
 **Shortcuts** are written here as macOS shows them. On Windows and Linux, ⌘ is Ctrl, ⇧ is Shift and ↩ is Enter (⇧⌘O is Ctrl+Shift+O), as the app's own menus and tooltips say. Where this README says the Trash, on Windows it's the Recycle Bin.
 
+**Settings.** *VisualGit › Settings…* (⌘,; *File › Settings…* on Windows and Linux) opens the Settings window. Changes save as you make them, to `settings.json` in VisualGit's settings folder, and show in every open window at once. A setting that's missing or can't be read is its default.
+
+- **Color and Style:** the theme (*System* follows your computer's light or dark appearance, or choose *Light* or *Dark*), the accent color (selections, the current view's box, buttons and dots), the interface size (85% to 140%, zooming each window), the font and size for code in diffs and editors, and the Branch Explorer's colors: the trunk's, and the palette other branches take in turn.
+- **Diffs:** *Ignore whitespace*, either at the ends of lines or anywhere, so lines that only differ in spacing aren't changes, in the changeset diff window and Pending Changes. The merge window always shows every change. And *Wrap long lines*.
+- **External Tools:**
+  - **Diff tool:** VisualGit's own, git's (`git difftool`, with the tool chosen from the ones git finds installed and saved as `diff.tool` in your git config, so command-line git uses it too), or a command of your own with `$LOCAL` (the version before) and `$REMOTE` (the version after, or the working copy). Once one is chosen, *Open in Diff Tool* appears in the changeset diff window and in Pending Changes.
+  - **Merge tool:** the same choices, with `git mergetool` (without the `.orig` backups it would leave) or a command with `$BASE`, `$LOCAL`, `$REMOTE` and `$MERGED` (the file to write the result to). *Open in Merge Tool* appears for a conflicted file in Pending Changes, which refreshes when the tool closes.
+  - **Open files with:** named commands with `$FILE`, `$DIR` and `$REPO`, such as `code $FILE`. They're listed under *Open With* when you right-click a file in the Files view, above *Other Application…*.
+  - Commands only ever come from your settings, and run directly, never through a shell: quote a path with spaces, and each `$NAME` is filled in within its own argument, so no file name can become part of a command. On Windows, a batch-file shim such as `code.cmd` runs through cmd.exe, and is refused for a file whose name has a character cmd would misread, such as `&`.
+
 **The repository list.** VisualGit keeps a list of your repositories, in `library.json` in its settings folder:
 
 - **Workspaces:** folders whose repositories are all listed. Choose *File › Add Workspace…* (or *Add Workspace…* in the Workspace view or the repository menu) and pick the folder you keep your repositories in, e.g. `~/Documents/GitHub` (or `C:\Users\you\source\repos` on Windows). You can add as many as you like.
@@ -202,6 +212,7 @@ The view refreshes when the window regains focus (or on ⌘R), and the other vie
 
 | Key | Action |
 | --- | --- |
+| `⌘,` | Settings |
 | `⌘P` | File › Switch Repository…: the repository menu |
 | `⇧⌘O` / `⌘O` | File › Add Workspace… / Open Repository… |
 | `⌘[` / `⌘]` | Previous / next repository on the list |
@@ -235,6 +246,9 @@ On Windows, run `scripts/make-demo-repo.sh` from Git Bash. Text files are checke
 | [src/model/search.ts](src/model/search.ts) | Search with `*` / `?` wildcards |
 | [src/model/library.ts](src/model/library.ts) | The repository list: workspaces and repositories, grouped for the repository menu |
 | [src/view/repoSwitcher.ts](src/view/repoSwitcher.ts) | The repository menu in the toolbar |
+| [src/settings/settings.ts](src/settings/settings.ts) | The settings, their defaults, and applying them in every window |
+| [src/settings/main.ts](src/settings/main.ts) | The Settings window |
+| [src/view/whitespaceDiff.ts](src/view/whitespaceDiff.ts) | Diffs that ignore whitespace |
 | [src/view/explorer.ts](src/view/explorer.ts) | Canvas renderer, pan/zoom and hit testing |
 | [src/view/details.ts](src/view/details.ts) | Changeset and branch details panel |
 | [src-tauri/src/lib.rs](src-tauri/src/lib.rs) | Rust backend: one `git` command that only allows read-only subcommands |
@@ -245,6 +259,8 @@ On Windows, run `scripts/make-demo-repo.sh` from Git Bash. Text files are checke
 | [src-tauri/src/hosting.rs](src-tauri/src/hosting.rs) | Where a repository is hosted, from its remote URL, and opening its page there |
 | [src-tauri/src/menu.rs](src-tauri/src/menu.rs) | Native menu bar (File › Switch Repository…, Open Repository…, Add Workspace…) |
 | [src-tauri/src/library.rs](src-tauri/src/library.rs) | Stores the repository list, looks up repositories on it, and checks them for uncommitted changes |
+| [src-tauri/src/settings.rs](src-tauri/src/settings.rs) | Stores the settings, sends changes to every window, and opens the Settings window |
+| [src-tauri/src/tools.rs](src-tauri/src/tools.rs) | Runs the external diff and merge tools and the tools to open files with |
 | [src-tauri/src/os.rs](src-tauri/src/os.rs) | What differs between operating systems: canonical paths without Windows' `\\?\` prefix (which git can't use), running git without a console window, opening files and web pages |
 | [src/platform.ts](src/platform.ts) | The pages' side of it: absolute paths kept with `/` as git prints them (shown with `\` on Windows), and each platform's names for shortcuts and the Trash |
 

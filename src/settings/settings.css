@@ -37,3 +37,11 @@
 .swatch { position: relative; display: flex; }
 .swatch button.remove { position: absolute; top: -6px; right: -6px; display: none; width: 16px; height: 16px; padding: 0; font-size: 11px; line-height: 14px; border-radius: 50%; }
 .swatch:hover button.remove { display: block; }
+
+.tool-command { width: min(520px, 100%) !important; font-family: var(--code-font); }
+.setting-choices select { margin-left: 4px; }
+.setting-note code { font-family: var(--code-font); font-size: 11px; }
+.open-tools { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.open-tool { display: flex; align-items: center; gap: 6px; }
+.open-tool .tool-name { width: 160px !important; }
+.open-tool .tool-command { flex: 1; width: auto !important; }

@@ -18,7 +18,8 @@ import { tauriRunner } from "../git/tauriRunner.ts";
 import { inferModel, type Model } from "../model/infer.ts";
 import { localizeShortcuts } from "../platform.ts";
 import { dark, diffConfig, lineEndings, onDiffConfigChange, readOnly, theme, themeSlot } from "../view/codemirror.ts";
-import { initSettings } from "../settings/settings.ts";
+import { initSettings, onSettings, settings } from "../settings/settings.ts";
+import { message } from "@tauri-apps/plugin-dialog";
 import { branchColor } from "../view/explorer.ts";
 
 localizeShortcuts();
@@ -300,7 +301,22 @@ async function loadDiff() {
   if (view.chunks.length) goToNextChunk({ state: view.b.state, dispatch: view.b.dispatch });
 }
 
+const externalDiff = document.getElementById("external-diff") as HTMLButtonElement;
+/** Shows the file's change in the diff tool chosen in Settings › External Tools. */
+externalDiff.addEventListener("click", async () => {
+  const f = current;
+  if (!f) return;
+  const from = f.entry ? f.entry.parent : parent();
+  const to = f.entry ? f.entry.hash : changeset;
+  await invoke("open_diff_tool", { repo, from, to, path: f.path, origPath: f.origPath ?? null }).catch((err) =>
+    message(String(err), { title: "Could not open the diff tool", kind: "error" }),
+  );
+});
+onSettings(() => updateDiffBar());
+
 function updateDiffBar() {
+  // Offered once a diff tool is chosen; a deleted file has no "after" to show.
+  externalDiff.hidden = !current || settings().tools.diff.kind === "builtin" || current.status === "D";
   diffTitle.replaceChildren(current ? current.path : "");
   if (current?.origPath) diffTitle.prepend(`${current.origPath} → `);
   const e = current?.entry;

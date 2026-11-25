@@ -3,7 +3,8 @@
  * shows in every window (see settings.ts): there's no Save button.
  */
 
-import { CODE_SIZES, DEFAULT_BRANCHES, DEFAULT_TRUNK, initSettings, onSettings, saveSettings, SCALES, settings, type Settings } from "./settings.ts";
+import { invoke } from "@tauri-apps/api/core";
+import { CODE_SIZES, DEFAULT_BRANCHES, DEFAULT_TRUNK, initSettings, onSettings, saveSettings, SCALES, settings, type Settings, type ToolKind } from "./settings.ts";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const errorEl = $("settings-error");
@@ -108,6 +109,83 @@ for (const r of document.querySelectorAll<HTMLInputElement>('input[name="whitesp
 const wrap = $<HTMLInputElement>("wrap");
 wrap.addEventListener("change", () => void change((s) => (s.diff.wrap = wrap.checked)));
 
+// ---- external tools ---------------------------------------------------------------------
+
+/** Mirrors `GitTools` in src-tauri/src/tools.rs. */
+interface GitTools {
+  available: [string, string][];
+  current: string | null;
+}
+
+for (const which of ["diff", "merge"] as const) {
+  for (const r of document.querySelectorAll<HTMLInputElement>(`input[name="${which}-kind"]`)) {
+    r.addEventListener("change", () => void change((s) => (s.tools[which].kind = r.value as ToolKind)));
+  }
+  const cmd = $<HTMLInputElement>(`${which}-command`);
+  cmd.addEventListener("input", debounced(() => void change((s) => (s.tools[which].command = cmd.value.trim())), 400));
+  const pick = $<HTMLSelectElement>(`${which}-git`);
+  const note = $(`${which}-git-note`);
+  // git's choice is git's own config (diff.tool / merge.tool), so command-line git uses it too.
+  pick.addEventListener("change", async () => {
+    try {
+      await invoke("set_git_tool", { which, name: pick.value });
+      note.textContent = `Saved in your git config as ${which}.tool = ${pick.value}.`;
+      if (settings().tools[which].kind !== "git") await change((s) => (s.tools[which].kind = "git"));
+    } catch (err) {
+      note.textContent = String(err);
+    }
+  });
+  void loadGitTools(which);
+}
+
+async function loadGitTools(which: "diff" | "merge") {
+  const pick = $<HTMLSelectElement>(`${which}-git`);
+  const note = $(`${which}-git-note`);
+  const tools = await invoke<GitTools>("git_tools", { which }).catch(() => null);
+  if (!tools) {
+    pick.disabled = true;
+    note.textContent = "Couldn't ask git which tools it has.";
+    return;
+  }
+  const options = tools.available.map(([name, desc]) => new Option(desc ? `${name}: ${desc}` : name, name));
+  // One chosen in git's config that isn't installed (or is a terminal tool) is still shown.
+  if (tools.current && !tools.available.some(([n]) => n === tools.current)) options.unshift(new Option(`${tools.current} (from your git config)`, tools.current));
+  if (!tools.current) options.unshift(new Option("Choose…", ""));
+  pick.replaceChildren(...options);
+  pick.value = tools.current ?? "";
+  pick.disabled = options.length <= 1 && !tools.current;
+  note.textContent = !tools.available.length
+    ? `git finds no ${which} tool installed that opens a window of its own.`
+    : tools.current
+      ? `git's ${which}.tool is ${tools.current}.`
+      : `git has no ${which}.tool set yet: choose one to use it.`;
+}
+
+const openTools = $("open-tools");
+function renderOpenTools(list: Settings["tools"]["open"]) {
+  openTools.replaceChildren(
+    ...list.map((t, i) => {
+      const row = document.createElement("div");
+      row.className = "open-tool";
+      const name = Object.assign(document.createElement("input"), { type: "text", value: t.name, placeholder: "Name", spellcheck: false, className: "tool-name" });
+      name.setAttribute("aria-label", `Tool ${i + 1} name`);
+      const cmd = Object.assign(document.createElement("input"), { type: "text", value: t.command, placeholder: "code $FILE", spellcheck: false, className: "tool-command" });
+      cmd.setAttribute("aria-label", `Tool ${i + 1} command`);
+      const save = debounced(() => void change((s) => (s.tools.open[i] = { name: name.value.trim(), command: cmd.value.trim() })), 400);
+      name.addEventListener("input", save);
+      cmd.addEventListener("input", save);
+      const remove = Object.assign(document.createElement("button"), { type: "button", textContent: "Remove" });
+      remove.addEventListener("click", () => {
+        remove.blur(); // so the list redraws without it
+        void change((s) => s.tools.open.splice(i, 1));
+      });
+      row.append(name, cmd, remove);
+      return row;
+    }),
+  );
+}
+$("open-add").addEventListener("click", () => void change((s) => s.tools.open.push({ name: "", command: "" })));
+
 // ---- showing the settings ---------------------------------------------------------------
 
 /** The accent colour in use, for the colour picker when it's the theme's own. */
@@ -126,6 +204,14 @@ function render(s: Settings) {
   if (!swatches.contains(document.activeElement)) renderSwatches(s.branchColors);
   for (const r of document.querySelectorAll<HTMLInputElement>('input[name="whitespace"]')) r.checked = r.value === s.diff.ignoreWhitespace;
   wrap.checked = s.diff.wrap;
+  for (const which of ["diff", "merge"] as const) {
+    const t = s.tools[which];
+    for (const r of document.querySelectorAll<HTMLInputElement>(`input[name="${which}-kind"]`)) r.checked = r.value === t.kind;
+    const cmd = $<HTMLInputElement>(`${which}-command`);
+    if (document.activeElement !== cmd) cmd.value = t.command;
+    cmd.hidden = t.kind !== "custom";
+  }
+  if (!openTools.contains(document.activeElement)) renderOpenTools(s.tools.open);
 }
 
 onSettings((s) => requestAnimationFrame(() => render(s)));

@@ -9,6 +9,7 @@ mod os;
 mod pending;
 mod settings;
 mod submodule;
+mod tools;
 mod workspace;
 
 use std::path::Path;
@@ -156,6 +157,11 @@ pub fn run() {
             settings::load_settings,
             settings::save_settings,
             settings::open_settings_window,
+            tools::open_diff_tool,
+            tools::open_merge_tool,
+            tools::open_with_tool,
+            tools::git_tools,
+            tools::set_git_tool,
             submodule::open_add_submodule_window,
             submodule::add_submodule_info,
             submodule::choose_submodule_changeset,

@@ -26,6 +26,11 @@ pub fn load_settings(app: AppHandle) -> Result<Option<Value>, String> {
     }
 }
 
+/// The stored settings, or Null (every setting its default) if there are none or they can't be read.
+pub(crate) fn stored(app: &AppHandle) -> Value {
+    load_settings(app.clone()).ok().flatten().unwrap_or(Value::Null)
+}
+
 /// Saves the settings and sends them to every window (`settings-changed`), so a change shows everywhere at once.
 #[tauri::command]
 pub fn save_settings(app: AppHandle, settings: Value) -> Result<(), String> {

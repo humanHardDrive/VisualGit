@@ -107,7 +107,39 @@
 
         <section id="section-tools" class="settings-section" hidden>
           <h1>External Tools</h1>
-          <p class="setting-note">Coming next: diff and merge tools (git's own or your own), and tools to open files with.</p>
+          <div class="setting" id="diff-tool">
+            <span class="setting-label">Diff tool</span>
+            <div class="setting-choices" role="radiogroup" aria-label="Diff tool">
+              <label><input type="radio" name="diff-kind" value="builtin" /> VisualGit's own</label>
+              <label><input type="radio" name="diff-kind" value="git" /> git's diff tool
+                <select id="diff-git" aria-label="git's diff tool"></select></label>
+              <label><input type="radio" name="diff-kind" value="custom" /> A command</label>
+            </div>
+            <input id="diff-command" class="tool-command" type="text" spellcheck="false" autocomplete="off" placeholder="" aria-label="Diff tool command" />
+            <p class="setting-note">Offered as <b>Open in Diff Tool</b> in the changeset diff window and Pending Changes. A command gets <code>$LOCAL</code> (the version before) and <code>$REMOTE</code> (the version after, or the working copy).</p>
+            <p id="diff-git-note" class="setting-note"></p>
+          </div>
+          <div class="setting" id="merge-tool">
+            <span class="setting-label">Merge tool</span>
+            <div class="setting-choices" role="radiogroup" aria-label="Merge tool">
+              <label><input type="radio" name="merge-kind" value="builtin" /> VisualGit's own</label>
+              <label><input type="radio" name="merge-kind" value="git" /> git's merge tool
+                <select id="merge-git" aria-label="git's merge tool"></select></label>
+              <label><input type="radio" name="merge-kind" value="custom" /> A command</label>
+            </div>
+            <input id="merge-command" class="tool-command" type="text" spellcheck="false" autocomplete="off" placeholder="" aria-label="Merge tool command" />
+            <p class="setting-note">Offered as <b>Open in Merge Tool</b> for a conflicted file in Pending Changes. A command gets <code>$BASE</code> (the common version), <code>$LOCAL</code> (this branch's), <code>$REMOTE</code> (the one being merged in) and <code>$MERGED</code> (the file to write the result to). It's done when the tool closes.</p>
+            <p id="merge-git-note" class="setting-note"></p>
+          </div>
+
+          <div class="setting">
+            <span class="setting-label">Open files with</span>
+            <div id="open-tools" class="open-tools"></div>
+            <button id="open-add" type="button">Add Tool</button>
+            <p class="setting-note">Listed under <b>Open With</b> when you right-click a file in the Files view. A command gets <code>$FILE</code> (the file), <code>$DIR</code> (its folder) and <code>$REPO</code> (the repository). For example <code>code $FILE</code>, or on macOS <code>open -a "Sublime Text" $FILE</code>.</p>
+          </div>
+
+          <p class="setting-note">Commands run directly, never through a shell: put quotes around a path with spaces, and each <code>$NAME</code> is filled in inside its own argument.</p>
         </section>
 
         <p id="settings-error" class="dialog-error" role="alert"></p>
