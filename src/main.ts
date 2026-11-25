@@ -1808,6 +1808,7 @@ repoSearch.addEventListener("keydown", (e) => {
     renderRepos();
   }
 });
+$("open-repo").addEventListener("click", () => void chooseRepo());
 $("open-workspace").addEventListener("click", () => void chooseWorkspace());
 
 window.addEventListener("keydown", (e) => {
